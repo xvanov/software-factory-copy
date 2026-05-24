@@ -21,7 +21,7 @@ def test_sacrifice_config_yaml_has_deploy_block() -> None:
     cfg = load_app_config("sacrifice", _REPO_ROOT)
     d = cfg.deploy
     assert isinstance(d, DeployConfig)
-    assert d.enabled is True
+    assert d.enabled is False
     assert d.working_directory == "."
     assert d.pre_deploy_commands == [
         "docker compose -f docker-compose.prod.yml build",
