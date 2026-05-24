@@ -40,7 +40,7 @@ comfortable with the dry-run output:
 0 5 * * * cd ~/software-factory && .venv/bin/factory ux-audit-now --app sacrifice
 
 # Security — weekly deeper audit on Monday at 09:00 UTC
-0 9 * * 1 cd ~/software-factory && .venv/bin/factory security-scan --app sacrifice
+0 9 * * 1 cd ~/software-factory && .venv/bin/factory security-now --app sacrifice
 ```
 
 Each entry consults the per-persona daily-run cap in
@@ -54,7 +54,7 @@ Use `--dry-run` to exercise the chain end-to-end without an API key:
 ```bash
 factory ralph-now --app sacrifice --dry-run
 factory bug-hunt-now --app sacrifice --dry-run
-factory security-scan --app sacrifice --dry-run
+factory security-now --app sacrifice --dry-run
 factory ux-audit-now --app sacrifice --dry-run
 ```
 
