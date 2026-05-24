@@ -244,6 +244,10 @@ def tick(
             # newly-completed stories. The current story is part of those
             # counts; subtract 1 so the cap measures "stories blocked by
             # this dispatch in addition to me", not "would I be the N+1th".
+            #
+            # Subtract 1 because ``stories_in_flight`` includes the story we
+            # are about to dispatch; we measure competitors only. Without
+            # this, ``per_repo_concurrent_agents=1`` would self-block.
             in_flight_app = max(0, len(H.stories_in_flight(app, db)) - 1)
             state_dict = _build_current_state(
                 root=root,
