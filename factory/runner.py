@@ -274,13 +274,13 @@ async def sandbox_run(
 
     if dry_run:
         # Walk: did the prelude actually pull in project.md / navigation.md? Surface that.
+        # Match the heading form ONLY — the dev persona prompt mentions
+        # ``context/project.md`` as a forbidden write path, so a plain substring
+        # check would always be a false positive.
         prelude_signals = []
-        if "context/project.md" in context_prelude or "## context/project.md" in context_prelude:
+        if "## context/project.md" in context_prelude:
             prelude_signals.append("project.md included")
-        if (
-            "context/navigation.md" in context_prelude
-            or "## context/navigation.md" in context_prelude
-        ):
+        if "## context/navigation.md" in context_prelude:
             prelude_signals.append("navigation.md included")
         if "NO CONTEXT AVAILABLE" in context_prelude:
             prelude_signals.append("NO_CONTEXT_AVAILABLE notice issued")
