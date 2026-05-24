@@ -4,4 +4,15 @@ default_branch: main
 context_dir: context
 deploy:
   enabled: false  # populate later
+# Phase 4 gate commands. Aspirational defaults — Sacrifice's actual lint
+# stack lands in a future direction. The factory reads these strings
+# verbatim; the chain stays stack-agnostic.
+gates:
+  lint_command: "ruff check . && cd frontend && npm run lint"
+  format_check_command: "ruff format --check ."
+  type_check_command: "mypy backend"
+  test_command: "pytest"
+  coverage_command: "pytest --cov=backend --cov-report=json --cov-fail-under=70"
+  e2e_command: "npx playwright test"
+  mutation_testing: false
 models: {}  # use default routing

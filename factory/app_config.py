@@ -23,12 +23,31 @@ class DeployConfig(BaseModel):
     rollback_command: str | None = None
 
 
+class AppGatesConfig(BaseModel):
+    """Per-app gate commands consumed by the auto-merge worker (Phase 4).
+
+    Every field is optional: a missing command means "skip this gate". The
+    factory itself is stack-agnostic — these strings are executed verbatim
+    by the gate handler when the worker is in real-run mode, and only flag
+    lookups are done in dry-run.
+    """
+
+    lint_command: str | None = None
+    format_check_command: str | None = None
+    type_check_command: str | None = None
+    test_command: str | None = None
+    coverage_command: str | None = None
+    e2e_command: str | None = None
+    mutation_testing: bool = False
+
+
 class AppConfig(BaseModel):
     name: str
     repo: str  # "owner/name"
     default_branch: str = "main"
     context_dir: str = "context"
     deploy: DeployConfig = Field(default_factory=DeployConfig)
+    gates: AppGatesConfig = Field(default_factory=AppGatesConfig)
     models: dict[str, str] = Field(default_factory=dict)  # persona overrides
 
     @property

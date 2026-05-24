@@ -1,0 +1,164 @@
+"""Tests for the auto-merge worker.
+
+Driven entirely in dry-run mode with fixture PRs so no network calls
+escape the process.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from sqlmodel import Session, create_engine, select
+
+from factory.chain.auto_merge import (
+    ALL_GATE_LABELS,
+    FixturePR,
+    MergeActionRecord,
+    auto_merge_tick,
+)
+from factory.chain.state_machine import StoryRecord, StoryState
+
+
+@pytest.fixture
+def factory_root(tmp_path: Path) -> Path:
+    apps = tmp_path / "apps" / "sacrifice"
+    apps.mkdir(parents=True)
+    (apps / "config.yaml").write_text(
+        "name: sacrifice\nrepo: o/r\n"
+        "gates:\n"
+        "  lint_command: 'ruff check .'\n"
+        "  format_check_command: 'ruff format --check .'\n"
+        "  type_check_command: 'mypy .'\n"
+        "  coverage_command: 'pytest --cov-fail-under=70'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "state").mkdir()
+    return tmp_path
+
+
+def _good_story(*, state: str = StoryState.PR_OPEN.value) -> StoryRecord:
+    return StoryRecord(
+        direction_id="002",
+        app="sacrifice",
+        title="t",
+        slug="s",
+        scope="backend",
+        state=state,
+        test_plan_json=json.dumps(
+            {
+                "test_plan": [
+                    {
+                        "name": "test_pledge_button",
+                        "what_it_asserts": "User pledge dollars flow stores amount",
+                        "why_meaningful": "Real outcome — user pledge flow",
+                        "key_steps": ["arrange", "act", "assert"],
+                    }
+                ]
+            }
+        ),
+        test_implementer_result_json=json.dumps({"exit_code": 1, "slop_detected": False}),
+        tech_writer_result_json=json.dumps({"context_updates": [{"path": "context/project.md"}]}),
+        github_pr_number=42,
+    )
+
+
+def _good_fixture(*, pr_number: int = 42, labels: list[str] | None = None) -> FixturePR:
+    return FixturePR(
+        pr_number=pr_number,
+        head_sha="deadbeef",
+        base_branch="main",
+        labels=list(labels or []),
+        files_changed=["src/foo.py", "tests/test_foo.py"],
+        ci_state="success",
+        story=_good_story(),
+    )
+
+
+def test_all_gates_pass_yields_merge(factory_root: Path) -> None:
+    pr = _good_fixture()
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[pr])
+    assert len(actions) == 1
+    assert actions[0].merged, actions[0].reason
+    assert "all 10 gates" in actions[0].reason
+    assert set(actions[0].gates_passed) == set(ALL_GATE_LABELS)
+
+
+def test_blocking_label_prevents_merge(factory_root: Path) -> None:
+    pr = _good_fixture(labels=["tests-slop"])
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[pr])
+    assert not actions[0].merged
+    assert "blocking labels" in actions[0].reason
+    assert "tests-slop" in actions[0].blocking_labels
+
+
+def test_do_not_merge_label_blocks(factory_root: Path) -> None:
+    pr = _good_fixture(labels=["do-not-merge"])
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[pr])
+    assert not actions[0].merged
+    assert "do-not-merge" in actions[0].blocking_labels
+
+
+def test_needs_test_quality_fix_blocks(factory_root: Path) -> None:
+    pr = _good_fixture(labels=["needs-test-quality-fix"])
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[pr])
+    assert not actions[0].merged
+
+
+def test_missing_gate_blocks_merge(factory_root: Path) -> None:
+    """If any gate would not pass, the missing-label list reflects it."""
+    story = _good_story()
+    # Wipe the tech_writer record so docs-current fails.
+    story.tech_writer_result_json = None
+    fixture = FixturePR(
+        pr_number=43,
+        head_sha="cafe",
+        base_branch="main",
+        labels=[],
+        files_changed=["src/foo.py"],
+        ci_state="success",
+        story=story,
+    )
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[fixture])
+    assert not actions[0].merged
+    assert "missing gate labels" in actions[0].reason
+    assert "docs-current" in actions[0].reason
+
+
+def test_story_state_guard_prevents_premature_merge(factory_root: Path) -> None:
+    """A story still in DEV_IN_PROGRESS is not eligible for merge even if
+    fixture gates green."""
+    story = _good_story(state=StoryState.DEV_IN_PROGRESS.value)
+    fixture = FixturePR(
+        pr_number=44,
+        head_sha="aaaa",
+        base_branch="main",
+        labels=[],
+        files_changed=["src/foo.py"],
+        ci_state="success",
+        story=story,
+    )
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[fixture])
+    assert not actions[0].merged
+    assert "not in mergeable states" in actions[0].reason
+
+
+def test_merge_action_persisted_in_db(factory_root: Path) -> None:
+    """Every evaluation records a row in ``merge_actions`` for the rollback worker."""
+    pr = _good_fixture()
+    auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[pr])
+    db = factory_root / "state" / "factory.db"
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        rows = session.exec(select(MergeActionRecord)).all()
+    assert len(rows) == 1
+    assert rows[0].pr_number == 42
+    assert rows[0].merged is True
+    assert "tests-meaningful" in json.loads(rows[0].gates_passed_json)
+
+
+def test_no_fixtures_no_actions(factory_root: Path) -> None:
+    """Dry-run with no PRs returns an empty list, not an error."""
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[])
+    assert actions == []

@@ -793,6 +793,140 @@ def spend_cmd(
     console.print(table)
 
 
+@app.command("auto-merge")
+def auto_merge_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(True, "--dry-run/--real-run", help="Dry-run (default)"),
+) -> None:
+    """Run one auto-merge tick against ``--app``.
+
+    In dry-run mode the worker reads the local DB only and does not call
+    GitHub. Use ``--real-run`` to invoke the GH client (requires GITHUB_TOKEN).
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.chain.auto_merge import auto_merge_tick
+
+    gh: Any = None
+    if not dry_run:
+        gh = _ensure_github_client()
+
+    actions = auto_merge_tick(_FACTORY_ROOT, app_name, dry_run=dry_run, github_client=gh)
+
+    if not actions:
+        console.print(
+            Panel.fit(
+                f"No PR fixtures or open PRs to evaluate for [bold]{app_name}[/bold].",
+                title="auto-merge",
+            )
+        )
+        return
+
+    table = Table(title=f"auto-merge — app={app_name} dry_run={dry_run}")
+    table.add_column("pr")
+    table.add_column("merged")
+    table.add_column("reason")
+    table.add_column("gates_passed", justify="right")
+    for a in actions:
+        table.add_row(
+            f"#{a.pr_number}",
+            "[green]yes[/green]" if a.merged else "[red]no[/red]",
+            a.reason[:80],
+            str(len(a.gates_passed)),
+        )
+    console.print(table)
+
+
+@app.command("rollback-watch")
+def rollback_watch_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(True, "--dry-run/--real-run", help="Dry-run (default)"),
+    window_minutes: int = typer.Option(
+        15, "--window-minutes", help="How far back to look for recent merges"
+    ),
+) -> None:
+    """Run one rollback-watch tick: look at recent merges; revert if main CI is red."""
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.chain.rollback import rollback_watch_tick
+
+    gh: Any = None
+    if not dry_run:
+        gh = _ensure_github_client()
+
+    actions = rollback_watch_tick(
+        _FACTORY_ROOT,
+        app_name,
+        dry_run=dry_run,
+        github_client=gh,
+        window_minutes=window_minutes,
+    )
+
+    if not actions:
+        console.print(
+            Panel.fit(
+                f"No recent merges to evaluate for [bold]{app_name}[/bold] "
+                f"(last {window_minutes} min).",
+                title="rollback-watch",
+            )
+        )
+        return
+
+    table = Table(title=f"rollback-watch — app={app_name} dry_run={dry_run}")
+    table.add_column("pr")
+    table.add_column("action")
+    table.add_column("reason")
+    for a in actions:
+        table.add_row(
+            f"#{a.pr_number}",
+            a.action_type,
+            a.reason[:80],
+        )
+    console.print(table)
+
+
+@app.command("test-slop")
+def test_slop_cmd(
+    path: Path = typer.Option(..., "--file", exists=True, help="Path to file or directory to scan"),
+) -> None:
+    """Scan a file (or directory) for slop anti-patterns.
+
+    Surfaces every finding produced by the same ``slop_detector`` the
+    auto-merge ``tests-meaningful`` gate uses. Exits non-zero if any
+    findings are reported — useful as a pre-commit guard.
+    """
+    from factory.chain.slop_detector import scan_diff, scan_file
+
+    findings: list[Any] = []
+    if path.is_file():
+        findings = scan_file(path)
+    elif path.is_dir():
+        # Collect every plausible test file recursively.
+        candidates = [
+            p
+            for p in path.rglob("*")
+            if p.is_file() and p.suffix in {".py", ".ts", ".tsx", ".js", ".jsx"}
+        ]
+        findings = scan_diff([str(c) for c in candidates])
+
+    if not findings:
+        console.print(Panel.fit(f"[green]No slop found in {path}[/green]", title="test-slop"))
+        return
+
+    table = Table(title=f"slop findings in {path}")
+    table.add_column("path")
+    table.add_column("line")
+    table.add_column("kind")
+    table.add_column("why")
+    for f in findings:
+        table.add_row(f.path, str(f.line), f.kind, f.why_slop[:80])
+    console.print(table)
+    console.print(f"[red]{len(findings)} finding(s)[/red]")
+    raise typer.Exit(code=1)
+
+
 @app.command("webhook-serve")
 def webhook_serve(
     port: int = typer.Option(9000, "--port", help="Bind port for the webhook listener"),
