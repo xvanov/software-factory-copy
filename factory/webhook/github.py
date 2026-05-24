@@ -139,6 +139,9 @@ def _handle_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
         "pr_number": pr_number,
         "repo": repo_full_name,
         "story_slug": story.slug,
+        # The orchestrator should tick this app next: a freshly-opened PR
+        # may unblock the chain (CI_PENDING -> CI_GREEN etc.).
+        "next": "orchestrator-tick",
     }
 
 
@@ -152,6 +155,98 @@ def _handle_check(payload: dict[str, Any]) -> dict[str, Any]:
         "acted": True,
         "pr_number": pr_number,
         "conclusion": conclusion,
+    }
+
+
+def _handle_pull_request_review(payload: dict[str, Any]) -> dict[str, Any]:
+    """Handle ``pull_request_review.submitted``.
+
+    On ``state == approved`` we record a review event and (in a future tick)
+    the orchestrator will advance the matching StoryRecord through the
+    reviewer-approve transition. On ``state == changes_requested`` we
+    transition the matching StoryRecord to REVIEWER_REQUESTED_CHANGES.
+
+    All state writes go through the local state.db; we do NOT mutate
+    GitHub from inside the webhook handler. The orchestrator's next tick
+    is responsible for any GitHub side effects (labels, comments).
+    """
+    if payload.get("action") != "submitted":
+        return {"acted": False, "reason": f"pr_review action={payload.get('action')!r}"}
+    review = payload.get("review") or {}
+    pr = payload.get("pull_request") or {}
+    pr_number = int(pr.get("number") or 0)
+    state = str(review.get("state") or "").lower()
+    reviewer = (review.get("user") or {}).get("login") or "<unknown>"
+
+    if pr_number == 0:
+        return {"acted": False, "reason": "missing pull_request.number"}
+
+    from sqlmodel import Session, create_engine, select
+
+    from factory.chain.handlers import _engine  # ensures migrations run
+    from factory.chain.review_events import ReviewEvent
+    from factory.chain.state_machine import (
+        EVENT_REVIEWER_APPROVE,
+        EVENT_REVIEWER_REQUEST_CHANGES,
+        EVENT_REVIEWER_STARTED,
+        IllegalTransitionError,
+        StoryRecord,
+        StoryState,
+        advance,
+    )
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    _engine(db)  # idempotent migration
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        rows = session.exec(
+            select(StoryRecord).where(StoryRecord.github_pr_number == pr_number)
+        ).all()
+        if not rows:
+            return {"acted": False, "reason": f"no story matched PR #{pr_number}"}
+        story = rows[0]
+        story_id_local: int = story.id or 0
+
+        event_row = ReviewEvent(
+            story_id=story_id_local,
+            pr_number=pr_number,
+            reviewer=reviewer,
+            state=state,
+        )
+        session.add(event_row)
+
+        next_event: str | None = None
+        if state == "approved":
+            next_event = EVENT_REVIEWER_APPROVE
+        elif state == "changes_requested":
+            next_event = EVENT_REVIEWER_REQUEST_CHANGES
+
+        transitioned_to: str | None = None
+        if next_event is not None:
+            # The chain expects REVIEWER_IN_PROGRESS before approve/request.
+            # If the story isn't there yet (e.g. the reviewer is human and
+            # the chain hadn't entered review automatically), nudge it in
+            # first so the transition is legal.
+            current = StoryState(story.state)
+            if current == StoryState.TESTS_GREEN:
+                story.state = advance(story, EVENT_REVIEWER_STARTED).value
+            try:
+                story.state = advance(story, next_event).value
+                transitioned_to = story.state
+                session.add(story)
+            except IllegalTransitionError:
+                # Tolerate webhooks arriving when the story is in a state
+                # that doesn't accept this transition (e.g. a human approved
+                # an old PR after auto-merge). Just record the event row.
+                transitioned_to = None
+        session.commit()
+
+    return {
+        "acted": True,
+        "pr_number": pr_number,
+        "story_id": story_id_local,
+        "state": state,
+        "transitioned_to": transitioned_to,
     }
 
 
@@ -169,8 +264,7 @@ def dispatch_event(event: str, payload: dict[str, Any]) -> dict[str, Any]:
     if event in ("check_suite", "check_run"):
         return _handle_check(payload)
     if event == "pull_request_review":
-        # Phase-2 placeholder — Phase 4 wires reviewer state transitions.
-        return {"acted": False, "reason": f"event {event!r} acknowledged"}
+        return _handle_pull_request_review(payload)
     return {"acted": False, "reason": f"unhandled event {event!r}"}
 
 
