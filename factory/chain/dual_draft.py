@@ -172,7 +172,13 @@ def produce_interpretations(
             },
         },
     }
-    raw = text_run("analyst", prompt, schema=schema)
+    # Route the analyst persona through the model_router so the active
+    # provider (Azure or direct) is honored at the call site rather than at
+    # ``text_run`` resolution time. Imported lazily to keep this module's
+    # import graph minimal in tests.
+    from factory.model_router import route
+
+    raw = text_run("analyst", prompt, model_id=route("analyst"), schema=schema)
     out: list[Interpretation] = []
     for entry in raw.get("interpretations", [])[:2]:
         out.append(

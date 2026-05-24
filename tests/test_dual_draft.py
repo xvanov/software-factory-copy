@@ -91,6 +91,46 @@ def test_produce_interpretations_dry_run_returns_two() -> None:
         assert d.title in interp.title
 
 
+def test_produce_interpretations_real_run_passes_model_id() -> None:
+    """Phase 7 NIT cleanup: real-run path must pass ``model_id`` to ``text_run``
+    so the active provider (Azure or direct) is honored. Regression test for
+    the missing argument flagged in P7 review.
+    """
+    d = _mk_direction(explore=True)
+    captured: dict[str, Any] = {}
+
+    def fake_text_run(persona: str, prompt: str, **kwargs: Any) -> dict[str, Any]:
+        captured["persona"] = persona
+        captured["model_id"] = kwargs.get("model_id")
+        captured["schema_present"] = kwargs.get("schema") is not None
+        return {
+            "interpretations": [
+                {
+                    "interpretation_id": "alt-a",
+                    "title": "narrow",
+                    "body": "...",
+                    "key_assumption_diff": "small scope",
+                },
+                {
+                    "interpretation_id": "alt-b",
+                    "title": "broad",
+                    "body": "...",
+                    "key_assumption_diff": "big scope",
+                },
+            ]
+        }
+
+    interps = produce_interpretations(
+        d, {"confidence": 0.4}, dry_run=False, text_run=fake_text_run
+    )
+    assert len(interps) == 2
+    assert captured["persona"] == "analyst"
+    # model_id must be a non-empty string — the actual value tracks routes.yaml.
+    assert isinstance(captured["model_id"], str)
+    assert captured["model_id"]
+    assert captured["schema_present"] is True
+
+
 def _setup_dry_run_root(tmp_path: Path) -> tuple[Path, AppConfig]:
     """Sacrifice app config + state dir, no GH."""
     apps = tmp_path / "apps" / "sacrifice"
