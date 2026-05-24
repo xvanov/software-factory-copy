@@ -1,4 +1,4 @@
-status: created
+status: pm-validated
 source: cli
 created_at: '2026-05-24T17:13:19.362139+00:00'
 audit:
@@ -7,3 +7,29 @@ audit:
   event: created
   details:
     source: cli
+- ts: '2026-05-24T17:26:23.331874+00:00'
+  by: factory.chain.pm_sync(dry-run)
+  event: status -> pm-validated
+  details:
+    confidence: 0.75
+pm_result:
+  type: feature
+  priority: p2
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: '[DIRECTION] Add healthz endpoint'
+  tracker_body: '**Add healthz endpoint**
+
+
+    Smoke test wants a stable endpoint to verify the service is alive.
+
+    '
+  child_stories:
+  - title: 'Implement API: Add healthz endpoint'
+    scope: backend
+    rationale: Direction declares an API contract; one backend story to implement
+      it.
+  labels:
+  - feature
+  - priority/p2
+  confidence: 0.75

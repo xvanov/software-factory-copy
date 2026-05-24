@@ -39,6 +39,7 @@ from factory.directions.watcher import (
     pending_directions,
 )
 from factory.model_router import route
+from factory.runner import _record_run
 
 _PM_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -291,6 +292,19 @@ def pm_sync(
             if not validation.is_valid:
                 if dry_run:
                     pm_result = _dry_run_pm_result(direction, validation)
+                    _record_run(
+                        persona="pm",
+                        model=route("pm"),
+                        mode="pm-sync-dry-run",
+                        tokens_in=0,
+                        tokens_out=0,
+                        cost_usd=0.0,
+                        success=True,
+                        story_path=str(direction.dir_path),
+                        repo_path="<n/a>",
+                        error=None,
+                        db_path=db_path,
+                    )
                     merge_state(
                         direction,
                         {"pm_result": pm_result, "validation_issues": validation.issues},
@@ -327,6 +341,19 @@ def pm_sync(
             # Backpressure is sufficient — invoke PM persona (or fixture).
             if dry_run:
                 pm_result = _dry_run_pm_result(direction, validation)
+                _record_run(
+                    persona="pm",
+                    model=route("pm"),
+                    mode="pm-sync-dry-run",
+                    tokens_in=0,
+                    tokens_out=0,
+                    cost_usd=0.0,
+                    success=True,
+                    story_path=str(direction.dir_path),
+                    repo_path="<n/a>",
+                    error=None,
+                    db_path=db_path,
+                )
             else:
                 pm_result = _call_pm_persona(direction, app_repo_path)
 

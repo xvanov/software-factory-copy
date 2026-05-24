@@ -1,4 +1,4 @@
-status: created
+status: needs-direction
 source: cli
 created_at: '2026-05-24T17:13:19.364249+00:00'
 audit:
@@ -7,4 +7,35 @@ audit:
   event: created
   details:
     source: cli
+- ts: '2026-05-24T17:26:23.342480+00:00'
+  by: factory.chain.pm_sync(dry-run)
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+    - acceptance_criteria
 validation_issues: []
+pm_result:
+  type: feature
+  priority: p2
+  has_sufficient_backpressure: false
+  missing:
+  - user_flow
+  - api_spec
+  - explore_tag_or_artifacts
+  - acceptance_criteria
+  tracker_title: '[DIRECTION] Vague thought'
+  tracker_body: '**Vague thought**
+
+
+    _(needs more backpressure: user_flow, api_spec, explore_tag_or_artifacts, acceptance_criteria)_
+
+    '
+  child_stories: []
+  labels:
+  - feature
+  - priority/p2
+  - needs-direction
+  confidence: 0.4
