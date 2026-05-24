@@ -195,7 +195,7 @@ def _run_pytest(repo_path: Path) -> tuple[bool, str]:
     import subprocess
 
     if not (repo_path / "tests").exists() and not list(repo_path.glob("test_*.py")):
-        return (True, "(no tests directory)")
+        return (False, "no tests directory")
     try:
         result = subprocess.run(
             ["python", "-m", "pytest", "-q"],
