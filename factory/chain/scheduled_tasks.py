@@ -249,11 +249,18 @@ def _file_finding_as_direction(
     app: str,
     finding: dict[str, Any],
     software_factory_root: Path,
+    dry_run: bool = False,
 ) -> Direction | None:
     """Create a direction directory for one finding. Returns the parsed Direction.
 
     Falls back gracefully if the finding lacks a ``suggested_direction``
     block (returns ``None``).
+
+    When ``dry_run`` is True, the direction is written to a scratch
+    directory under ``<software_factory_root>/state/dry_run_scratch/`` so
+    the canonical ``apps/<app>/directions/`` tree is NOT polluted. The
+    parser still reads it so the caller sees a real ``Direction`` and
+    asserts the same shape it would on a real run.
     """
     suggested = finding.get("suggested_direction")
     if not isinstance(suggested, dict):
@@ -265,6 +272,16 @@ def _file_finding_as_direction(
     acceptance = [str(a) for a in acceptance_raw if str(a).strip()]
     if not title or not why:
         return None
+    target_root = software_factory_root
+    if dry_run:
+        # Route every write under state/dry_run_scratch/ so apps/<app>/
+        # directions/ remains untouched on dry-run paths.
+        scratch = Path(software_factory_root) / "state" / "dry_run_scratch"
+        scratch.mkdir(parents=True, exist_ok=True)
+        target_root = scratch
+        # next_direction_id scans target_root/apps/<app>/directions/, so
+        # ensure it exists.
+        (scratch / "apps" / app / "directions").mkdir(parents=True, exist_ok=True)
     created = create_direction(
         app,
         title=title,
@@ -277,8 +294,8 @@ def _file_finding_as_direction(
         acceptance=acceptance,
         explore=False,
         attach_files=None,
-        software_factory_root=software_factory_root,
-        source=f"scheduled-{persona}",
+        software_factory_root=target_root,
+        source=f"scheduled-{persona}{'-dry' if dry_run else ''}",
     )
     return created.direction
 
@@ -299,10 +316,13 @@ def run_scheduled_persona(
 ) -> ScheduledRunOutput:
     """Execute one scheduled persona run.
 
-    On ``dry_run=True`` no LLM is called and no GH issue is opened, but
-    directions ARE filed on disk (so the CLI's --dry-run is end-to-end
-    testable without API keys). Pass ``fixture_output`` to override the
-    default per-persona fixture.
+    On ``dry_run=True`` no LLM is called, no GH issue is opened, and the
+    canonical ``apps/<app>/directions/`` tree is NOT mutated — directions
+    are written to ``<root>/state/dry_run_scratch/apps/<app>/directions/``
+    so the CLI's --dry-run is end-to-end testable without API keys or
+    pollution. The ``cron_schedules.last_run`` column is also untouched
+    on a dry-run; only real runs update it. Pass ``fixture_output`` to
+    override the default per-persona fixture.
 
     On real-run, ``text_run`` is invoked with the persona prompt + the
     composed context prelude; the output is parsed as JSON and findings
@@ -412,6 +432,7 @@ def run_scheduled_persona(
                 app=app,
                 finding=finding,
                 software_factory_root=root,
+                dry_run=dry_run,
             )
         except Exception as exc:  # noqa: BLE001 - one bad finding shouldn't kill the run
             error = f"direction_create_failed: {exc}"
@@ -465,20 +486,25 @@ def _record_and_return(
     # Update the schedule's last-run timestamp so the cron scheduler
     # doesn't re-fire this slot. Best-effort; failure here is recorded
     # but doesn't fail the run.
-    try:
-        from factory.scheduler.cron import load_schedules, upsert_schedule_row
+    #
+    # Dry-run is truly dry: NEVER mutate cron_schedules.last_run on a
+    # dry-run path. Otherwise an operator probing with --dry-run could
+    # cause the real cron loop to think a slot already fired and skip it.
+    if not dry_run:
+        try:
+            from factory.scheduler.cron import load_schedules, upsert_schedule_row
 
-        for sched in load_schedules(Path(db_path).parent.parent):
-            if sched.persona == persona:
-                upsert_schedule_row(
-                    name=sched.name,
-                    cron_expr=sched.cron_expr,
-                    last_run=datetime.now(UTC).isoformat(),
-                    last_status=status,
-                    db_path=db_path,
-                )
-    except Exception:  # noqa: BLE001 - schedule update is best-effort
-        pass
+            for sched in load_schedules(Path(db_path).parent.parent):
+                if sched.persona == persona:
+                    upsert_schedule_row(
+                        name=sched.name,
+                        cron_expr=sched.cron_expr,
+                        last_run=datetime.now(UTC).isoformat(),
+                        last_status=status,
+                        db_path=db_path,
+                    )
+        except Exception:  # noqa: BLE001 - schedule update is best-effort
+            pass
     return ScheduledRunOutput(
         persona=persona,
         app=app,
@@ -499,14 +525,14 @@ def _live_run(persona: str, app: str, software_factory_root: Path) -> dict[str, 
     sandbox path (browser tool) is reserved for a future ux_auditor
     enhancement when the live deploy URL exists.
     """
-    from factory.app_config import load_app_config
+    from factory.app_config import load_app_config, resolve_app_repo_path
     from factory.context.loader import compose_context_prelude
     from factory.runner import text_run
 
-    _ = load_app_config(app, software_factory_root)  # ensure config exists
+    cfg = load_app_config(app, software_factory_root)
     prelude = compose_context_prelude(
         persona,
-        app_repo_path=software_factory_root / "apps" / app,
+        app_repo_path=resolve_app_repo_path(cfg, software_factory_root),
         task_scope=None,
     )
     persona_md_path = Path(__file__).resolve().parent.parent / "personas" / f"{persona}.md"

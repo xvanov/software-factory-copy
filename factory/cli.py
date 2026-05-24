@@ -359,7 +359,7 @@ def tick_cmd(
     from factory.scheduler.cron import due_schedules
 
     scheduled_results = []
-    for due in due_schedules(_FACTORY_ROOT):
+    for due in due_schedules(_FACTORY_ROOT, audit_app=app_name):
         if due.rate_limit_hit:
             scheduled_results.append((due.schedule.name, "rate_limited", 0, 0))
             continue
@@ -510,7 +510,16 @@ def inbox_cmd(
         None, "--app", help="Filter inbox to a single app; default: all apps"
     ),
 ) -> None:
-    """Aggregate items needing human attention across apps."""
+    """Aggregate items needing human attention across apps.
+
+    Phase 7: shows multi-app rollup of every signal an operator cares
+    about — stories awaiting human action (``reviewer_requested_changes``,
+    ``blocked_tests_need_clarification``, and any ``last_rejection_reason``),
+    directions in ``needs-direction``, budget warnings, failed deploys
+    in the last 24h, active Direction Trackers, recent scheduled persona
+    runs, idle apps (the same predicate the ``factory-idle`` issue uses),
+    and pinned ``factory-status`` issue numbers per app.
+    """
     from sqlmodel import Session, create_engine, select
 
     from factory.chain.handlers import _engine
@@ -529,6 +538,14 @@ def inbox_cmd(
     from factory.deploy.orchestrator import _engine as _deploy_engine
 
     _deploy_engine(db)
+    # Phase 6/7 tables must exist for the scheduled-runs + idle +
+    # factory-status sections below; their _engine() helpers run
+    # create_all on first call.
+    from factory.chain.factory_status import _engine as _status_engine
+    from factory.chain.scheduled_tasks import _engine as _sched_engine
+
+    _sched_engine(db)
+    _status_engine(db)
     apps = [app_name] if app_name else _list_apps()
 
     # Stories with last_rejection_reason or in BLOCKED state -> needs human.
@@ -676,6 +693,51 @@ def inbox_cmd(
         console.print(sched_table)
     else:
         console.print("[dim]No scheduled persona runs in the last 24h.[/dim]")
+
+    # Phase 7: idle pings — apps with no in-flight work, no recent
+    # findings, no recent deploys (the same predicate ``factory-idle``
+    # uses). These are surfaced in the inbox so the operator sees them
+    # without needing to wait for the cron tick to open a GH issue.
+    from factory.chain.idle import detect_idle
+
+    idle_table = Table(title="idle apps (no work in flight)")
+    idle_table.add_column("app")
+    idle_table.add_column("idle since")
+    idle_table.add_column("recent directions")
+    have_idle = False
+    for a in apps:
+        try:
+            snap = detect_idle(a, _FACTORY_ROOT, since_hours=2)
+        except Exception:
+            continue
+        if snap is None:
+            continue
+        directions_str = ", ".join(d.slug for d in snap.recent_directions[:3]) or "(none)"
+        idle_table.add_row(a, snap.idle_since.isoformat()[:19], directions_str)
+        have_idle = True
+    if have_idle:
+        console.print(idle_table)
+
+    # Phase 7: pinned ``factory-status`` issue numbers (one per app).
+    # These are the operators' single GH-side entry point for live state.
+    from factory.chain.factory_status import FactoryStatusRecord
+
+    status_table = Table(title="pinned factory-status issues")
+    status_table.add_column("app")
+    status_table.add_column("issue")
+    status_table.add_column("last updated")
+    have_status = False
+    with Session(eng) as session:
+        for a in apps:
+            row = session.exec(
+                select(FactoryStatusRecord).where(FactoryStatusRecord.app == a)
+            ).first()
+            if row is None:
+                continue
+            status_table.add_row(a, f"#{row.gh_issue_number}", row.last_updated[:19])
+            have_status = True
+    if have_status:
+        console.print(status_table)
 
     console.print(
         f"[dim]Current factory mode: [bold]{get_mode(_FACTORY_ROOT, db_path=db)}[/bold][/dim]"
@@ -1412,6 +1474,104 @@ def schedules_cmd() -> None:
             nxt = f"[invalid: {exc}]"
         table.add_row(s.name, s.persona, s.cron_expr, last_run, last_status, nxt)
     console.print(table)
+
+
+# --------------------------------------------------------------------------- #
+# Phase-7 commands: status-sync, idle-check.
+# --------------------------------------------------------------------------- #
+
+
+@app.command("status-sync")
+def status_sync_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="No GitHub calls; print body only"),
+) -> None:
+    """Update the pinned ``factory-status`` GitHub issue for ``--app``.
+
+    Recommended cron: every 5 minutes. In dry-run, no GH API call is
+    made; the composed body is printed for inspection.
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.chain.factory_status import compose_status_body, update_status_issue
+
+    body = compose_status_body(app_name, _FACTORY_ROOT)
+    if dry_run:
+        console.print(Panel(body, title=f"factory-status (dry-run) — app={app_name}"))
+        return
+
+    gh = _ensure_github_client()
+    number = update_status_issue(
+        app=app_name,
+        software_factory_root=_FACTORY_ROOT,
+        github_client=gh,
+    )
+    console.print(
+        Panel.fit(
+            f"Updated [bold]factory-status[/bold] issue #{number} for app=[bold]{app_name}[/bold]",
+            title="status-sync",
+            style="green",
+        )
+    )
+
+
+@app.command("idle-check")
+def idle_check_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="No GitHub calls; print snapshot only"),
+    since_hours: int = typer.Option(2, "--since-hours", help="Idle threshold window in hours"),
+) -> None:
+    """Detect whether ``--app`` has gone idle and open/update the ``factory-idle`` issue.
+
+    Idle = queue empty AND no in-flight stories AND no scheduled
+    persona findings in the last ``--since-hours`` hours AND no recent
+    deploys. Recommended cron: every 30 minutes.
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.chain.idle import detect_idle, open_idle_issue
+
+    snapshot = detect_idle(app_name, _FACTORY_ROOT, since_hours=since_hours)
+    if snapshot is None:
+        console.print(
+            Panel.fit(
+                f"App [bold]{app_name}[/bold] is not idle "
+                f"(work in flight, or activity within {since_hours}h).",
+                title="idle-check",
+            )
+        )
+        return
+
+    recent_lines = (
+        "\n".join(f"- `{d.id}-{d.slug}` ({d.title})" for d in snapshot.recent_directions)
+        or "_(no recent directions)_"
+    )
+    body_preview = (
+        f"Idle since: `{snapshot.idle_since.isoformat()}`\n\n"
+        f"Recent directions (most recent first):\n{recent_lines}"
+    )
+
+    if dry_run:
+        console.print(
+            Panel(
+                body_preview,
+                title=f"factory-idle (dry-run) — app={app_name}",
+                style="yellow",
+            )
+        )
+        return
+
+    gh = _ensure_github_client()
+    number = open_idle_issue(snapshot, gh, software_factory_root=_FACTORY_ROOT)
+    console.print(
+        Panel.fit(
+            f"Updated [bold]factory-idle[/bold] issue #{number} for app=[bold]{app_name}[/bold]",
+            title="idle-check",
+            style="green",
+        )
+    )
 
 
 @app.command("webhook-serve")

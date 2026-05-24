@@ -69,6 +69,12 @@ class AppConfig(BaseModel):
     repo: str  # "owner/name"
     default_branch: str = "main"
     context_dir: str = "context"
+    # Path to the actual app source tree, relative to the factory root.
+    # Default ``../<name>`` matches the convention "factory at
+    # ``~/software-factory/``, apps at ``~/<name>/`` (siblings)". Personas
+    # read context from this path, NOT from ``apps/<name>/`` inside the
+    # factory (which only holds the per-app config + directions + state).
+    app_repo_path: str = ""
     deploy: DeployConfig = Field(default_factory=DeployConfig)
     gates: AppGatesConfig = Field(default_factory=AppGatesConfig)
     models: dict[str, str] = Field(default_factory=dict)  # persona overrides
@@ -83,11 +89,37 @@ class AppConfig(BaseModel):
 
 
 def load_app_config(app: str, software_factory_root: Path) -> AppConfig:
-    """Load and validate ``apps/<app>/config.yaml`` from the factory root."""
+    """Load and validate ``apps/<app>/config.yaml`` from the factory root.
+
+    If ``app_repo_path`` is unset in the YAML, it defaults to ``../<name>``
+    relative to the factory root (e.g. factory at ``~/software-factory/``
+    and apps as sibling directories at ``~/<name>/``).
+    """
     cfg_path = Path(software_factory_root) / "apps" / app / "config.yaml"
     if not cfg_path.exists():
         raise FileNotFoundError(f"App config missing: {cfg_path}. Expected apps/<app>/config.yaml.")
     raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"{cfg_path}: top-level must be a YAML mapping")
+    if not raw.get("app_repo_path"):
+        # Mirror the documented convention: app source lives at a sibling
+        # of the factory root, named by the app.
+        raw["app_repo_path"] = f"../{raw.get('name') or app}"
     return AppConfig.model_validate(raw)
+
+
+def resolve_app_repo_path(cfg: AppConfig, software_factory_root: Path) -> Path:
+    """Resolve ``cfg.app_repo_path`` against the factory root.
+
+    Absolute paths are returned unchanged; relative paths are anchored at
+    ``software_factory_root``. The result is NOT required to exist —
+    callers handle the "no app tree yet" case (e.g. context loader emits
+    the NO CONTEXT AVAILABLE notice).
+    """
+    raw = (cfg.app_repo_path or "").strip()
+    if not raw:
+        raw = f"../{cfg.name}"
+    p = Path(raw)
+    if p.is_absolute():
+        return p
+    return (Path(software_factory_root) / p).resolve()

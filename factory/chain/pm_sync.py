@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from factory.app_config import AppConfig, load_app_config
+from factory.app_config import AppConfig, load_app_config, resolve_app_repo_path
 from factory.backpressure.validator import ValidationResult, validate_direction
 from factory.context.loader import compose_context_prelude
 from factory.directions.parser import Direction
@@ -280,10 +280,20 @@ def pm_sync(
     pending = pending_directions(app, root, db_path)
     summary.processed = len(pending)
 
-    # App repo path for the context prelude. For Phase 1, Sacrifice has no
-    # local checkout under apps/<app>/; we point at the app dir itself so
-    # the loader returns the NO_CONTEXT_AVAILABLE notice cleanly.
-    app_repo_path = root / "apps" / app
+    # App repo path for the context prelude. Phase 7 resolves this via the
+    # app's ``config.yaml::app_repo_path`` (default ``../<name>``); on
+    # operator-typical layouts that's a sibling of the factory root (e.g.
+    # ``~/sacrifice/``). If the path doesn't exist on disk yet, the loader
+    # returns the NO_CONTEXT_AVAILABLE notice cleanly.
+    # ``load_app_config`` may raise FileNotFoundError when the apps/ entry
+    # for this app doesn't exist (e.g. test fixtures without a config) —
+    # the earlier ``app_config = load_app_config(...)`` block has already
+    # handled that case, so reuse the loaded record when available.
+    if app_config is not None:
+        app_repo_path = resolve_app_repo_path(app_config, root)
+    else:
+        # Dry-run path with no on-disk config: synthesize a stub.
+        app_repo_path = root / "apps" / app
 
     for direction in pending:
         try:

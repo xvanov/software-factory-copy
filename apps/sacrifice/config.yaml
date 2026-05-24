@@ -2,6 +2,11 @@ name: sacrifice
 repo: xvanov/sacrifice
 default_branch: main
 context_dir: context
+# Path to the app source tree (sibling of the factory root by default).
+# Phase 7: resolve_app_repo_path(...) uses this to thread the real repo
+# into every compose_context_prelude call. ``../sacrifice`` resolves to
+# ``~/sacrifice/`` when the factory is at ``~/software-factory/``.
+app_repo_path: "../sacrifice"
 # Phase 5 deploy block. Sacrifice is locally-hosted via Docker Compose,
 # so every command targets ``localhost``. ``enabled: false`` until the
 # Dockerfiles + docker-compose.prod.yml + ``/healthz`` endpoint exist

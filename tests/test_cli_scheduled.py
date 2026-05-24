@@ -58,7 +58,10 @@ def test_ralph_now_dry_run_succeeds(tmp_path: Path, monkeypatch: Any) -> None:
     assert res.exit_code == 0, res.stdout + res.stderr
     assert "dry_run" in res.stdout
     # One direction was filed.
-    dirs = list((tmp_path / "apps" / "sacrifice" / "directions").iterdir())
+    # Phase 7: dry-run direction writes go to state/dry_run_scratch/.
+    dirs = list(
+        (tmp_path / "state" / "dry_run_scratch" / "apps" / "sacrifice" / "directions").iterdir()
+    )
     assert len(dirs) == 1
 
 
@@ -66,7 +69,10 @@ def test_bug_hunt_now_dry_run_succeeds(tmp_path: Path, monkeypatch: Any) -> None
     _patch_root_to_tmp(monkeypatch, tmp_path)
     res = _runner_invoke(["bug-hunt-now", "--app", "sacrifice", "--dry-run"])
     assert res.exit_code == 0, res.stdout + res.stderr
-    dirs = list((tmp_path / "apps" / "sacrifice" / "directions").iterdir())
+    # Phase 7: dry-run direction writes go to state/dry_run_scratch/.
+    dirs = list(
+        (tmp_path / "state" / "dry_run_scratch" / "apps" / "sacrifice" / "directions").iterdir()
+    )
     assert len(dirs) == 1
 
 
@@ -74,7 +80,10 @@ def test_ux_audit_now_dry_run_succeeds(tmp_path: Path, monkeypatch: Any) -> None
     _patch_root_to_tmp(monkeypatch, tmp_path)
     res = _runner_invoke(["ux-audit-now", "--app", "sacrifice", "--dry-run"])
     assert res.exit_code == 0, res.stdout + res.stderr
-    dirs = list((tmp_path / "apps" / "sacrifice" / "directions").iterdir())
+    # Phase 7: dry-run direction writes go to state/dry_run_scratch/.
+    dirs = list(
+        (tmp_path / "state" / "dry_run_scratch" / "apps" / "sacrifice" / "directions").iterdir()
+    )
     assert len(dirs) == 1
 
 
@@ -82,5 +91,8 @@ def test_security_now_dry_run_succeeds(tmp_path: Path, monkeypatch: Any) -> None
     _patch_root_to_tmp(monkeypatch, tmp_path)
     res = _runner_invoke(["security-now", "--app", "sacrifice", "--dry-run"])
     assert res.exit_code == 0, res.stdout + res.stderr
-    dirs = list((tmp_path / "apps" / "sacrifice" / "directions").iterdir())
+    # Phase 7: dry-run direction writes go to state/dry_run_scratch/.
+    dirs = list(
+        (tmp_path / "state" / "dry_run_scratch" / "apps" / "sacrifice" / "directions").iterdir()
+    )
     assert len(dirs) == 1

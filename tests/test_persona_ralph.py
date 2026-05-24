@@ -54,10 +54,15 @@ def test_ralph_dry_run_files_direction_for_fixture_drift(tmp_path: Path) -> None
     assert out.status == "dry_run"
     assert out.findings_count == 1
     assert len(out.directions_filed) == 1
-    # Direction landed under the app's directions/ tree.
+    # Direction landed under the dry-run scratch tree (Phase 7 keeps
+    # apps/<app>/directions/ untouched on dry-run paths).
     direction_id = out.directions_filed[0]
-    matches = list((root / "apps" / "sacrifice" / "directions").glob(f"{direction_id}-*"))
+    scratch = root / "state" / "dry_run_scratch" / "apps" / "sacrifice" / "directions"
+    matches = list(scratch.glob(f"{direction_id}-*"))
     assert len(matches) == 1
+    # The canonical tree stays clean.
+    canonical = root / "apps" / "sacrifice" / "directions"
+    assert not canonical.exists() or not list(canonical.glob(f"{direction_id}-*"))
     direction_md = (matches[0] / "direction.md").read_text(encoding="utf-8")
     assert "fix /healthz" in direction_md
     assert "type: bug" in direction_md

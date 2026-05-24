@@ -58,3 +58,81 @@ factory security-now --app sacrifice --dry-run
 factory ux-audit-now --app sacrifice --dry-run
 ```
 
+## Phase 7 polish: inbox, status, idle, dual-draft
+
+Phase 7 adds the operator-facing polish layer on top of the autonomous
+loop. Every command supports `--dry-run` for offline iteration.
+
+### Multi-app inbox
+
+`factory inbox` aggregates across every `apps/<name>/`:
+
+* Stories awaiting human action (`reviewer_requested_changes`,
+  `blocked_tests_need_clarification`, or any `last_rejection_reason`).
+* Directions in `needs-direction`.
+* Budget warnings when today's spend ≥ 75% of the daily cap.
+* Failed deploys in the last 24h.
+* Active Direction Trackers.
+* Recent scheduled persona runs (last 24h).
+* Idle apps (no work in flight, no recent findings, no recent deploys).
+* Pinned `factory-status` issue numbers per app.
+
+Pass `--app <name>` to restrict to a single app.
+
+### Pinned factory-status GitHub issue (per app)
+
+`factory status-sync --app sacrifice` opens (or updates) one GH issue
+per app, labeled `factory-status`, titled `[FACTORY] <app> live status`.
+The body carries the current mode, queue depth, today's spend, last 5
+deploys, active blockers, and active Direction Trackers. Idempotent.
+
+```bash
+# Dry-run — print the body without touching GH.
+factory status-sync --app sacrifice --dry-run
+
+# Real-run — requires GITHUB_TOKEN.
+factory status-sync --app sacrifice
+```
+
+### Idle detection + `factory-idle` issue
+
+When an app has no in-flight work AND no scheduled persona findings AND
+no deploys for the lookback window (default 2h), the factory opens a
+`factory-idle` issue listing the last 5 directions for context.
+Re-running while the issue is open updates the body — no duplicates.
+
+```bash
+# Dry-run — print the snapshot when idle, or "not idle" otherwise.
+factory idle-check --app sacrifice --dry-run
+
+# Real-run.
+factory idle-check --app sacrifice
+```
+
+### Dual-draft PRs (rare ambiguity workflow)
+
+When a direction has the `(explore)` tag in frontmatter OR PM
+confidence < 0.6, `handle_stories_spawned` produces two
+StoryRecords with materially different interpretations (one per branch
+`story/<n>-<slug>-alt-a` and `story/<n>-<slug>-alt-b`). Each flows
+through the TDD chain independently → two `draft-alternative` PRs land
+plus a comparison comment on the Direction Tracker. No new CLI; fires
+automatically inside `factory pm-sync` when applicable.
+
+### Recommended cron entries (Phase 7)
+
+```cron
+# Pinned factory-status issue — every 5 minutes.
+*/5 * * * * cd ~/software-factory && .venv/bin/factory status-sync --app sacrifice
+
+# Idle detection — every 30 minutes.
+*/30 * * * * cd ~/software-factory && .venv/bin/factory idle-check --app sacrifice
+```
+
+### `_factory_improver` stub persona (v2-dormant)
+
+`factory/personas/_factory_improver.md` is a v2 placeholder for a
+future self-improvement persona. **Not invocable in v1.** It exists so
+a v2 agent that adds `apps/software-factory/` later has a starting
+point. The chain has no handler that routes work to it.
+

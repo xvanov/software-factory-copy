@@ -43,8 +43,11 @@ def test_security_dry_run_files_pledge_rate_limit_direction(tmp_path: Path) -> N
     assert out.status == "dry_run"
     assert out.findings_count == 1
     assert len(out.directions_filed) == 1
+    # Phase 7: dry-run direction writes land under state/dry_run_scratch/.
     matches = list(
-        (root / "apps" / "sacrifice" / "directions").glob(f"{out.directions_filed[0]}-*")
+        (root / "state" / "dry_run_scratch" / "apps" / "sacrifice" / "directions").glob(
+            f"{out.directions_filed[0]}-*"
+        )
     )
     assert len(matches) == 1
     md = (matches[0] / "direction.md").read_text(encoding="utf-8")

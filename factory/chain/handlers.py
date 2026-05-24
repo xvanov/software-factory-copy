@@ -186,15 +186,98 @@ def handle_stories_spawned(
       * No GH issue is created; ``github_issue_number`` is ``None``.
       * No file is written to the app repo; ``story_file_path`` is a
         plausible placeholder under ``stories/0-<slug>.md``.
+
+    Phase 7 — dual-draft branch:
+      * If ``should_spawn_dual_draft(direction, pm_result)`` returns True
+        (``(explore)`` tag OR PM confidence < 0.6), the chain produces
+        TWO interpretations and spawns two StoryRecords (one per
+        interpretation) instead of consuming ``pm_result.child_stories``
+        verbatim. Each story carries the ``alt-a`` / ``alt-b`` suffix in
+        its slug + branch so downstream draft PRs are distinguishable.
     """
+    from factory.chain.dual_draft import (
+        link_alternatives,
+        produce_interpretations,
+        should_spawn_dual_draft,
+    )
+
     db = db_path or (software_factory_root / "state" / "factory.db")
     out: list[StoryRecord] = []
+
+    # Phase 7: dual-draft branch — spawn two interpretation stories,
+    # regardless of how many child_stories the PM emitted.
+    if should_spawn_dual_draft(direction, pm_result):
+        interpretations = produce_interpretations(
+            direction,
+            pm_result,
+            dry_run=dry_run,
+        )
+        # Pick scope from the first child_story if present; otherwise
+        # default to ``backend`` (most common case for ambiguous asks).
+        first_child = (pm_result.get("child_stories") or [{}])[0]
+        scope = str(first_child.get("scope") or "backend")
+
+        for interp in interpretations:
+            slug_base = _slug_of(interp.title or direction.title or "story")
+            # Force interpretation_id into the slug so two draft PRs
+            # don't collide on branch names.
+            slug = f"{slug_base}-{interp.interpretation_id}"[:60].strip("-") or "story"
+            title = f"{interp.title}"[:200]
+            issue_number: int | None = None
+            story_file_path = f"stories/0-{slug}.md"
+            if not dry_run and github_client is not None:
+                repo = github_client.get_repo(app_config.repo)
+                body = (
+                    f"{interp.body}\n\n"
+                    f"_Direction: `{direction.id}-{direction.slug}` "
+                    f"(tracker: #{direction.state.get('tracker_issue', '?')})._\n"
+                    f"\n_Interpretation: `{interp.interpretation_id}` — "
+                    f"{interp.key_assumption_diff}_\n"
+                )
+                issue = repo.create_issue(
+                    title=title,
+                    body=body,
+                    labels=["story", f"scope/{scope}", "draft-alternative"],
+                )
+                issue_number = int(issue.number)
+                story_file_path = f"stories/{issue_number}-{slug}.md"
+
+            story = StoryRecord(
+                direction_id=direction.id or direction.slug,
+                app=direction.app,
+                title=title,
+                slug=slug,
+                scope=scope,
+                state=StoryState.STORY_CREATED.value,
+                github_issue_number=issue_number,
+                github_branch=f"story/{issue_number or 0}-{slug}",
+                story_file_path=story_file_path,
+            )
+            persist_story(story, db)
+            out.append(story)
+
+        # Post the comparison comment on the tracker (real-run only).
+        if not dry_run and github_client is not None and len(out) >= 2:
+            try:
+                link_alternatives(
+                    out[0],
+                    out[1],
+                    interpretations,
+                    direction,
+                    github_client,
+                    app_repo=app_config.repo,
+                )
+            except Exception:
+                # Never fail the spawn on a comparison-comment hiccup.
+                pass
+        return out
+
     child_stories = pm_result.get("child_stories") or []
     for child in child_stories:
         slug = _slug_of(child.get("title") or "story")
         title = str(child.get("title") or "Untitled story")[:200]
         scope = str(child.get("scope") or "backend")
-        issue_number: int | None = None
+        issue_number = None
         story_file_path = f"stories/0-{slug}.md"
 
         if not dry_run and github_client is not None:
@@ -408,6 +491,7 @@ def handle_sm(
     elif dry_run:
         result = _dry_run_sm(story, direction, software_factory_root)
     else:
+        from factory.app_config import resolve_app_repo_path
         from factory.context.loader import compose_context_prelude
         from factory.runner import text_run
 
@@ -415,7 +499,7 @@ def handle_sm(
         persona_prompt = _read_persona_prompt(persona)
         prelude = compose_context_prelude(
             persona=persona,
-            app_repo_path=software_factory_root / "apps" / story.app,
+            app_repo_path=resolve_app_repo_path(app_config, software_factory_root),
             task_scope=story.scope,
         )
         flow_text = ""
@@ -605,6 +689,7 @@ def handle_test_design(
     if dry_run:
         plan = _dry_run_test_design(story)
     else:
+        from factory.app_config import resolve_app_repo_path
         from factory.context.loader import compose_context_prelude
         from factory.runner import text_run
 
@@ -612,7 +697,7 @@ def handle_test_design(
         persona_prompt = _read_persona_prompt(persona)
         prelude = compose_context_prelude(
             persona=persona,
-            app_repo_path=software_factory_root / "apps" / story.app,
+            app_repo_path=resolve_app_repo_path(app_config, software_factory_root),
             task_scope=story.scope,
         )
         story_file_content = ""
@@ -877,6 +962,7 @@ def handle_review(
     elif dry_run:
         result = _dry_run_review(story)
     else:
+        from factory.app_config import resolve_app_repo_path
         from factory.context.loader import compose_context_prelude
         from factory.runner import text_run
 
@@ -884,7 +970,7 @@ def handle_review(
         persona_prompt = _read_persona_prompt(persona)
         prelude = compose_context_prelude(
             persona=persona,
-            app_repo_path=software_factory_root / "apps" / story.app,
+            app_repo_path=resolve_app_repo_path(app_config, software_factory_root),
             task_scope=story.scope,
         )
         full_prompt = (
@@ -993,6 +1079,7 @@ def handle_tech_writer(
     elif dry_run:
         result = _dry_run_tech_writer(story)
     else:
+        from factory.app_config import resolve_app_repo_path
         from factory.context.loader import compose_context_prelude
         from factory.runner import text_run
 
@@ -1000,7 +1087,7 @@ def handle_tech_writer(
         persona_prompt = _read_persona_prompt(persona)
         prelude = compose_context_prelude(
             persona=persona,
-            app_repo_path=software_factory_root / "apps" / story.app,
+            app_repo_path=resolve_app_repo_path(app_config, software_factory_root),
             task_scope=story.scope,
         )
         full_prompt = (

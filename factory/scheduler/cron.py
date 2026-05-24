@@ -252,6 +252,7 @@ def due_schedules(
     *,
     now: datetime | None = None,
     db_path: Path | None = None,
+    audit_app: str | None = None,
 ) -> list[DueSchedule]:
     """Return every schedule whose previous fire-time post-dates its last run.
 
@@ -259,6 +260,14 @@ def due_schedules(
     embedded; rate-limited schedules are returned with
     ``rate_limit_hit=True`` so the caller can record them as
     ``rate_limited`` instead of silently dropping.
+
+    For every rate-limited schedule we also write a
+    ``ScheduledRunRecord`` row with ``status="rate_limited"`` so the audit
+    trail captures the skip — otherwise an operator inspecting
+    ``factory schedules`` would see nothing for a slot that "fired but
+    was refused", making rate-limit-driven gaps invisible.
+    ``audit_app`` (default ``"unknown"``) tags the audit row so the
+    inbox can group rate-limited events per-app.
     """
     from factory.settings.loader import load_settings
 
@@ -293,8 +302,44 @@ def due_schedules(
                 if count >= cap:
                     rate_limited = True
         reason = "first_run" if get_schedule_row(schedule.name, db) is None else "due"
+        if rate_limited:
+            # P7.0 #4: emit an audit row so operators can see rate-limit
+            # skips in ``factory inbox`` and the per-persona audit trail.
+            _record_rate_limited_audit_row(
+                persona=schedule.persona,
+                app=audit_app or "unknown",
+                db_path=db,
+            )
         out.append(DueSchedule(schedule=schedule, reason=reason, rate_limit_hit=rate_limited))
     return out
+
+
+def _record_rate_limited_audit_row(*, persona: str, app: str, db_path: Path) -> None:
+    """Write a ScheduledRunRecord row marking a rate-limited skip.
+
+    Best-effort — failure here is logged silently because the cron path
+    must not block on an audit-write hiccup. Imported lazily to keep
+    the scheduler package free of chain imports at module-import time.
+    """
+    try:
+        from factory.chain.scheduled_tasks import ScheduledRunRecord
+
+        eng = _engine(db_path)
+        rec = ScheduledRunRecord(
+            persona=persona,
+            app=app,
+            duration_s=0.0,
+            findings_count=0,
+            directions_filed_json="[]",
+            status="rate_limited",
+            error=f"{persona}_rate_limit_exceeded",
+            dry_run=False,
+        )
+        with Session(eng) as session:
+            session.add(rec)
+            session.commit()
+    except Exception:  # noqa: BLE001 - audit is best-effort
+        return
 
 
 def next_fire(schedule: Schedule, *, now: datetime | None = None) -> datetime:
