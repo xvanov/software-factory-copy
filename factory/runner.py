@@ -459,6 +459,7 @@ def text_run(
     base_url: str | None = None,
     db_path: Path | None = None,
     dry_run: bool = False,
+    max_tokens: int | None = None,
 ) -> str | dict[str, Any]:
     """Single ``litellm.completion()`` call. Returns text, or a dict if ``schema`` set.
 
@@ -518,6 +519,8 @@ def text_run(
     }
     if base_url:
         kwargs["base_url"] = base_url
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
     if schema is not None:
         kwargs["response_format"] = {"type": "json_object"}
         messages[0]["content"] = (

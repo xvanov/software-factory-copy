@@ -1,0 +1,154 @@
+"""Direction Tracker GitHub issue — open/update + needs-direction comments.
+
+The tracker is the *one issue per direction* the factory keeps current with
+links to child stories, current status, and any blockers. Idempotent: a
+direction's ``state.yaml`` carries ``tracker_issue: <number>`` once an issue
+exists, and subsequent calls update that issue in place.
+
+The ``github_client`` parameter is the ``pygithub.Github`` object (or a
+duck-type mock for tests). We don't construct it here — the caller wires
+authentication so the same client can be reused across calls.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from factory.app_config import AppConfig
+from factory.directions.parser import Direction
+from factory.directions.watcher import merge_state
+
+_TRACKER_LABEL = "direction-tracker"
+_NEEDS_DIRECTION_LABEL = "needs-direction"
+
+
+def _format_tracker_body(
+    direction: Direction,
+    *,
+    pm_summary: str | None,
+    child_issue_numbers: list[int],
+    extra_sections: list[str] | None = None,
+) -> str:
+    parts: list[str] = []
+    parts.append(f"**Direction:** `{direction.id}-{direction.slug}`")
+    parts.append(f"**App:** `{direction.app}`")
+    if direction.type_tag:
+        parts.append(f"**Type:** `{direction.type_tag}`")
+    parts.append(f"**Status:** `{direction.status}`")
+    parts.append("")
+    if pm_summary:
+        parts.append("## Summary")
+        parts.append(pm_summary.strip())
+        parts.append("")
+    parts.append("## Child stories")
+    if child_issue_numbers:
+        for n in child_issue_numbers:
+            parts.append(f"- #{n}")
+    else:
+        parts.append("_(no child stories yet)_")
+    parts.append("")
+    if extra_sections:
+        for section in extra_sections:
+            parts.append(section.rstrip())
+            parts.append("")
+    parts.append("---")
+    parts.append("_This issue is maintained by the factory. Edits will be overwritten._")
+    return "\n".join(parts)
+
+
+def _build_labels(direction: Direction, pm_labels: list[str]) -> list[str]:
+    labels = {_TRACKER_LABEL}
+    if direction.type_tag:
+        labels.add(direction.type_tag)
+    for lbl in pm_labels:
+        if lbl:
+            labels.add(lbl)
+    return sorted(labels)
+
+
+def open_or_update_tracker_issue(
+    direction: Direction,
+    app_config: AppConfig,
+    github_client: Any,
+    *,
+    pm_result: dict[str, Any] | None = None,
+    child_issue_numbers: list[int] | None = None,
+) -> int:
+    """Idempotently open or update the Direction Tracker issue.
+
+    Returns the issue number. Persists the number into ``state.yaml`` under
+    ``tracker_issue`` on first creation; subsequent calls re-use it.
+    """
+    repo = github_client.get_repo(app_config.repo)
+    pm_result = pm_result or {}
+    child_issue_numbers = child_issue_numbers or []
+
+    title = pm_result.get("tracker_title") or f"[DIRECTION] {direction.title}"
+    if not title.startswith("[DIRECTION]"):
+        title = f"[DIRECTION] {title}"
+    if len(title) > 256:
+        title = title[:253] + "..."
+
+    pm_body = pm_result.get("tracker_body")
+    pm_labels: list[str] = list(pm_result.get("labels") or [])
+    priority = pm_result.get("priority")
+    if priority and not any(lbl.startswith("priority/") for lbl in pm_labels):
+        pm_labels.append(f"priority/{priority}")
+
+    body = _format_tracker_body(
+        direction,
+        pm_summary=pm_body,
+        child_issue_numbers=child_issue_numbers,
+    )
+    labels = _build_labels(direction, pm_labels)
+
+    existing_number = direction.state.get("tracker_issue") if direction.state else None
+    if isinstance(existing_number, int) and existing_number > 0:
+        issue = repo.get_issue(existing_number)
+        issue.edit(title=title, body=body, labels=labels)
+        return existing_number
+
+    issue = repo.create_issue(title=title, body=body, labels=labels)
+    number = int(issue.number)
+    merge_state(direction, {"tracker_issue": number})
+    return number
+
+
+def record_needs_direction(
+    direction: Direction,
+    missing: list[str],
+    app_config: AppConfig,
+    github_client: Any,
+    *,
+    pm_result: dict[str, Any] | None = None,
+) -> int:
+    """Open/update the tracker issue with the ``needs-direction`` label + comment.
+
+    Direction status stays ``created`` / ``needs-direction`` so the watcher
+    picks it up again after the user updates the on-disk direction.
+    """
+    pm_result = pm_result or {}
+    extra_labels = list(pm_result.get("labels") or [])
+    if _NEEDS_DIRECTION_LABEL not in extra_labels:
+        extra_labels.append(_NEEDS_DIRECTION_LABEL)
+    merged_pm = dict(pm_result)
+    merged_pm["labels"] = extra_labels
+
+    issue_number = open_or_update_tracker_issue(
+        direction,
+        app_config,
+        github_client,
+        pm_result=merged_pm,
+        child_issue_numbers=[],
+    )
+
+    repo = github_client.get_repo(app_config.repo)
+    issue = repo.get_issue(issue_number)
+    missing_text = ", ".join(missing) if missing else "(unspecified)"
+    issue.create_comment(
+        f"**Needs direction.** Missing: {missing_text}.\n\n"
+        "Add the missing artifact(s) (flow.md / api_spec.md / acceptance "
+        "criteria) to the direction directory and the factory will re-validate "
+        "on the next pm-sync."
+    )
+    return issue_number

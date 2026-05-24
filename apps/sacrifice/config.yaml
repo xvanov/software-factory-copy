@@ -1,0 +1,7 @@
+name: sacrifice
+repo: xvanov/sacrifice
+default_branch: main
+context_dir: context
+deploy:
+  enabled: false  # populate later
+models: {}  # use default routing
