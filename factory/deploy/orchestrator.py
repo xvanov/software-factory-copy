@@ -29,7 +29,6 @@ app's ``apps/<name>/config.yaml`` ``deploy:`` block.
 from __future__ import annotations
 
 import json
-import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -40,6 +39,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.app_config import DeployConfig, load_app_config
 from factory.deploy.models import DeployActionRecord, DeployQueueEntry
+from factory.deploy.runner import run_command
 from factory.settings.enforcer import can_dispatch
 from factory.settings.loader import load_settings
 from factory.settings.modes import get_mode, set_mode
@@ -300,20 +300,36 @@ class _FixtureQueue:
         return _FixtureOutput(exit_code=exit_code, stdout=stdout, stderr=stderr)
 
 
+def _resolve_cwd(working_directory: str | None, root: Path) -> Path:
+    """Resolve the deploy step's working directory against the factory root.
+
+    ``working_directory`` is interpreted relative to ``root`` when it is a
+    relative path, and used as-is when absolute. ``None`` falls back to
+    ``root`` itself.
+    """
+    if working_directory is None:
+        return root
+    wd = Path(working_directory)
+    if wd.is_absolute():
+        return wd
+    return (root / wd).resolve()
+
+
 def _run_step(
     *,
     phase: str,
     command: str,
     dry_run: bool,
     fixtures: _FixtureQueue,
+    deploy_config: DeployConfig | None = None,
+    root: Path | None = None,
 ) -> StepResult:
     """Execute a single shell step, returning a StepResult.
 
     In dry-run mode, NO subprocess is launched — the result comes from
-    ``fixtures``. In real-run, ``subprocess.run`` is invoked with
-    ``shell=True`` (the commands are user-authored shell strings, so
-    shell expansion is intentional and contained to the configured
-    command string).
+    ``fixtures``. In real-run, delegate to ``factory.deploy.runner.run_command``
+    so the deploy honors ``timeout_seconds``, ``working_directory``, and
+    ``env_var_passthrough`` from the app's deploy config.
     """
     started = time.monotonic()
     if dry_run:
@@ -327,20 +343,25 @@ def _run_step(
             stderr_excerpt=_excerpt(fx.stderr),
             duration_seconds=round(elapsed, 4),
         )
-    proc = subprocess.run(  # noqa: S602 - shell=True is intentional; see docstring
+    # Real run: delegate to runner.run_command so timeout/cwd/env are honored.
+    assert deploy_config is not None, "deploy_config required for real-run _run_step"
+    assert root is not None, "root required for real-run _run_step"
+    cwd = _resolve_cwd(deploy_config.working_directory, root)
+    cwd.mkdir(parents=True, exist_ok=True)
+    result = run_command(
         command,
-        shell=True,
-        capture_output=True,
-        text=True,
-        check=False,
+        cwd=cwd,
+        env_var_passthrough=deploy_config.env_var_passthrough,
+        timeout=deploy_config.timeout_seconds,
+        phase=phase,
     )
     elapsed = time.monotonic() - started
     return StepResult(
         phase=phase,
         command=command,
-        exit_code=int(proc.returncode),
-        stdout_excerpt=_excerpt(proc.stdout),
-        stderr_excerpt=_excerpt(proc.stderr),
+        exit_code=int(result.exit_code),
+        stdout_excerpt=_excerpt(result.stdout),
+        stderr_excerpt=_excerpt(result.stderr),
         duration_seconds=round(elapsed, 4),
     )
 
@@ -351,6 +372,7 @@ def _run_health_check(
     dry_run: bool,
     fixtures: _FixtureQueue,
     sleep_fn: Any = time.sleep,
+    root: Path | None = None,
 ) -> StepResult:
     """Health check with poll-and-retry semantics.
 
@@ -368,6 +390,8 @@ def _run_health_check(
             command=command,
             dry_run=dry_run,
             fixtures=fixtures,
+            deploy_config=deploy_config,
+            root=root,
         )
         step.attempts = attempt
         last = step
@@ -506,7 +530,14 @@ def deploy_post_merge(  # noqa: C901 - top-level orchestration; refactor when ph
 
     # 1. pre_deploy_commands
     for cmd in dcfg.pre_deploy_commands:
-        step = _run_step(phase=PHASE_PRE_DEPLOY, command=cmd, dry_run=dry_run, fixtures=fixtures)
+        step = _run_step(
+            phase=PHASE_PRE_DEPLOY,
+            command=cmd,
+            dry_run=dry_run,
+            fixtures=fixtures,
+            deploy_config=dcfg,
+            root=root,
+        )
         action.steps.append(step)
         if step.exit_code != 0:
             failure_reason = f"pre_deploy_failed: {cmd}"
@@ -522,6 +553,8 @@ def deploy_post_merge(  # noqa: C901 - top-level orchestration; refactor when ph
                 command=dcfg.deploy_command,
                 dry_run=dry_run,
                 fixtures=fixtures,
+                deploy_config=dcfg,
+                root=root,
             )
             action.steps.append(step)
             if step.exit_code != 0:
@@ -537,6 +570,7 @@ def deploy_post_merge(  # noqa: C901 - top-level orchestration; refactor when ph
                 dry_run=dry_run,
                 fixtures=fixtures,
                 sleep_fn=sleep_fn,
+                root=root,
             )
             action.steps.append(step)
             if step.exit_code != 0:
@@ -554,6 +588,8 @@ def deploy_post_merge(  # noqa: C901 - top-level orchestration; refactor when ph
                 command=dcfg.smoke_test_command,
                 dry_run=dry_run,
                 fixtures=fixtures,
+                deploy_config=dcfg,
+                root=root,
             )
             action.steps.append(step)
             if step.exit_code == 0:
@@ -571,21 +607,29 @@ def deploy_post_merge(  # noqa: C901 - top-level orchestration; refactor when ph
                 command=cmd,
                 dry_run=dry_run,
                 fixtures=fixtures,
+                deploy_config=dcfg,
+                root=root,
             )
             action.steps.append(step)
         action.mode_after = mode
     else:
         action.error = failure_reason
-        # Rollback path.
+        # Rollback path. ``rolled_back`` is True only when the rollback
+        # step itself exits 0 — a rollback that fails to actually roll
+        # back leaves the system in an undefined state and must be
+        # reflected as ``status="errored"`` in the persisted record (see
+        # ``_status_from_action``).
         if dcfg.rollback_command:
             rb_step = _run_step(
                 phase=PHASE_ROLLBACK,
                 command=dcfg.rollback_command,
                 dry_run=dry_run,
                 fixtures=fixtures,
+                deploy_config=dcfg,
+                root=root,
             )
             action.steps.append(rb_step)
-            action.rolled_back = True
+            action.rolled_back = rb_step.exit_code == 0
         # p0 issue.
         action.p0_issue_number = _file_p0_issue(
             app=app,
