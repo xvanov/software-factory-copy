@@ -177,7 +177,12 @@ def rollback_watch_tick(
                 revert_pr_number = 9000 + m.pr_number
                 regression_issue_number = 8000 + m.pr_number
 
-            mode_after = set_mode("fix-only", root, db_path=db)
+            if not dry_run:
+                mode_after = set_mode("fix-only", root, db_path=db)
+            else:
+                # Dry-run synthesizes the would-be mode without persisting it.
+                # Real factory state stays at whatever mode the operator set.
+                mode_after = "fix-only"
             action = RollbackAction(
                 app=app,
                 pr_number=m.pr_number,

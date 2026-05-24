@@ -66,7 +66,9 @@ def factory_root_with_recent_merge(tmp_path: Path) -> Path:
 
 
 def test_red_main_ci_triggers_revert(factory_root_with_recent_merge: Path) -> None:
+    """Dry-run case: action carries the would-be mode but factory state is NOT mutated."""
     root = factory_root_with_recent_merge
+    mode_before = get_mode(root)
     actions = rollback_watch_tick(
         root,
         "sacrifice",
@@ -80,9 +82,12 @@ def test_red_main_ci_triggers_revert(factory_root_with_recent_merge: Path) -> No
     assert a.revert_pr_number is not None
     assert a.regression_issue_number is not None
     assert a.failing_tests == ["tests/test_foo.py::test_bar"]
+    # The RollbackAction reports the would-be mode after rollback...
     assert a.mode_after == "fix-only"
-    # And the global mode actually flipped.
-    assert get_mode(root) == "fix-only"
+    # ...but in dry-run the actual factory mode must NOT be mutated. The
+    # P5.0 cleanup wraps set_mode() in `if not dry_run`; verify by reading
+    # the live mode and asserting it's unchanged from before the tick.
+    assert get_mode(root) == mode_before
 
 
 def test_green_main_ci_no_op(factory_root_with_recent_merge: Path) -> None:
