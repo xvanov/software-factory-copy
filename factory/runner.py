@@ -384,8 +384,10 @@ async def sandbox_run(
     base_url = llm_config.base_url
     api_version: str | None = None
     if llm_config.model.startswith("azure_ai/") or llm_config.model.startswith("azure/"):
-        base_url = base_url or os.environ.get("AZURE_AI_API_BASE") or os.environ.get(
-            "AZURE_FOUNDRY_ENDPOINT"
+        base_url = (
+            base_url
+            or os.environ.get("AZURE_AI_API_BASE")
+            or os.environ.get("AZURE_FOUNDRY_ENDPOINT")
         )
         api_version = os.environ.get("AZURE_AI_API_VERSION") or os.environ.get(
             "AZURE_FOUNDRY_API_VERSION"

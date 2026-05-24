@@ -1,8 +1,9 @@
 """Gate: ``lint-clean``.
 
-Runs ``app_config.gates.lint_command`` in the app repo. Real-run only;
-dry-run trusts a pre-recorded flag (absent for Phase 4 — default pass
-with a "skipped" reason).
+Runs ``app_config.gates.lint_command`` in the app repo. Real-run shells
+out; dry-run honors ``StoryRecord.lint_passed``: True/False round-trip as
+pass/fail, ``None`` blocks the gate as ``lint_not_recorded`` so the dry
+chain can't claim a clean lint signal it never observed.
 """
 
 from __future__ import annotations
@@ -17,8 +18,26 @@ def evaluate(pr: PRContext, app_config: AppConfig) -> GateResult:
     if not cmd:
         return GateResult(label=label, passed=True, reason="no lint_command configured")
     if pr.dry_run:
+        flag = getattr(pr.story, "lint_passed", None) if pr.story is not None else None
+        if flag is True:
+            return GateResult(
+                label=label,
+                passed=True,
+                reason="story.lint_passed=True",
+                details={"command": cmd},
+            )
+        if flag is False:
+            return GateResult(
+                label=label,
+                passed=False,
+                reason="story.lint_passed=False",
+                details={"command": cmd},
+            )
         return GateResult(
-            label=label, passed=True, reason=f"dry-run; would run: {cmd}", details={"command": cmd}
+            label=label,
+            passed=False,
+            reason="lint_not_recorded",
+            details={"command": cmd},
         )
     if pr.repo_root is None:
         return GateResult(label=label, passed=False, reason="no repo_root for real-run gate")

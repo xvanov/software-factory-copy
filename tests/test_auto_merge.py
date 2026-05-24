@@ -61,6 +61,12 @@ def _good_story(*, state: str = StoryState.PR_OPEN.value) -> StoryRecord:
         test_implementer_result_json=json.dumps({"exit_code": 1, "slop_detected": False}),
         tech_writer_result_json=json.dumps({"context_updates": [{"path": "context/project.md"}]}),
         github_pr_number=42,
+        # Phase 8 cleanup: dry-run lint/format/types/coverage gates now require
+        # an explicit recorded outcome.
+        lint_passed=True,
+        format_passed=True,
+        types_passed=True,
+        coverage_passed=True,
     )
 
 

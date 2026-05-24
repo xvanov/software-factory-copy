@@ -1,4 +1,8 @@
-"""Gate: ``format-clean``. Runs ``format_check_command``."""
+"""Gate: ``format-clean``. Runs ``format_check_command``.
+
+Dry-run honors ``StoryRecord.format_passed``; ``None`` blocks as
+``format_not_recorded`` so the gate cannot vacuously pass.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +16,26 @@ def evaluate(pr: PRContext, app_config: AppConfig) -> GateResult:
     if not cmd:
         return GateResult(label=label, passed=True, reason="no format_check_command configured")
     if pr.dry_run:
+        flag = getattr(pr.story, "format_passed", None) if pr.story is not None else None
+        if flag is True:
+            return GateResult(
+                label=label,
+                passed=True,
+                reason="story.format_passed=True",
+                details={"command": cmd},
+            )
+        if flag is False:
+            return GateResult(
+                label=label,
+                passed=False,
+                reason="story.format_passed=False",
+                details={"command": cmd},
+            )
         return GateResult(
-            label=label, passed=True, reason=f"dry-run; would run: {cmd}", details={"command": cmd}
+            label=label,
+            passed=False,
+            reason="format_not_recorded",
+            details={"command": cmd},
         )
     if pr.repo_root is None:
         return GateResult(label=label, passed=False, reason="no repo_root for real-run gate")

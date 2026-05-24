@@ -122,9 +122,7 @@ def test_produce_interpretations_real_run_passes_model_id() -> None:
             ]
         }
 
-    interps = produce_interpretations(
-        d, {"confidence": 0.4}, dry_run=False, text_run=fake_text_run
-    )
+    interps = produce_interpretations(d, {"confidence": 0.4}, dry_run=False, text_run=fake_text_run)
     assert len(interps) == 2
     assert captured["persona"] == "analyst"
     # model_id must be a non-empty string — the actual value tracks routes.yaml.

@@ -88,6 +88,14 @@ class StoryRecord(SQLModel, table=True):
     error: str | None = None
     # Phase 3: last cap/mode rejection reason emitted by the dispatcher.
     last_rejection_reason: str | None = None
+    # Phase 8 cleanup: per-gate recorded outcomes the dev/CI handler writes
+    # after running each tool. Dry-run gates read these instead of returning
+    # an unconditional pass — None means "not run yet" and is treated as a
+    # blocking missing-signal.
+    lint_passed: bool | None = None
+    format_passed: bool | None = None
+    types_passed: bool | None = None
+    coverage_passed: bool | None = None
 
 
 # Event names — strings the chain emits when a handler completes.

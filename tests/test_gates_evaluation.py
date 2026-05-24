@@ -59,6 +59,10 @@ def _story(
     test_plan: dict | None = None,
     test_impl: dict | None = None,
     tech_writer: dict | None = None,
+    lint_passed: bool | None = None,
+    format_passed: bool | None = None,
+    types_passed: bool | None = None,
+    coverage_passed: bool | None = None,
 ) -> StoryRecord:
     return StoryRecord(
         direction_id="002",
@@ -70,6 +74,10 @@ def _story(
         test_plan_json=json.dumps(test_plan) if test_plan is not None else None,
         test_implementer_result_json=json.dumps(test_impl) if test_impl is not None else None,
         tech_writer_result_json=json.dumps(tech_writer) if tech_writer is not None else None,
+        lint_passed=lint_passed,
+        format_passed=format_passed,
+        types_passed=types_passed,
+        coverage_passed=coverage_passed,
     )
 
 
@@ -270,13 +278,34 @@ def test_flow_verified_passes_vacuously_with_no_flow_or_api(
 # --- coverage_verified --------------------------------------------------- #
 
 
-def test_coverage_verified_dry_run_passes_with_command(
+def test_coverage_verified_dry_run_passes_when_flag_recorded_true(
     app_cfg_with_commands: AppConfig,
 ) -> None:
-    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", dry_run=True)
+    story = _story(coverage_passed=True)
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", story=story, dry_run=True)
     r = coverage_verified.evaluate(pr, app_cfg_with_commands)
     assert r.passed
-    assert "dry-run" in r.reason
+    assert "coverage_passed=True" in r.reason
+
+
+def test_coverage_verified_dry_run_fails_when_flag_not_recorded(
+    app_cfg_with_commands: AppConfig,
+) -> None:
+    """Cleanup: dry-run no longer silently passes when no flag was recorded."""
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", dry_run=True)
+    r = coverage_verified.evaluate(pr, app_cfg_with_commands)
+    assert not r.passed
+    assert r.reason == "coverage_not_recorded"
+
+
+def test_coverage_verified_dry_run_fails_when_flag_recorded_false(
+    app_cfg_with_commands: AppConfig,
+) -> None:
+    story = _story(coverage_passed=False)
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", story=story, dry_run=True)
+    r = coverage_verified.evaluate(pr, app_cfg_with_commands)
+    assert not r.passed
+    assert "coverage_passed=False" in r.reason
 
 
 def test_coverage_verified_passes_when_no_command(app_cfg_empty: AppConfig) -> None:
@@ -289,22 +318,58 @@ def test_coverage_verified_passes_when_no_command(app_cfg_empty: AppConfig) -> N
 # --- lint / format / types_clean ---------------------------------------- #
 
 
-def test_lint_clean_dry_run_passes_with_command(app_cfg_with_commands: AppConfig) -> None:
-    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", dry_run=True)
+def test_lint_clean_dry_run_passes_when_flag_recorded_true(
+    app_cfg_with_commands: AppConfig,
+) -> None:
+    story = _story(lint_passed=True)
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", story=story, dry_run=True)
     r = lint_clean.evaluate(pr, app_cfg_with_commands)
     assert r.passed
 
 
-def test_format_clean_dry_run_passes_with_command(app_cfg_with_commands: AppConfig) -> None:
+def test_lint_clean_dry_run_fails_when_flag_not_recorded(
+    app_cfg_with_commands: AppConfig,
+) -> None:
     pr = PRContext(pr_number=1, head_sha="a", base_branch="main", dry_run=True)
+    r = lint_clean.evaluate(pr, app_cfg_with_commands)
+    assert not r.passed
+    assert r.reason == "lint_not_recorded"
+
+
+def test_format_clean_dry_run_passes_when_flag_recorded_true(
+    app_cfg_with_commands: AppConfig,
+) -> None:
+    story = _story(format_passed=True)
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", story=story, dry_run=True)
     r = format_clean.evaluate(pr, app_cfg_with_commands)
     assert r.passed
 
 
-def test_types_clean_dry_run_passes_with_command(app_cfg_with_commands: AppConfig) -> None:
+def test_format_clean_dry_run_fails_when_flag_not_recorded(
+    app_cfg_with_commands: AppConfig,
+) -> None:
     pr = PRContext(pr_number=1, head_sha="a", base_branch="main", dry_run=True)
+    r = format_clean.evaluate(pr, app_cfg_with_commands)
+    assert not r.passed
+    assert r.reason == "format_not_recorded"
+
+
+def test_types_clean_dry_run_passes_when_flag_recorded_true(
+    app_cfg_with_commands: AppConfig,
+) -> None:
+    story = _story(types_passed=True)
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", story=story, dry_run=True)
     r = types_clean.evaluate(pr, app_cfg_with_commands)
     assert r.passed
+
+
+def test_types_clean_dry_run_fails_when_flag_not_recorded(
+    app_cfg_with_commands: AppConfig,
+) -> None:
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", dry_run=True)
+    r = types_clean.evaluate(pr, app_cfg_with_commands)
+    assert not r.passed
+    assert r.reason == "types_not_recorded"
 
 
 def test_lint_clean_real_run_no_repo_root_fails(app_cfg_with_commands: AppConfig) -> None:
@@ -381,6 +446,13 @@ def test_evaluate_all_gates_returns_every_label(
         test_plan={"test_plan": [{"name": "test_a", "key_steps": ["x"]}]},
         test_impl={"exit_code": 1, "slop_detected": False},
         tech_writer={"context_updates": [{"path": "context/project.md"}]},
+        # Phase 8 cleanup: dry-run lint/format/types/coverage gates now require
+        # recorded outcomes from the dev/CI handler. The happy-path fixture
+        # opts in to all four.
+        lint_passed=True,
+        format_passed=True,
+        types_passed=True,
+        coverage_passed=True,
     )
     pr = PRContext(
         pr_number=1,

@@ -4,11 +4,9 @@ Runs ``app_config.gates.coverage_command`` (which should embed
 ``--cov-fail-under=N`` or its equivalent for the app's language). The
 exit code is the signal: 0 → coverage threshold met.
 
-Dry-run path trusts a recorded flag on StoryRecord (currently sourced
-from the test_implementer / dev handler results; absent for Phase 4
-which only ships the gate plumbing — defaults to pass with a "skipped"
-reason). When the chain handlers wire a ``coverage_exit_code`` field
-in future phases, this gate reads it.
+Dry-run honors ``StoryRecord.coverage_passed``; ``None`` blocks as
+``coverage_not_recorded`` so the chain cannot claim a coverage signal
+the dev/test handler never observed.
 """
 
 from __future__ import annotations
@@ -28,10 +26,25 @@ def evaluate(pr: PRContext, app_config: AppConfig) -> GateResult:
         )
 
     if pr.dry_run:
+        flag = getattr(pr.story, "coverage_passed", None) if pr.story is not None else None
+        if flag is True:
+            return GateResult(
+                label=label,
+                passed=True,
+                reason="story.coverage_passed=True",
+                details={"command": cmd},
+            )
+        if flag is False:
+            return GateResult(
+                label=label,
+                passed=False,
+                reason="story.coverage_passed=False",
+                details={"command": cmd},
+            )
         return GateResult(
             label=label,
-            passed=True,
-            reason=f"dry-run; would run: {cmd}",
+            passed=False,
+            reason="coverage_not_recorded",
             details={"command": cmd},
         )
 

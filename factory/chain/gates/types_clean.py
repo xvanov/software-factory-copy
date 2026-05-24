@@ -1,4 +1,8 @@
-"""Gate: ``types-clean``. Runs ``type_check_command``."""
+"""Gate: ``types-clean``. Runs ``type_check_command``.
+
+Dry-run honors ``StoryRecord.types_passed``; ``None`` blocks as
+``types_not_recorded``.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +16,26 @@ def evaluate(pr: PRContext, app_config: AppConfig) -> GateResult:
     if not cmd:
         return GateResult(label=label, passed=True, reason="no type_check_command configured")
     if pr.dry_run:
+        flag = getattr(pr.story, "types_passed", None) if pr.story is not None else None
+        if flag is True:
+            return GateResult(
+                label=label,
+                passed=True,
+                reason="story.types_passed=True",
+                details={"command": cmd},
+            )
+        if flag is False:
+            return GateResult(
+                label=label,
+                passed=False,
+                reason="story.types_passed=False",
+                details={"command": cmd},
+            )
         return GateResult(
-            label=label, passed=True, reason=f"dry-run; would run: {cmd}", details={"command": cmd}
+            label=label,
+            passed=False,
+            reason="types_not_recorded",
+            details={"command": cmd},
         )
     if pr.repo_root is None:
         return GateResult(label=label, passed=False, reason="no repo_root for real-run gate")
