@@ -1,0 +1,30 @@
+# Per-persona LiteLLM model routing.
+# Edit freely — the model_router reads this at runtime. Self-improvement seam.
+#
+# Schema:
+#   routes.<persona>: <model_id>            # static persona → model
+#   routes.<persona>.<difficulty>: <id>     # difficulty-aware persona (dev today)
+#   defaults.fallback: <model_id>           # used when persona missing
+
+routes:
+  pm: deepseek/deepseek-chat
+  analyst: deepseek/deepseek-chat
+  architect: anthropic/claude-opus-4-7
+  sm: deepseek/deepseek-chat
+  dev:
+    standard: deepseek/deepseek-coder
+    hard: anthropic/claude-sonnet-4-6
+  test_designer: anthropic/claude-opus-4-7
+  test_implementer: deepseek/deepseek-coder
+  reviewer: anthropic/claude-opus-4-7
+  tech_writer: deepseek/deepseek-chat
+  release_manager: deepseek/deepseek-chat
+  onboarder: anthropic/claude-opus-4-7
+  ux_designer: anthropic/claude-opus-4-7
+  ux_auditor: anthropic/claude-opus-4-7
+  ralph: deepseek/deepseek-chat
+  bug_hunter: deepseek/deepseek-chat
+  security: anthropic/claude-opus-4-7
+
+defaults:
+  fallback: deepseek/deepseek-chat
