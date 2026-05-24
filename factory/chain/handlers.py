@@ -979,6 +979,12 @@ def handle_tech_writer(
     # there. To keep dry-run truly dry (NO writes outside the factory state),
     # we DO NOT call apply_context_updates in dry-run. Instead we record the
     # updates that WOULD have been applied.
+    #
+    # IMPORTANT: We MUST do the write BEFORE advancing state to TECH_WRITER_DONE
+    # so a failed apply leaves the chain in a recoverable place. If the writer
+    # produced a forbidden path (or any other write failure), we transition to
+    # REVIEWER_REQUESTED_CHANGES so the chain routes back through the dev loop
+    # instead of pretending docs are current.
     if not dry_run:
         updates_raw = result.get("context_updates") or []
         updates = [
@@ -988,15 +994,20 @@ def handle_tech_writer(
             for u in updates_raw
         ]
         repo_path = software_factory_root / "apps" / story.app
-        # apply_context_updates raises ForbiddenContextPathError on bad paths;
-        # let it bubble up so the handler returns an error.
         try:
             apply_context_updates(updates, repo_path)
         except Exception as exc:
+            # Bounce back through reviewer_requested_changes: tech_writer
+            # produced an invalid context update; either the writer is
+            # confused (rare) or it tried to write to a forbidden path. The
+            # next dev cycle gets a clean shot.
+            story.state = advance(story, EVENT_REVIEWER_REQUEST_CHANGES).value
+            story.error = f"context update failed: {exc}"
+            persist_story(story, db)
             return HandlerResult(
                 next_state=StoryState(story.state),
                 payload=result,
-                error=f"context update failed: {exc}",
+                error=story.error,
             )
 
     story.state = advance(story, EVENT_TECH_WRITER_DONE).value

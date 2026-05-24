@@ -102,10 +102,12 @@ def test_forbidden_path_raises_error_and_does_not_write(
     result = handle_tech_writer(
         s, app_config, temp_root, dry_run=False, db_path=db, fixture=fixture
     )
-    # State did advance to TECH_WRITER_DONE before the apply failure occurred
-    # because we transitioned state at the top of the handler; the error is
-    # returned in the HandlerResult so the orchestrator can flag the story.
+    # Apply failed -> story bounces to REVIEWER_REQUESTED_CHANGES so the
+    # dev loop can replay rather than leaving the chain stuck mid-write.
+    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
+    assert s.state == StoryState.REVIEWER_REQUESTED_CHANGES.value
     assert result.error and "context update failed" in result.error
+    assert s.error and "context update failed" in s.error
     # The forbidden file was NOT written.
     forbidden = temp_root / "apps" / "sacrifice" / "context" / "decisions" / "0001-foo.md"
     assert not forbidden.exists()

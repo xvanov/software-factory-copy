@@ -149,6 +149,14 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
         EVENT_TECH_WRITER_STARTED,
     ): StoryState.TECH_WRITER_IN_PROGRESS,
     (StoryState.TECH_WRITER_IN_PROGRESS, EVENT_TECH_WRITER_DONE): StoryState.TECH_WRITER_DONE,
+    # Phase 3 cleanup: if tech_writer's apply_context_updates fails (e.g. the
+    # writer tried to touch a forbidden path), bounce the story back through
+    # reviewer_requested_changes so the dev loop can replay rather than
+    # leaving the chain stuck mid-write.
+    (
+        StoryState.TECH_WRITER_IN_PROGRESS,
+        EVENT_REVIEWER_REQUEST_CHANGES,
+    ): StoryState.REVIEWER_REQUESTED_CHANGES,
     (
         StoryState.TECH_WRITER_DONE,
         EVENT_DOCS_ENFORCER_CHECK,
