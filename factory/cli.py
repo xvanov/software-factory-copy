@@ -323,3 +323,125 @@ def ingest_issue(
             style="green",
         )
     )
+
+
+# --------------------------------------------------------------------------- #
+# Phase-2 commands: tick (drive the chain forward), story (inspect),
+# webhook-serve (boot the FastAPI receiver).
+# --------------------------------------------------------------------------- #
+
+
+@app.command("tick")
+def tick_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="No LLM/GitHub/repo writes"),
+) -> None:
+    """Drive every in-flight story for ``--app`` one tick forward."""
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.chain.orchestrator import tick
+
+    if not dry_run and not (
+        os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    ):
+        console.print(
+            "[red]error:[/red] real tick requires DEEPSEEK_API_KEY (or "
+            "ANTHROPIC_API_KEY). Pass --dry-run for offline mode."
+        )
+        raise typer.Exit(code=2)
+
+    summary = tick(_FACTORY_ROOT, app_name, dry_run=dry_run)
+
+    if not summary.handler_runs and not summary.errors:
+        console.print(
+            Panel.fit(
+                f"No in-flight stories for app=[bold]{app_name}[/bold]. "
+                "Run [bold]factory pm-sync --app <app>[/bold] first to spawn stories.",
+                title="tick",
+            )
+        )
+        return
+
+    table = Table(title=f"tick — app={app_name} dry_run={dry_run}")
+    table.add_column("story")
+    table.add_column("from")
+    table.add_column("to")
+    for slug, frm, to in summary.handler_runs:
+        table.add_row(slug, frm, to)
+    console.print(table)
+    console.print(
+        f"advanced={summary.stories_advanced} blocked={summary.stories_blocked} "
+        f"errors={len(summary.errors)}"
+    )
+    if summary.errors:
+        for slug, msg in summary.errors:
+            console.print(f"[red]  - {slug}: {msg}[/red]")
+        raise typer.Exit(code=1)
+
+
+@app.command("story")
+def story_cmd(
+    story_id: int = typer.Argument(..., help="Story id (StoryRecord.id)"),
+) -> None:
+    """Show a story's current state + handler outputs."""
+    from sqlmodel import Session, create_engine
+
+    from factory.chain.state_machine import StoryRecord
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    if not db.exists():
+        console.print("[red]error:[/red] no state db; run pm-sync first")
+        raise typer.Exit(code=2)
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        story = session.get(StoryRecord, story_id)
+    if story is None:
+        console.print(f"[red]error:[/red] no story with id={story_id}")
+        raise typer.Exit(code=2)
+
+    console.print(
+        Panel.fit(
+            f"id=[bold]{story.id}[/bold]  app=[bold]{story.app}[/bold]  "
+            f"slug=[bold]{story.slug}[/bold]\n"
+            f"state=[bold]{story.state}[/bold]  scope=[bold]{story.scope}[/bold]  "
+            f"retries=[bold]{story.dev_retries}[/bold]  tier=[bold]{story.current_model_tier}[/bold]\n"
+            f"branch={story.github_branch}  pr=#{story.github_pr_number}  "
+            f"issue=#{story.github_issue_number}\n"
+            f"story_file_path={story.story_file_path}\n"
+            f"error={story.error}",
+            title=f"story #{story.id}",
+        )
+    )
+
+
+@app.command("webhook-serve")
+def webhook_serve(
+    port: int = typer.Option(9000, "--port", help="Bind port for the webhook listener"),
+    host: str = typer.Option("0.0.0.0", "--host", help="Bind host"),
+) -> None:
+    """Boot the GitHub webhook receiver via uvicorn."""
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+    try:
+        import uvicorn
+    except ImportError as exc:
+        console.print(f"[red]error:[/red] uvicorn not installed: {exc}")
+        raise typer.Exit(code=2) from exc
+
+    if not os.environ.get("GITHUB_WEBHOOK_SECRET"):
+        console.print(
+            "[yellow]warning:[/yellow] GITHUB_WEBHOOK_SECRET is unset. "
+            "Webhooks will be rejected with 503 until you set it."
+        )
+
+    console.print(
+        Panel.fit(
+            f"Booting webhook listener on [bold]{host}:{port}[/bold]\n"
+            "For local dev with smee:\n"
+            f"  smee --port {port} --url <smee URL>\n"
+            "POST endpoint: /webhook/github  •  Health: /health",
+            title="webhook-serve",
+        )
+    )
+    uvicorn.run("factory.webhook.github:app", host=host, port=port, log_level="info")

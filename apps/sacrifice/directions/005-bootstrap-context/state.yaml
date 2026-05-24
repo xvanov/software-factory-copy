@@ -1,0 +1,44 @@
+status: pm-validated
+source: cli
+created_at: '2026-05-24T13:30:00+00:00'
+audit:
+- ts: '2026-05-24T13:30:00+00:00'
+  by: factory.dev-subagent
+  event: created
+  details:
+    source: phase-2-bootstrap
+- ts: '2026-05-24T17:40:40.428679+00:00'
+  by: factory.chain.pm_sync(dry-run)
+  event: status -> pm-validated
+  details:
+    confidence: 0.75
+pm_result:
+  type: docs
+  priority: p1
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: '[DIRECTION] Bootstrap Sacrifice canonical context'
+  tracker_body: '**Bootstrap Sacrifice canonical context**
+
+
+    `~/sacrifice/` has no canonical `context/` set yet. Until it does, every
+
+    persona invocation runs against the `NO CONTEXT AVAILABLE` notice and the
+
+    chain cannot route work intelligently. The Onboarder persona produces the
+
+    canonical context once, in a single pass, by reading the existing
+
+    Sacrifice repo (legacy READMEs, AGENTS.md, code layout, package manifests)
+
+    and writing the canonical context set.
+
+    '
+  child_stories:
+  - title: Bootstrap Sacrifice canonical context
+    scope: backend
+    rationale: Explore-tagged direction; single backend story as a starting point.
+  labels:
+  - docs
+  - priority/p1
+  confidence: 0.75

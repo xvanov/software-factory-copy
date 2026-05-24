@@ -21,6 +21,8 @@ dependencies = [
   "python-dotenv>=1",
   "rich>=13",
   "pydantic>=2",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +70,10 @@ module = [
   "frontmatter",
   "github",
   "github.*",
+  "fastapi",
+  "fastapi.*",
+  "uvicorn",
+  "uvicorn.*",
 ]
 ignore_missing_imports = true
 follow_imports = "silent"

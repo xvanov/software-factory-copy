@@ -376,6 +376,37 @@ def pm_sync(
             )
             summary.validated += 1
 
+            # Spawn StoryRecord rows for each child_story in pm_result.
+            # In dry-run, no GitHub issue is created; story_file_path uses
+            # a placeholder issue number of 0. In real-run, the chain
+            # opens the GH issue and uses the real number.
+            try:
+                from factory.chain.handlers import handle_stories_spawned
+
+                if app_config is None and not dry_run:
+                    raise RuntimeError("app config required for real-run spawn")
+                # In dry-run we still need an AppConfig stub for the handler
+                # signature; build a minimal one from the app name if missing.
+                spawn_config: AppConfig
+                if app_config is not None:
+                    spawn_config = app_config
+                else:
+                    spawn_config = AppConfig(name=app, repo="<dry-run>")
+                handle_stories_spawned(
+                    direction=direction,
+                    pm_result=pm_result,
+                    app_config=spawn_config,
+                    software_factory_root=root,
+                    dry_run=dry_run,
+                    db_path=db_path,
+                    github_client=github_client,
+                )
+            except Exception as spawn_exc:
+                # Don't fail pm-sync on a spawn error; record it.
+                summary.errors.append(
+                    (direction.id or direction.slug, f"story-spawn: {spawn_exc!r}")
+                )
+
         except Exception as exc:  # pragma: no cover - exercised in error tests
             summary.errors.append((direction.id or direction.slug, repr(exc)))
 
