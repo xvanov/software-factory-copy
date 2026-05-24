@@ -211,7 +211,11 @@ def test_handle_deploy_uses_merged_sha_from_merge_actions(tmp_path: Path) -> Non
 
 
 def test_handle_deploy_falls_back_when_no_merge_actions(tmp_path: Path) -> None:
-    """Without a merge_actions row, ``pending-sha`` placeholder is recorded."""
+    """Without a merge_actions row, dry-run falls back to ``pending-sha``.
+
+    Dry-run preserves the placeholder so existing unit tests that don't
+    seed a merge_actions row still exercise the success/failure paths.
+    """
     from sqlmodel import Session, create_engine, select
 
     from factory.deploy.models import DeployActionRecord
@@ -227,3 +231,34 @@ def test_handle_deploy_falls_back_when_no_merge_actions(tmp_path: Path) -> None:
     with Session(eng) as session:
         deploy_rows = list(session.exec(select(DeployActionRecord)).all())
     assert deploy_rows[0].sha == "pending-sha"
+
+
+def test_handle_deploy_refuses_when_no_merge_actions_real_run(tmp_path: Path) -> None:
+    """P6.0 #3: real-run refuses to deploy without a merge_actions row.
+
+    Deploying an unknown SHA is a category error — the handler must
+    refuse and leave the story in DEPLOY_PENDING so the chain retries
+    once the webhook lands the merge_actions row.
+    """
+    root = _write_root(tmp_path)
+    cfg = load_app_config("sacrifice", root)
+    story = _make_story(root, pr=999)
+    # NO merge_actions row seeded.
+
+    result = handle_deploy(story, cfg, root, dry_run=False)
+    assert result.error is not None
+    assert "merge SHA not recorded" in (result.error or "")
+    assert "999" in (result.error or "")
+    # Story stays in DEPLOY_PENDING so the chain can retry once the
+    # merge row lands (the deploy_post_merge subprocess was never
+    # invoked — assertion via the absence of a DeployActionRecord row).
+    assert story.state == StoryState.DEPLOY_PENDING.value
+    from sqlmodel import Session, create_engine, select
+
+    from factory.deploy.models import DeployActionRecord
+
+    db = root / "state" / "factory.db"
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        rows = list(session.exec(select(DeployActionRecord)).all())
+    assert rows == []
