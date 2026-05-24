@@ -221,6 +221,43 @@ def handle_stories_spawned(
 # --------------------------------------------------------------------------- #
 
 
+# Matches a story filename like "0-my-slug.md" or "42-some-thing.md" — the
+# leading numeric prefix is the issue number (0 = "no issue yet" placeholder).
+_STORY_FILENAME_RE = re.compile(r"^(\d+)-(.+\.md)$")
+
+
+def _substitute_issue_number_in_path(
+    target_path_rel: str,
+    *,
+    issue_number: int | None,
+    slug: str,
+) -> str:
+    """Substitute the leading ``\\d+-`` prefix in the story filename with the
+    real ``issue_number`` when known.
+
+    Robust to any directory prefix on ``target_path_rel`` (the path's
+    ``parent`` is preserved verbatim). If ``issue_number`` is None, the path
+    is returned unchanged. If the filename doesn't carry a numeric prefix at
+    all, we fall back to ``stories/<issue_number>-<slug>.md`` so the chain
+    still finds the file by convention.
+    """
+    if issue_number is None:
+        return target_path_rel
+    path = Path(target_path_rel)
+    m = _STORY_FILENAME_RE.match(path.name)
+    if m is not None:
+        # Only substitute when the existing prefix is the "no issue yet"
+        # placeholder (``0``). A real issue number that disagrees with the
+        # story's ``github_issue_number`` is left alone — this is more likely
+        # a chain bug (split story?) than the SM's intent.
+        if m.group(1) == "0":
+            new_name = f"{issue_number}-{m.group(2)}"
+            return str(path.with_name(new_name))
+        return target_path_rel
+    # No numeric prefix; conventionalize.
+    return f"stories/{issue_number}-{slug}.md"
+
+
 def _dry_run_sm(
     story: StoryRecord, direction: Direction | None, software_factory_root: Path
 ) -> dict[str, Any]:
@@ -445,11 +482,16 @@ def handle_sm(
         )
 
     # Resolve the on-disk target path. Prefer the SM's emitted target_path; if
-    # it carries the "<issue-number>" placeholder of 0, substitute the real
-    # issue number when known.
+    # the filename leads with a numeric prefix (the SM's "<issue-number>"
+    # placeholder; ``0-`` in dry-run, but could be any digits a stale fixture
+    # carries) and we now know the real issue number, substitute it. Robust
+    # to any directory prefix (``stories/...``, ``apps/<x>/stories/...``).
     target_path_rel = str(matched.get("target_path") or story.story_file_path)
-    if story.github_issue_number is not None and target_path_rel.startswith("stories/0-"):
-        target_path_rel = f"stories/{story.github_issue_number}-{story.slug}.md"
+    target_path_rel = _substitute_issue_number_in_path(
+        target_path_rel,
+        issue_number=story.github_issue_number,
+        slug=story.slug,
+    )
 
     target_abs = software_factory_root / "apps" / story.app / target_path_rel
     target_abs.parent.mkdir(parents=True, exist_ok=True)
