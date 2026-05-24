@@ -351,6 +351,37 @@ def tick_cmd(
         )
         raise typer.Exit(code=2)
 
+    # Phase 6: drive the scheduler BEFORE the story chain so findings
+    # filed by Ralph/etc become directions that this same tick can pick
+    # up (PM-sync runs separately, but the next tick will spawn stories
+    # from them).
+    from factory.chain.scheduled_tasks import run_scheduled_persona
+    from factory.scheduler.cron import due_schedules
+
+    scheduled_results = []
+    for due in due_schedules(_FACTORY_ROOT):
+        if due.rate_limit_hit:
+            scheduled_results.append((due.schedule.name, "rate_limited", 0, 0))
+            continue
+        out = run_scheduled_persona(
+            due.schedule.persona,
+            app_name,
+            _FACTORY_ROOT,
+            dry_run=dry_run,
+        )
+        scheduled_results.append(
+            (due.schedule.name, out.status, out.findings_count, len(out.directions_filed))
+        )
+    if scheduled_results:
+        sched_table = Table(title="scheduled personas fired this tick")
+        sched_table.add_column("schedule")
+        sched_table.add_column("status")
+        sched_table.add_column("findings")
+        sched_table.add_column("directions")
+        for name, status, fcount, dcount in scheduled_results:
+            sched_table.add_row(name, status, str(fcount), str(dcount))
+        console.print(sched_table)
+
     summary = tick(_FACTORY_ROOT, app_name, dry_run=dry_run)
 
     # After the story chain advances, drain any pending deploy queue
@@ -608,6 +639,43 @@ def inbox_cmd(
                 have_trk = True
     if have_trk:
         console.print(trk_table)
+
+    # Phase 6: recent scheduled runs (last 24h).
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from factory.chain.scheduled_tasks import ScheduledRunRecord
+
+    cutoff_sched = (_dt.now(_UTC) - _td(hours=24)).isoformat()
+    sched_table = Table(title="scheduled runs (last 24h)")
+    sched_table.add_column("ts")
+    sched_table.add_column("persona")
+    sched_table.add_column("app")
+    sched_table.add_column("findings")
+    sched_table.add_column("directions_filed")
+    sched_table.add_column("status")
+    have_sched = False
+    with Session(eng) as session:
+        sched_rows = session.exec(
+            select(ScheduledRunRecord)
+            .where(ScheduledRunRecord.ts >= cutoff_sched)
+            .order_by(ScheduledRunRecord.id.desc())  # type: ignore[union-attr]
+        ).all()
+        for sr in sched_rows:
+            sched_table.add_row(
+                sr.ts[:19],
+                sr.persona,
+                sr.app,
+                str(sr.findings_count),
+                sr.directions_filed_json,
+                sr.status,
+            )
+            have_sched = True
+    if have_sched:
+        console.print(sched_table)
+    else:
+        console.print("[dim]No scheduled persona runs in the last 24h.[/dim]")
 
     console.print(
         f"[dim]Current factory mode: [bold]{get_mode(_FACTORY_ROOT, db_path=db)}[/bold][/dim]"
@@ -1214,6 +1282,136 @@ def test_slop_cmd(
     console.print(table)
     console.print(f"[red]{len(findings)} finding(s)[/red]")
     raise typer.Exit(code=1)
+
+
+def _scheduled_persona_now(
+    *,
+    persona: str,
+    app_name: str,
+    dry_run: bool,
+    label: str,
+) -> None:
+    """Shared body for the four ``factory <persona>-now`` commands.
+
+    Loads env, validates that real-run runs have an API key available,
+    then dispatches via ``run_scheduled_persona`` and prints a summary.
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+    if not dry_run and not (
+        os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    ):
+        console.print(
+            f"[red]error:[/red] real {label} requires DEEPSEEK_API_KEY (or "
+            "ANTHROPIC_API_KEY). Pass --dry-run for offline mode."
+        )
+        raise typer.Exit(code=2)
+    from factory.chain.scheduled_tasks import run_scheduled_persona
+
+    out = run_scheduled_persona(
+        persona,
+        app_name,
+        _FACTORY_ROOT,
+        dry_run=dry_run,
+    )
+    table = Table(title=f"{label} — app={app_name} dry_run={dry_run}")
+    table.add_column("field")
+    table.add_column("value")
+    table.add_row("status", out.status)
+    table.add_row("findings", str(out.findings_count))
+    table.add_row("directions_filed", ", ".join(out.directions_filed) or "(none)")
+    table.add_row("duration_s", f"{out.duration_s:.3f}")
+    if out.error:
+        table.add_row("error", out.error)
+    console.print(table)
+    if out.status == "errored":
+        raise typer.Exit(code=1)
+
+
+@app.command("ralph-now")
+def ralph_now_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="No LLM/GitHub/repo writes"),
+) -> None:
+    """Force-fire the Ralph (continuous-improvement) persona once."""
+    _scheduled_persona_now(persona="ralph", app_name=app_name, dry_run=dry_run, label="ralph")
+
+
+@app.command("bug-hunt-now")
+def bug_hunt_now_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="No LLM/GitHub/repo writes"),
+) -> None:
+    """Force-fire the Bug-Hunter persona once."""
+    _scheduled_persona_now(
+        persona="bug_hunter", app_name=app_name, dry_run=dry_run, label="bug-hunt"
+    )
+
+
+@app.command("ux-audit-now")
+def ux_audit_now_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="No LLM/GitHub/repo writes"),
+) -> None:
+    """Force-fire the UX-Auditor persona once."""
+    _scheduled_persona_now(
+        persona="ux_auditor", app_name=app_name, dry_run=dry_run, label="ux-audit"
+    )
+
+
+@app.command("security-now")
+def security_now_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="No LLM/GitHub/repo writes"),
+) -> None:
+    """Force-fire the Security persona once."""
+    _scheduled_persona_now(persona="security", app_name=app_name, dry_run=dry_run, label="security")
+
+
+@app.command("security-scan")
+def security_scan_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="No LLM/GitHub/repo writes"),
+) -> None:
+    """Alias for ``security-now`` (matches the Phase 6 spec naming)."""
+    _scheduled_persona_now(
+        persona="security", app_name=app_name, dry_run=dry_run, label="security-scan"
+    )
+
+
+@app.command("schedules")
+def schedules_cmd() -> None:
+    """List cron schedules with last-run and next-fire times.
+
+    Reads from ``factory_settings.yaml`` (or built-in defaults) and the
+    ``cron_schedules`` table for last-run timestamps. Pure read; no
+    dispatch happens.
+    """
+    from factory.scheduler.cron import (
+        get_schedule_row,
+        load_schedules,
+        next_fire,
+    )
+
+    schedules = load_schedules(_FACTORY_ROOT)
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    table = Table(title="schedules")
+    table.add_column("name")
+    table.add_column("persona")
+    table.add_column("cron")
+    table.add_column("last_run")
+    table.add_column("last_status")
+    table.add_column("next_fire (UTC)")
+    for s in schedules:
+        row = get_schedule_row(s.name, db)
+        last_run = (row.last_run if row else None) or "(never)"
+        last_status = (row.last_status if row else None) or "-"
+        try:
+            nxt = next_fire(s).isoformat()
+        except Exception as exc:  # noqa: BLE001
+            nxt = f"[invalid: {exc}]"
+        table.add_row(s.name, s.persona, s.cron_expr, last_run, last_status, nxt)
+    console.print(table)
 
 
 @app.command("webhook-serve")

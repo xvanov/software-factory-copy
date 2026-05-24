@@ -9,6 +9,9 @@ queues:
 rate_limits:
   pm_invocations_per_hour: 4
   ralph_runs_per_day: 24
+  bug_hunter_runs_per_day: 2
+  security_runs_per_day: 1
+  ux_auditor_runs_per_day: 2
 modes:
   default: normal
   available: [normal, fix-only, drain-reviews, paused, exploratory, deploy-frozen, ux-audit-only]
@@ -20,3 +23,24 @@ direction_defaults:
   escalate_model_on_retry: true
   require_context_update_per_pr: true
   enforce_canonical_doc_paths: true
+# Phase 6 scheduled personas. ``factory tick`` consults this on every run
+# and dispatches due entries via ``factory.chain.scheduled_tasks``. Rate
+# limits referenced by ``rate_limit_key`` look up the same-named field in
+# ``rate_limits:`` above.
+schedules:
+  - name: ralph
+    cron: "0 * * * *"
+    persona: ralph
+    rate_limit_key: ralph_runs_per_day
+  - name: bug_hunt
+    cron: "0 6 * * *"
+    persona: bug_hunter
+    rate_limit_key: bug_hunter_runs_per_day
+  - name: ux_audit
+    cron: "0 12 * * *"
+    persona: ux_auditor
+    rate_limit_key: ux_auditor_runs_per_day
+  - name: security_weekly
+    cron: "0 9 * * 1"
+    persona: security
+    rate_limit_key: security_runs_per_day

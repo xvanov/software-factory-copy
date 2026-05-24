@@ -23,6 +23,7 @@ dependencies = [
   "pydantic>=2",
   "fastapi>=0.115",
   "uvicorn>=0.30",
+  "croniter>=2",
 ]
 
 [project.optional-dependencies]
@@ -74,6 +75,8 @@ module = [
   "fastapi.*",
   "uvicorn",
   "uvicorn.*",
+  "croniter",
+  "croniter.*",
 ]
 ignore_missing_imports = true
 follow_imports = "silent"

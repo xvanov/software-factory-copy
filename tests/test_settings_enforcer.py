@@ -140,3 +140,61 @@ def test_unknown_keys_are_ignored() -> None:
     state["extra"] = "ignored"
     d = can_dispatch("dev", "sacrifice", state, s)
     assert d.allowed
+
+
+# -------------------- Phase 6 per-persona daily rate limits -------------------- #
+
+
+def test_ralph_daily_rate_limit_trips() -> None:
+    """ralph_runs_per_day cap rejects with ralph_rate_limit_exceeded."""
+    s = FactorySettings()
+    # Default cap is 24/day; 24 runs -> next is blocked.
+    d = can_dispatch("ralph", "sacrifice", _state(ralph_runs_today=24), s)
+    assert not d.allowed
+    assert d.rejected_reason == "ralph_rate_limit_exceeded"
+    # Under-cap allows.
+    d_ok = can_dispatch("ralph", "sacrifice", _state(ralph_runs_today=23), s)
+    assert d_ok.allowed
+
+
+def test_ralph_rate_limit_zero_rejects_immediately() -> None:
+    """ralph_runs_per_day:0 means no ralph runs are permitted at all.
+
+    Acceptance criterion (Phase 6 G #7): setting the cap to 0 in the
+    settings refuses dispatch with the canonical reason.
+    """
+    s = FactorySettings.model_validate(
+        {"rate_limits": {"ralph_runs_per_day": 0}},
+    )
+    d = can_dispatch("ralph", "sacrifice", _state(ralph_runs_today=0), s)
+    assert not d.allowed
+    assert d.rejected_reason == "ralph_rate_limit_exceeded"
+
+
+def test_bug_hunter_daily_rate_limit_trips() -> None:
+    s = FactorySettings()
+    d = can_dispatch("bug_hunter", "sacrifice", _state(bug_hunter_runs_today=2), s)
+    assert not d.allowed
+    assert d.rejected_reason == "bug_hunter_rate_limit_exceeded"
+
+
+def test_security_daily_rate_limit_trips() -> None:
+    s = FactorySettings()
+    d = can_dispatch("security", "sacrifice", _state(security_runs_today=1), s)
+    assert not d.allowed
+    assert d.rejected_reason == "security_rate_limit_exceeded"
+
+
+def test_ux_auditor_daily_rate_limit_trips() -> None:
+    s = FactorySettings()
+    d = can_dispatch("ux_auditor", "sacrifice", _state(ux_auditor_runs_today=2), s)
+    assert not d.allowed
+    assert d.rejected_reason == "ux_auditor_rate_limit_exceeded"
+
+
+def test_phase6_personas_unbound_by_pm_rate_limit() -> None:
+    """The pm_invocations_per_hour cap is PM-only; ralph etc. ignore it."""
+    s = FactorySettings()
+    for persona in ("ralph", "bug_hunter", "security", "ux_auditor"):
+        d = can_dispatch(persona, "sacrifice", _state(pm_invocations_last_hour=99), s)
+        assert d.allowed, persona

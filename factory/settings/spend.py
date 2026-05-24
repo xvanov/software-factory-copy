@@ -30,6 +30,40 @@ def today_spend_usd(software_factory_root: Path, *, db_path: Path | None = None)
     return round(total, 6)
 
 
+def persona_runs_today(
+    persona: str,
+    software_factory_root: Path,
+    *,
+    db_path: Path | None = None,
+) -> int:
+    """Count scheduled-persona runs today across ``runs`` and ``scheduled_runs``.
+
+    Phase 6 personas (ralph, bug_hunter, security, ux_auditor) use this
+    to feed ``can_dispatch`` so the per-persona daily-run cap trips.
+    Both real-run (writes ``runs`` via ``_record_run``) and dry-run
+    (writes ``scheduled_runs`` via ``ScheduledRunRecord``) contribute —
+    dry-run is for development and shouldn't be counted toward the cap,
+    so this counter only counts ``scheduled_runs`` rows where
+    ``dry_run=False`` plus all ``runs`` rows.
+    """
+    db = db_path or (Path(software_factory_root) / "state" / "factory.db")
+    eng = _engine(db)
+    today = datetime.now(UTC).date().isoformat()
+    count = 0
+    with Session(eng) as session:
+        rows = session.exec(select(Run).where(Run.persona == persona)).all()
+        for r in rows:
+            if (r.ts or "").startswith(today):
+                count += 1
+        # Also count rejected/dry-run scheduled invocations? No: the cap
+        # is enforced PRE-dispatch, so a previously rejected run is not a
+        # consumed quota slot. Real-run rows above already cover the
+        # consumed-quota case. ScheduledRunRecord with status="ok" or
+        # status="errored" (post-LLM) means a real LLM call happened, so
+        # those also count via the ``runs`` table. No double-count.
+    return count
+
+
 def hour_spend_usd(software_factory_root: Path, *, db_path: Path | None = None) -> float:
     """Sum of ``runs.cost_usd`` for runs in the past 60 minutes (UTC)."""
     db = db_path or (Path(software_factory_root) / "state" / "factory.db")

@@ -164,4 +164,35 @@ def can_dispatch(
                 retry_after_seconds=600,
             )
 
+    # Per-persona daily-run caps (Phase 6 autonomous-work generators).
+    # Each tick path consults this BEFORE invoking the persona; the
+    # caller supplies ``<persona>_runs_today`` based on a DB count.
+    _DAILY_CAPS: dict[str, tuple[int, str]] = {
+        "ralph": (
+            settings.rate_limits.ralph_runs_per_day,
+            "ralph_rate_limit_exceeded",
+        ),
+        "bug_hunter": (
+            settings.rate_limits.bug_hunter_runs_per_day,
+            "bug_hunter_rate_limit_exceeded",
+        ),
+        "security": (
+            settings.rate_limits.security_runs_per_day,
+            "security_rate_limit_exceeded",
+        ),
+        "ux_auditor": (
+            settings.rate_limits.ux_auditor_runs_per_day,
+            "ux_auditor_rate_limit_exceeded",
+        ),
+    }
+    if job_kind in _DAILY_CAPS:
+        cap, reason = _DAILY_CAPS[job_kind]
+        runs_today = int(current_state.get(f"{job_kind}_runs_today") or 0)
+        if runs_today >= cap:
+            return DispatchDecision(
+                allowed=False,
+                rejected_reason=reason,
+                retry_after_seconds=3600,
+            )
+
     return DispatchDecision(allowed=True)

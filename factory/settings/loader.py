@@ -33,6 +33,9 @@ class QueuesConfig(BaseModel):
 class RateLimitsConfig(BaseModel):
     pm_invocations_per_hour: int = 4
     ralph_runs_per_day: int = 24
+    bug_hunter_runs_per_day: int = 2
+    security_runs_per_day: int = 1
+    ux_auditor_runs_per_day: int = 2
 
 
 class ModesConfig(BaseModel):
