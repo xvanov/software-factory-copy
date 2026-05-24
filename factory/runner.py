@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -163,9 +162,6 @@ def _resolve_api_key(cfg: LLMConfig) -> str | None:
     if env_key:
         return os.environ.get(env_key)
     return None
-
-
-_FILE_TOUCH_RE = re.compile(r"^[\s>+\-*]*([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+)\b")
 
 
 def _scan_repo_for_changed_files(repo_path: Path) -> list[str]:
