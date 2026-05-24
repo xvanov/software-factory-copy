@@ -78,18 +78,46 @@ def build_real_processor(story_id: int, db_path: Path) -> Any:
 
     This is what ``factory.runner.sandbox_run`` calls. We defer the SDK import
     to inside the function so importing this module doesn't pull OpenHands.
+    Narrow the import-error handler to ``ImportError`` so non-import failures
+    (e.g. an SDK API mismatch) surface instead of being silently swallowed.
     """
     try:
         from openhands.app_server.event_callback.event_callback_models import (
             EventCallbackProcessor,
         )
-    except Exception:  # pragma: no cover - exercised only with SDK installed
+        from openhands.app_server.event_callback.event_callback_result_models import (
+            EventCallbackResult,
+            EventCallbackResultStatus,
+        )
+    except ImportError:  # pragma: no cover - exercised only without SDK installed
         return FactoryEventCallback(story_id=story_id, db_path=db_path)
 
     inner = FactoryEventCallback(story_id=story_id, db_path=db_path)
 
     class _Processor(EventCallbackProcessor):  # type: ignore[misc]
-        async def __call__(self, event: Any, conversation: Any) -> None:  # pragma: no cover
+        """SDK-conforming subclass.
+
+        The abstract base mandates::
+
+            async def __call__(
+                self, conversation_id: UUID, callback: EventCallback, event: Event
+            ) -> EventCallbackResult | None
+
+        See ``openhands.app_server.event_callback.event_callback_models``.
+        """
+
+        async def __call__(
+            self,
+            conversation_id: Any,
+            callback: Any,
+            event: Any,
+        ) -> Any:  # pragma: no cover - exercised only with SDK
             inner.on_event(event)
+            return EventCallbackResult(
+                status=EventCallbackResultStatus.SUCCESS,
+                event_callback_id=getattr(callback, "id", None),
+                event_id=getattr(event, "id", None),
+                conversation_id=conversation_id,
+            )
 
     return _Processor()
