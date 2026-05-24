@@ -353,6 +353,41 @@ def tick_cmd(
 
     summary = tick(_FACTORY_ROOT, app_name, dry_run=dry_run)
 
+    # After the story chain advances, drain any pending deploy queue
+    # entries for this app. The deploy worker honors deploy-frozen mode
+    # via the settings enforcer.
+    from factory.deploy.orchestrator import drain_deploy_queue
+
+    deploy_actions = drain_deploy_queue(
+        app=app_name,
+        software_factory_root=_FACTORY_ROOT,
+        dry_run=dry_run,
+    )
+    if deploy_actions:
+        dep_table = Table(title="deploy queue drained")
+        dep_table.add_column("sha")
+        dep_table.add_column("status")
+        for a in deploy_actions:
+            derived = (
+                "deployed"
+                if a.success
+                else (
+                    "rolled_back"
+                    if a.rolled_back
+                    else (
+                        "skipped"
+                        if a.error
+                        and (
+                            a.error in {"mode_blocks_deploy", "deploy_disabled_in_config"}
+                            or a.error.startswith("mode_")
+                        )
+                        else "errored"
+                    )
+                )
+            )
+            dep_table.add_row(a.merged_sha[:12], derived)
+        console.print(dep_table)
+
     if not summary.handler_runs and not summary.errors and not summary.rejected:
         console.print(
             Panel.fit(
@@ -457,6 +492,12 @@ def inbox_cmd(
     settings = load_settings(_FACTORY_ROOT)
     db = _FACTORY_ROOT / "state" / "factory.db"
     _engine(db)
+    # Ensure deploy_actions table exists for the failed-deploys section
+    # below; on a fresh checkout no deploys have run yet so SQLModel
+    # never auto-created the table from the chain handlers' metadata.
+    from factory.deploy.orchestrator import _engine as _deploy_engine
+
+    _deploy_engine(db)
     apps = [app_name] if app_name else _list_apps()
 
     # Stories with last_rejection_reason or in BLOCKED state -> needs human.
@@ -519,6 +560,35 @@ def inbox_cmd(
                 title="budget",
             )
         )
+
+    # Failed deploys in the last 24h (status='errored' OR rolled_back).
+    from datetime import UTC, datetime, timedelta
+
+    from factory.deploy.models import DeployActionRecord
+
+    cutoff = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+    failed_dep_table = Table(title="failed deploys (last 24h)")
+    failed_dep_table.add_column("app")
+    failed_dep_table.add_column("sha")
+    failed_dep_table.add_column("status")
+    failed_dep_table.add_column("error")
+    have_failed_dep = False
+    with Session(eng) as session:
+        for a in apps:
+            dep_rows = session.exec(
+                select(DeployActionRecord).where(
+                    DeployActionRecord.app == a,
+                    DeployActionRecord.status.in_(["errored", "rolled_back"]),  # type: ignore[attr-defined]
+                    DeployActionRecord.ts >= cutoff,
+                )
+            ).all()
+            for dr in dep_rows:
+                failed_dep_table.add_row(a, dr.sha[:12], dr.status, (dr.error or "")[:60])
+                have_failed_dep = True
+    if have_failed_dep:
+        console.print(failed_dep_table)
+    else:
+        console.print("[dim]No failed deploys in the last 24h.[/dim]")
 
     # Direction trackers awaiting action (status == 'pm-validated' but no
     # downstream story yet) — rough heuristic; full Phase 7 will be richer.
@@ -885,6 +955,225 @@ def rollback_watch_cmd(
             a.reason[:80],
         )
     console.print(table)
+
+
+@app.command("deploy")
+def deploy_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    sha: str | None = typer.Option(None, "--sha", help="Specific SHA to deploy (overrides queue)"),
+    pr: int | None = typer.Option(
+        None, "--pr", help="Deploy a specific PR (uses placeholder SHA in dry-run)"
+    ),
+    dry_run: bool = typer.Option(True, "--dry-run/--real-run", help="Dry-run (default)"),
+) -> None:
+    """Run one deploy tick against ``--app``.
+
+    In dry-run mode no subprocesses are launched — every step is
+    deterministically successful. Use ``--real-run`` to actually invoke
+    the configured deploy commands.
+
+    Pass ``--pr <number>`` to target a specific PR; in dry-run this uses
+    a placeholder SHA so the operator can exercise the flow without a
+    matching ``merge_actions`` row. ``--sha`` is preferred for real-run.
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.deploy.orchestrator import (
+        deploy_action_as_dict,
+        deploy_post_merge,
+        deploy_tick,
+    )
+
+    gh: Any = None
+    if not dry_run:
+        gh = _ensure_github_client()
+
+    actions: list[Any]
+    if pr is not None:
+        action = deploy_post_merge(
+            app_name,
+            pr,
+            sha or f"pr-{pr}-placeholder-sha",
+            _FACTORY_ROOT,
+            dry_run=dry_run,
+            github_client=gh,
+        )
+        actions = [action]
+    else:
+        actions = deploy_tick(
+            _FACTORY_ROOT,
+            app_name,
+            dry_run=dry_run,
+            sha=sha,
+            github_client=gh,
+        )
+
+    if not actions:
+        console.print(
+            Panel.fit(
+                f"No candidate SHA to deploy for [bold]{app_name}[/bold]. "
+                f"Merge a PR first or pass --sha <sha>.",
+                title="deploy",
+            )
+        )
+        return
+
+    table = Table(title=f"deploy — app={app_name} dry_run={dry_run}")
+    table.add_column("sha")
+    table.add_column("status")
+    table.add_column("smoke")
+    table.add_column("rolled_back")
+    table.add_column("error")
+    for a in actions:
+        d = deploy_action_as_dict(a)
+        status_color = {
+            True: "green",
+        }.get(a.success, "yellow" if a.rolled_back else "red")
+        derived_status = (
+            "deployed" if a.success else ("rolled_back" if a.rolled_back else "errored")
+        )
+        # ``mode_blocks_deploy`` / ``deploy_disabled_in_config`` collapse
+        # to "skipped" in DB; surface here too.
+        if a.error in {"mode_blocks_deploy", "deploy_disabled_in_config"} or (
+            a.error and a.error.startswith("mode_")
+        ):
+            derived_status = "skipped"
+            status_color = "yellow"
+        table.add_row(
+            d["merged_sha"][:12],
+            f"[{status_color}]{derived_status}[/{status_color}]",
+            "yes" if a.smoke_passed else "no",
+            "yes" if a.rolled_back else "no",
+            (a.error or "")[:60],
+        )
+    console.print(table)
+
+
+@app.command("deploys")
+def deploys_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    limit: int = typer.Option(20, "--limit", help="Max rows to show (newest first)"),
+) -> None:
+    """List recent ``DeployAction`` rows for ``--app``."""
+    from sqlmodel import Session, select
+
+    from factory.deploy.models import DeployActionRecord
+    from factory.deploy.orchestrator import _engine as _deploy_engine
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    # ``_deploy_engine`` runs ``SQLModel.metadata.create_all`` so the
+    # ``deploy_actions`` table exists even on a fresh checkout that has
+    # never run a deploy yet.
+    eng = _deploy_engine(db)
+    with Session(eng) as session:
+        rows = list(
+            session.exec(
+                select(DeployActionRecord)
+                .where(DeployActionRecord.app == app_name)
+                .order_by(DeployActionRecord.id.desc())  # type: ignore[union-attr]
+            ).all()
+        )
+    rows = rows[:limit]
+
+    if not rows:
+        console.print(
+            Panel.fit(
+                f"No DeployAction rows for [bold]{app_name}[/bold].",
+                title="deploys",
+            )
+        )
+        return
+
+    table = Table(title=f"deploys — app={app_name} (latest {len(rows)})")
+    table.add_column("id", justify="right")
+    table.add_column("ts")
+    table.add_column("sha")
+    table.add_column("status")
+    table.add_column("smoke")
+    table.add_column("rb")
+    table.add_column("err")
+    for r in rows:
+        status_color = {
+            "deployed": "green",
+            "rolled_back": "yellow",
+            "errored": "red",
+            "skipped": "blue",
+        }.get(r.status, "white")
+        table.add_row(
+            str(r.id),
+            r.ts[:19],
+            r.sha[:12],
+            f"[{status_color}]{r.status}[/{status_color}]",
+            "yes" if r.smoke_passed else "no",
+            "yes" if r.rollback_triggered else "no",
+            (r.error or "")[:40],
+        )
+    console.print(table)
+
+
+@app.command("deploy-status")
+def deploy_status_cmd(
+    deploy_id: int = typer.Argument(..., help="DeployActionRecord id (see `factory deploys`)"),
+) -> None:
+    """Show the full per-step record for a single deploy action."""
+    import json as _json
+
+    from sqlmodel import Session, select
+
+    from factory.deploy.models import DeployActionRecord
+    from factory.deploy.orchestrator import _engine as _deploy_engine
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    eng = _deploy_engine(db)
+    with Session(eng) as session:
+        row = session.exec(
+            select(DeployActionRecord).where(DeployActionRecord.id == deploy_id)
+        ).first()
+    if row is None:
+        console.print(f"[red]error:[/red] no deploy action with id={deploy_id}")
+        raise typer.Exit(code=2)
+
+    console.print(
+        Panel.fit(
+            f"[bold]app[/bold]={row.app}  [bold]sha[/bold]={row.sha}  "
+            f"[bold]status[/bold]={row.status}\n"
+            f"[bold]ts[/bold]={row.ts}\n"
+            f"pre_deploy_duration_s={row.pre_deploy_duration_s}  "
+            f"deploy_duration_s={row.deploy_duration_s}\n"
+            f"health_check_passed={row.health_check_passed}  "
+            f"smoke_passed={row.smoke_passed}\n"
+            f"rollback_triggered={row.rollback_triggered}  "
+            f"rollback_passed={row.rollback_passed}\n"
+            f"error={row.error}\n"
+            f"skipped_reason={row.skipped_reason}",
+            title=f"deploy #{deploy_id}",
+        )
+    )
+
+    steps_table = Table(title="per-phase step results")
+    steps_table.add_column("#", justify="right")
+    steps_table.add_column("phase")
+    steps_table.add_column("exit")
+    steps_table.add_column("attempts")
+    steps_table.add_column("dur_s", justify="right")
+    steps_table.add_column("command")
+    try:
+        steps = _json.loads(row.per_phase_results_json or "[]")
+    except _json.JSONDecodeError:
+        steps = []
+    for i, s in enumerate(steps, start=1):
+        exit_code = s.get("exit_code")
+        color = "green" if exit_code == 0 else "red"
+        steps_table.add_row(
+            str(i),
+            str(s.get("phase", "")),
+            f"[{color}]{exit_code}[/{color}]",
+            str(s.get("attempts", 1)),
+            f"{float(s.get('duration_seconds') or 0.0):.2f}",
+            str(s.get("command", ""))[:80],
+        )
+    console.print(steps_table)
 
 
 @app.command("test-slop")

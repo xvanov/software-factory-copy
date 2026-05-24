@@ -49,7 +49,10 @@ class StoryState(StrEnum):
     CI_PENDING = "ci_pending"
     CI_GREEN = "ci_green"
     READY_FOR_MERGE = "ready_for_merge"
+    DEPLOY_PENDING = "deploy_pending"
+    DEPLOYED = "deployed"
     BLOCKED_TESTS_NEED_CLARIFICATION = "blocked_tests_need_clarification"
+    BLOCKED_DEPLOY_FAILED = "blocked_deploy_failed"
 
 
 class StoryRecord(SQLModel, table=True):
@@ -107,6 +110,12 @@ EVENT_TECH_WRITER_DONE = "tech_writer_done"
 EVENT_DOCS_ENFORCER_CHECK = "docs_enforcer_check"
 EVENT_DOCS_ENFORCER_PASS = "docs_enforcer_pass"
 EVENT_DOCS_ENFORCER_FAIL = "docs_enforcer_fail"
+# Phase 5: post-merge deploy chain.
+EVENT_MERGED = "merged"  # auto-merge or webhook flips READY_FOR_MERGE -> DEPLOY_PENDING.
+EVENT_DEPLOY_STARTED = "deploy_started"
+EVENT_DEPLOY_SUCCEEDED = "deploy_succeeded"
+EVENT_DEPLOY_FAILED = "deploy_failed"
+EVENT_DEPLOY_SKIPPED = "deploy_skipped"  # mode/cap rejection or deploy.enabled=false
 
 
 # Lookup table: (current_state, event) -> next_state.
@@ -166,6 +175,20 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
         StoryState.DOCS_ENFORCER_CHECK,
         EVENT_DOCS_ENFORCER_FAIL,
     ): StoryState.REVIEWER_REQUESTED_CHANGES,
+    # Phase 5 — post-merge deploy. The auto-merge worker flips
+    # READY_FOR_MERGE → DEPLOY_PENDING on successful merge (also reachable
+    # from CI_GREEN and PR_OPEN since some chains skip the intermediate
+    # READY_FOR_MERGE recording). DEPLOY_PENDING is the orchestrator's cue
+    # to dispatch handle_deploy. EVENT_DEPLOY_SKIPPED handles
+    # apps with ``deploy.enabled=false`` so the story reaches a terminal
+    # state without staying in DEPLOY_PENDING forever.
+    (StoryState.READY_FOR_MERGE, EVENT_MERGED): StoryState.DEPLOY_PENDING,
+    (StoryState.CI_GREEN, EVENT_MERGED): StoryState.DEPLOY_PENDING,
+    (StoryState.PR_OPEN, EVENT_MERGED): StoryState.DEPLOY_PENDING,
+    (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_STARTED): StoryState.DEPLOY_PENDING,
+    (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_SUCCEEDED): StoryState.DEPLOYED,
+    (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_FAILED): StoryState.BLOCKED_DEPLOY_FAILED,
+    (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_SKIPPED): StoryState.DEPLOYED,
 }
 
 

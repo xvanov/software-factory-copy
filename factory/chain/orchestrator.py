@@ -102,6 +102,10 @@ _DISPATCH = {
     # not dispatched.
     StoryState.REVIEWER_DONE: "tech_writer",
     StoryState.TECH_WRITER_DONE: "docs_enforcer",
+    # Phase 5 — post-merge deploy. The auto-merge worker (and the webhook
+    # path) flips a story to DEPLOY_PENDING; from there the orchestrator
+    # tick drives handle_deploy.
+    StoryState.DEPLOY_PENDING: "deploy",
 }
 
 
@@ -142,6 +146,10 @@ def _invoke_handler(
         return H.handle_docs_enforcer(
             story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
         )
+    if name == "deploy":
+        return H.handle_deploy(
+            story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
+        )
     raise RuntimeError(f"unknown handler name: {name}")
 
 
@@ -157,7 +165,9 @@ def _count_global_in_flight(db: Path, exclude_story_id: int | None = None) -> in
         StoryState.CI_PENDING.value,
         StoryState.CI_GREEN.value,
         StoryState.READY_FOR_MERGE.value,
+        StoryState.DEPLOYED.value,
         StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
+        StoryState.BLOCKED_DEPLOY_FAILED.value,
     }
     with Session(eng) as session:
         rows = session.exec(select(StoryRecord)).all()

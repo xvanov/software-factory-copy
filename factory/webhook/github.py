@@ -109,12 +109,83 @@ def _handle_issues(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _handle_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
     action = payload.get("action")
-    if action != "opened":
-        return {"acted": False, "reason": f"pull_request action={action!r}"}
     pr = payload.get("pull_request") or {}
     pr_number = int(pr.get("number") or 0)
     branch = (pr.get("head") or {}).get("ref")
     repo_full_name = (payload.get("repository") or {}).get("full_name") or ""
+
+    if action == "closed" and bool(pr.get("merged")):
+        # Phase 5 — post-merge deploy enqueue. The webhook records the
+        # merged SHA + PR number into ``deploy_queue`` and flips the
+        # matching StoryRecord (if any) to DEPLOY_PENDING so the next
+        # orchestrator tick picks up handle_deploy. We do NOT run the
+        # deploy synchronously in the webhook handler — GitHub will retry
+        # on timeout and we want the handler to return fast.
+        merged_sha = (pr.get("merge_commit_sha") or pr.get("head", {}).get("sha") or "").strip()
+        if not merged_sha:
+            return {"acted": False, "reason": "pull_request.closed[merged] missing sha"}
+        app = _resolve_app_for_repo(repo_full_name)
+        if app is None:
+            return {
+                "acted": False,
+                "reason": f"no local app for repo {repo_full_name!r}",
+            }
+
+        from sqlmodel import Session, create_engine, select
+
+        from factory.chain.handlers import _engine
+        from factory.chain.state_machine import (
+            EVENT_MERGED,
+            IllegalTransitionError,
+            StoryRecord,
+            advance,
+        )
+        from factory.deploy.orchestrator import enqueue_deploy
+
+        db = _FACTORY_ROOT / "state" / "factory.db"
+        _engine(db)  # idempotent migration
+        eng = create_engine(f"sqlite:///{db}", echo=False)
+        story_slug: str | None = None
+        transitioned: str | None = None
+        with Session(eng) as session:
+            rows = session.exec(
+                select(StoryRecord).where(StoryRecord.github_pr_number == pr_number)
+            ).all()
+            if rows:
+                story = rows[0]
+                story_slug = story.slug
+                try:
+                    story.state = advance(story, EVENT_MERGED).value
+                    transitioned = story.state
+                    session.add(story)
+                    session.commit()
+                except IllegalTransitionError:
+                    # Tolerate webhooks arriving when the story is in a
+                    # state that doesn't accept EVENT_MERGED (e.g. an old
+                    # PR that the auto-merge worker already advanced).
+                    # The deploy queue entry still drives the work.
+                    pass
+        # Enqueue the deploy candidate. The orchestrator tick (or
+        # ``factory deploys`` CLI) drains it.
+        enqueue_deploy(
+            app=app,
+            sha=merged_sha,
+            merged_pr_number=pr_number,
+            software_factory_root=_FACTORY_ROOT,
+        )
+        return {
+            "acted": True,
+            "pr_number": pr_number,
+            "merged_sha": merged_sha,
+            "repo": repo_full_name,
+            "app": app,
+            "story_slug": story_slug,
+            "transitioned_to": transitioned,
+            "next": "deploy-orchestrator-tick",
+        }
+
+    if action != "opened":
+        return {"acted": False, "reason": f"pull_request action={action!r}"}
 
     # Find a StoryRecord matching the PR's branch and stamp the PR number on it.
     from sqlmodel import Session, create_engine, select

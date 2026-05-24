@@ -276,5 +276,53 @@ def auto_merge_tick(
             github_client=github_client,
         )
         _record_merge_action(action, f.head_sha, db)
+        # On a successful merge, enqueue a deploy candidate for the
+        # post-merge deploy worker. The deploy itself runs in a separate
+        # tick so the merge step stays focused.
+        if action.merged:
+            # Lazy import to avoid the auto-merge module importing the
+            # deploy package at module load (the deploy package imports
+            # back into the chain, which would risk a cycle).
+            from factory.deploy.orchestrator import enqueue_deploy
+
+            enqueue_deploy(
+                app=app,
+                sha=f.head_sha,
+                merged_pr_number=action.pr_number,
+                software_factory_root=root,
+                db_path=db,
+            )
+            # Flip the story state to DEPLOY_PENDING so the orchestrator
+            # tick picks up handle_deploy. Uses the state_machine's
+            # advance() so an illegal transition surfaces loudly rather
+            # than silently mis-updating the row.
+            story = f.story
+            if story is None:
+                # Look up by PR number from the DB if the fixture didn't
+                # carry one.
+                eng = _engine(db)
+                with Session(eng) as session:
+                    rows = session.exec(
+                        select(StoryRecord).where(
+                            StoryRecord.app == app,
+                            StoryRecord.github_pr_number == action.pr_number,
+                        )
+                    ).all()
+                story = rows[0] if rows else None
+            if story is not None and story.state in _MERGEABLE_STATES:
+                from factory.chain.state_machine import EVENT_MERGED, advance
+
+                try:
+                    new_state = advance(story, EVENT_MERGED)
+                    story.state = new_state.value
+                    eng = _engine(db)
+                    with Session(eng) as session:
+                        session.add(story)
+                        session.commit()
+                except Exception:
+                    # State-machine refusal is non-fatal here — the deploy
+                    # queue entry still drives the work; the story will be
+                    # reconciled by the orchestrator on a later tick.
+                    pass
         actions.append(action)
     return actions

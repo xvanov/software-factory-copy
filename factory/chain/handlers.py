@@ -128,18 +128,31 @@ def get_story(story_id: int, db_path: Path) -> StoryRecord | None:
 
 
 def stories_in_flight(app: str, db_path: Path) -> list[StoryRecord]:
-    """Return every story whose state is not terminal."""
+    """Return every story whose state is not terminal.
+
+    Phase 5 adds DEPLOY_PENDING as an active state (the orchestrator drives
+    it to DEPLOYED or BLOCKED_DEPLOY_FAILED). DEPLOYED and
+    BLOCKED_DEPLOY_FAILED are terminal — the chain stops driving once a PR
+    has been deployed (or its deploy has failed and waits for human
+    intervention).
+    """
     eng = _engine(db_path)
     with Session(eng) as session:
         rows = session.exec(select(StoryRecord).where(StoryRecord.app == app)).all()
-    # Terminal: PR_OPEN onward (the chain stops driving), and the BLOCKED state.
+    # Terminal: PR_OPEN through READY_FOR_MERGE (the auto-merge worker drives
+    # these by polling, not the orchestrator tick), DEPLOYED, and the two
+    # blocked states.
     terminal = {
         StoryState.PR_OPEN.value,
         StoryState.CI_PENDING.value,
         StoryState.CI_GREEN.value,
         StoryState.READY_FOR_MERGE.value,
+        StoryState.DEPLOYED.value,
         StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
+        StoryState.BLOCKED_DEPLOY_FAILED.value,
     }
+    # DEPLOY_PENDING is INTENTIONALLY in-flight so the orchestrator's
+    # _DISPATCH picks it up for handle_deploy.
     return [r for r in rows if r.state not in terminal]
 
 
@@ -1132,3 +1145,120 @@ def find_direction_for_story(story: StoryRecord, software_factory_root: Path) ->
         if dpath.name.startswith(f"{story.direction_id}-"):
             return parse_direction_dir(story.app, dpath)
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Phase 5 — handle_deploy
+# --------------------------------------------------------------------------- #
+
+
+def handle_deploy(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+    *,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+    fixture_step_outputs: list[tuple[int, str, str]] | None = None,
+    fixture_step_outputs_by_phase: dict[str, list[tuple[int, str, str]]] | None = None,
+    github_client: Any = None,
+) -> HandlerResult:
+    """Drive the post-merge deploy for ``story``.
+
+    Pre-conditions: story.state == DEPLOY_PENDING and
+    ``story.github_pr_number`` is set. The handler delegates to the deploy
+    orchestrator, then flips the story state to DEPLOYED on success,
+    BLOCKED_DEPLOY_FAILED on hard failure, or DEPLOYED with skip marker
+    when the app has ``deploy.enabled=false``.
+    """
+    from factory.chain.state_machine import (
+        EVENT_DEPLOY_FAILED,
+        EVENT_DEPLOY_SKIPPED,
+        EVENT_DEPLOY_STARTED,
+        EVENT_DEPLOY_SUCCEEDED,
+    )
+    from factory.deploy.orchestrator import deploy_post_merge
+
+    db = db_path or (software_factory_root / "state" / "factory.db")
+    if story.state != StoryState.DEPLOY_PENDING.value:
+        return HandlerResult(
+            next_state=StoryState(story.state),
+            error=f"handle_deploy called from non-deploy_pending state {story.state!r}",
+        )
+    if story.github_pr_number is None:
+        # No PR number means we can't deploy a specific SHA; treat as skip.
+        story.state = advance(story, EVENT_DEPLOY_SKIPPED).value
+        story.error = "deploy_skipped_no_pr_number"
+        persist_story(story, db)
+        return HandlerResult(next_state=StoryState(story.state), error=story.error)
+
+    # If deploy is disabled, transition to DEPLOYED with skip marker. The
+    # orchestrator's deploy_post_merge already records the action row with
+    # status="skipped"; we just observe the result here and short-circuit
+    # the state.
+    if not app_config.deploy.enabled:
+        story.state = advance(story, EVENT_DEPLOY_SKIPPED).value
+        persist_story(story, db)
+        return HandlerResult(
+            next_state=StoryState(story.state),
+            payload={"skipped": True, "reason": "deploy_disabled_in_config"},
+        )
+
+    # Mark started.
+    story.state = advance(story, EVENT_DEPLOY_STARTED).value
+    persist_story(story, db)
+
+    # The merged_sha for a story without a recorded SHA falls back to a
+    # placeholder so the orchestrator still runs (real-run flows wire the
+    # SHA from the GH merge response on the webhook path; see
+    # factory/webhook/github.py).
+    merged_sha = "pending-sha"
+    action = deploy_post_merge(
+        story.app,
+        story.github_pr_number,
+        merged_sha,
+        software_factory_root,
+        dry_run=dry_run,
+        fixture_step_outputs=fixture_step_outputs,
+        fixture_step_outputs_by_phase=fixture_step_outputs_by_phase,
+        github_client=github_client,
+        db_path=db,
+    )
+
+    if action.success:
+        story.state = advance(story, EVENT_DEPLOY_SUCCEEDED).value
+        story.error = None
+        persist_story(story, db)
+        return HandlerResult(
+            next_state=StoryState(story.state),
+            payload={"deploy_action": True, "success": True},
+        )
+
+    # Failure (or skipped via pre-flight). If pre-flight skipped (e.g.
+    # mode_blocks_deploy), route to DEPLOYED with the marker rather than
+    # BLOCKED — the operator hasn't actually deployed yet but the story
+    # isn't blocked by code quality.
+    if action.error and action.error in {
+        "mode_blocks_deploy",
+        "deploy_disabled_in_config",
+    }:
+        story.state = advance(story, EVENT_DEPLOY_SKIPPED).value
+        story.error = action.error
+        persist_story(story, db)
+        return HandlerResult(
+            next_state=StoryState(story.state),
+            payload={"skipped": True, "reason": action.error},
+        )
+
+    story.state = advance(story, EVENT_DEPLOY_FAILED).value
+    story.error = action.error or "deploy_failed_unknown"
+    persist_story(story, db)
+    return HandlerResult(
+        next_state=StoryState(story.state),
+        payload={
+            "deploy_action": True,
+            "rolled_back": action.rolled_back,
+            "p0_issue_number": action.p0_issue_number,
+        },
+        error=story.error,
+    )

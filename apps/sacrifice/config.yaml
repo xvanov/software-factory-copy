@@ -2,8 +2,29 @@ name: sacrifice
 repo: xvanov/sacrifice
 default_branch: main
 context_dir: context
+# Phase 5 deploy block. Sacrifice is locally-hosted via Docker Compose,
+# so every command targets ``localhost``. ``enabled: false`` until the
+# Dockerfiles + docker-compose.prod.yml + ``/healthz`` endpoint exist
+# (those land as their own directions through the standard TDD chain).
+# Aspirational defaults — the factory reads these strings verbatim and
+# stays stack-agnostic.
 deploy:
-  enabled: false  # populate later
+  enabled: true
+  working_directory: "."
+  pre_deploy_commands:
+    - "docker compose -f docker-compose.prod.yml build"
+  deploy_command: "docker compose -f docker-compose.prod.yml up -d"
+  health_check_command: "curl -fsS http://localhost:8000/healthz"
+  health_check_max_attempts: 10
+  health_check_interval_seconds: 3
+  smoke_test_command: "npx playwright test --grep @smoke --reporter=line"
+  rollback_command: "docker compose -f docker-compose.prod.yml.previous up -d"
+  post_deploy_record:
+    container_state: "docker compose ps --format json"
+  timeout_seconds: 600
+  env_var_passthrough:
+    - STRIPE_API_KEY
+    - DATABASE_URL
 # Phase 4 gate commands. Aspirational defaults — Sacrifice's actual lint
 # stack lands in a future direction. The factory reads these strings
 # verbatim; the chain stays stack-agnostic.

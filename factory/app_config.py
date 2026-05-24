@@ -15,12 +15,35 @@ from pydantic import BaseModel, Field
 
 
 class DeployConfig(BaseModel):
+    """Per-app deploy block consumed by ``factory/deploy/orchestrator.py``.
+
+    Every command is an opaque shell string the factory passes verbatim to
+    a subprocess. The factory itself is stack-agnostic — it knows nothing
+    about Docker, Compose, Fly, Vercel, etc. Apps declare commands here;
+    Phase 5's orchestrator executes them in a fixed sequence.
+    """
+
     enabled: bool = False
     pre_deploy_commands: list[str] = Field(default_factory=list)
     deploy_command: str | None = None
     health_check_command: str | None = None
+    health_check_max_attempts: int = 5
+    health_check_interval_seconds: int = 5
     smoke_test_command: str | None = None
     rollback_command: str | None = None
+    # Optional metadata commands (label -> shell). Run after a successful
+    # deploy; their stdout is captured into DeployActionRecord for audit
+    # (e.g. ``docker compose ps --format json`` to record container state).
+    post_deploy_record: dict[str, str] = Field(default_factory=dict)
+    # Per-command working directory (relative to the cloned app repo
+    # root). Phase 5 dry-run ignores this entirely; real-run resolves it
+    # against the app workspace. None means the factory root.
+    working_directory: str | None = None
+    # Env vars from the factory process forwarded to the deploy
+    # subprocess. PATH is always forwarded; everything else is opt-in.
+    env_var_passthrough: list[str] = Field(default_factory=list)
+    # Subprocess timeout per command (seconds).
+    timeout_seconds: int = 600
 
 
 class AppGatesConfig(BaseModel):
