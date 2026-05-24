@@ -316,7 +316,9 @@ def test_real_run_env_var_passthrough_filters_env(tmp_path: Path) -> None:
         os.environ.pop("MY_SECRET", None)
 
 
-def test_sacrifice_deploy_config_fields_consumed_by_runner(tmp_path: Path, monkeypatch: Any) -> None:
+def test_sacrifice_deploy_config_fields_consumed_by_runner(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     """P6.0 #2 (cleanup-2): working_directory/env_var_passthrough/timeout_seconds
     from apps/sacrifice/config.yaml flow into runner.run_command.
     """
@@ -365,7 +367,5 @@ def test_sacrifice_deploy_config_fields_consumed_by_runner(tmp_path: Path, monke
     # passthrough including STRIPE_API_KEY+DATABASE_URL, and the
     # working_directory "." resolved against the factory root.
     assert all(c["timeout"] == 600 for c in seen)
-    assert all(
-        set(c["env_var_passthrough"]) == {"STRIPE_API_KEY", "DATABASE_URL"} for c in seen
-    )
+    assert all(set(c["env_var_passthrough"]) == {"STRIPE_API_KEY", "DATABASE_URL"} for c in seen)
     assert all(c["cwd"] == (tmp_path / ".").resolve() for c in seen)

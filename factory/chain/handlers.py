@@ -1152,6 +1152,31 @@ def find_direction_for_story(story: StoryRecord, software_factory_root: Path) ->
 # --------------------------------------------------------------------------- #
 
 
+def _lookup_merged_sha(app: str, pr_number: int, db_path: Path) -> str | None:
+    """Return the head_sha of the most-recent merged ``merge_actions`` row.
+
+    Returns ``None`` when no merge has been recorded for this PR yet.
+    Imported lazily to avoid a chain → auto_merge import cycle.
+    """
+    from factory.chain.auto_merge import MergeActionRecord
+
+    eng = create_engine(f"sqlite:///{db_path}", echo=False)
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as session:
+        row = session.exec(
+            select(MergeActionRecord)
+            .where(
+                MergeActionRecord.app == app,
+                MergeActionRecord.pr_number == pr_number,
+                MergeActionRecord.merged == True,  # noqa: E712
+            )
+            .order_by(MergeActionRecord.id.desc())  # type: ignore[union-attr]
+        ).first()
+    if row is None:
+        return None
+    return row.head_sha
+
+
 def handle_deploy(
     story: StoryRecord,
     app_config: AppConfig,
@@ -1204,15 +1229,37 @@ def handle_deploy(
             payload={"skipped": True, "reason": "deploy_disabled_in_config"},
         )
 
+    # Look up the merged_sha from the ``merge_actions`` row this PR
+    # produced. We pick the most-recent ``merged=True`` row for this PR.
+    # If no row exists, refuse to dispatch — deploying without knowing
+    # the SHA we just merged is a category error (we'd be deploying an
+    # unspecified commit). The webhook path inserts a ``merge_actions``
+    # row at PR-merged time, and tests can seed one via
+    # ``factory.chain.auto_merge.MergeActionRecord`` directly.
+    #
+    # IMPORTANT: do this BEFORE advancing to deploy_in_progress so the
+    # story stays in DEPLOY_PENDING (recoverable) when the SHA isn't
+    # there yet. Otherwise we'd advance to deploy_in_progress, leaving
+    # the chain with no way to resume that PR's deploy.
+    merged_sha = _lookup_merged_sha(story.app, story.github_pr_number, db)
+    if merged_sha is None:
+        # Allow dry-run a fallback so unit tests that don't seed a
+        # merge_actions row can still exercise the success/failure paths.
+        if dry_run:
+            merged_sha = "pending-sha"
+        else:
+            err = f"merge SHA not recorded for PR {story.github_pr_number}"
+            story.error = err
+            persist_story(story, db)
+            return HandlerResult(
+                next_state=StoryState(story.state),
+                error=err,
+            )
+
     # Mark started.
     story.state = advance(story, EVENT_DEPLOY_STARTED).value
     persist_story(story, db)
 
-    # The merged_sha for a story without a recorded SHA falls back to a
-    # placeholder so the orchestrator still runs (real-run flows wire the
-    # SHA from the GH merge response on the webhook path; see
-    # factory/webhook/github.py).
-    merged_sha = "pending-sha"
     action = deploy_post_merge(
         story.app,
         story.github_pr_number,

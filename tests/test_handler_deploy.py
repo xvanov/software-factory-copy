@@ -167,3 +167,63 @@ def test_handle_deploy_skip_when_no_pr_number(tmp_path: Path) -> None:
     result = handle_deploy(story, cfg, root, dry_run=True)
     assert result.next_state == StoryState.DEPLOYED
     assert story.state == StoryState.DEPLOYED.value
+
+
+def test_handle_deploy_uses_merged_sha_from_merge_actions(tmp_path: Path) -> None:
+    """P6.0 #3: handle_deploy looks up the real SHA from merge_actions.
+
+    Insert a ``merge_actions`` row first, then run handle_deploy, then
+    assert the persisted ``deploy_actions`` row records the same SHA
+    (proving the orchestrator received it).
+    """
+    from sqlmodel import Session, SQLModel, create_engine, select
+
+    from factory.chain.auto_merge import MergeActionRecord
+    from factory.deploy.models import DeployActionRecord
+
+    root = _write_root(tmp_path)
+    cfg = load_app_config("sacrifice", root)
+    story = _make_story(root, pr=314)
+    db = root / "state" / "factory.db"
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    SQLModel.metadata.create_all(eng)
+    real_sha = "f00dbabe" * 5
+    with Session(eng) as session:
+        session.add(
+            MergeActionRecord(
+                app="sacrifice",
+                pr_number=314,
+                head_sha=real_sha,
+                merged=True,
+                reason="auto",
+                gates_passed_json="[]",
+                blocking_labels_json="[]",
+            )
+        )
+        session.commit()
+
+    result = handle_deploy(story, cfg, root, dry_run=True, fixture_step_outputs=[(0, "", "")] * 10)
+    assert result.next_state == StoryState.DEPLOYED
+    with Session(eng) as session:
+        deploy_rows = list(session.exec(select(DeployActionRecord)).all())
+    assert len(deploy_rows) == 1
+    assert deploy_rows[0].sha == real_sha
+
+
+def test_handle_deploy_falls_back_when_no_merge_actions(tmp_path: Path) -> None:
+    """Without a merge_actions row, ``pending-sha`` placeholder is recorded."""
+    from sqlmodel import Session, create_engine, select
+
+    from factory.deploy.models import DeployActionRecord
+
+    root = _write_root(tmp_path)
+    cfg = load_app_config("sacrifice", root)
+    story = _make_story(root, pr=271)
+
+    result = handle_deploy(story, cfg, root, dry_run=True, fixture_step_outputs=[(0, "", "")] * 10)
+    assert result.next_state == StoryState.DEPLOYED
+    db = root / "state" / "factory.db"
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        deploy_rows = list(session.exec(select(DeployActionRecord)).all())
+    assert deploy_rows[0].sha == "pending-sha"
