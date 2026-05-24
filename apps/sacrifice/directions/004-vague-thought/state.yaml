@@ -16,7 +16,6 @@ audit:
     - api_spec
     - explore_tag_or_artifacts
     - acceptance_criteria
-validation_issues: []
 pm_result:
   type: feature
   priority: p2
