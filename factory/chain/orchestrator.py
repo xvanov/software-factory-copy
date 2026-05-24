@@ -252,7 +252,12 @@ def tick(
                 in_flight_app=in_flight_app,
                 exclude_story_id=story.id,
             )
-            decision = can_dispatch(handler_name, app, state_dict, settings)
+            # Resolve the actual job_kind to dispatch — bug-typed directions
+            # get a "-bug" suffix so ``fix-only`` mode lets the work
+            # proceed while still blocking feature stories.
+            direction = H.find_direction_for_story(story, root)
+            job_kind = _resolve_job_kind(story, direction, handler_name)
+            decision = can_dispatch(job_kind, app, state_dict, settings)
             if not decision.allowed:
                 story.last_rejection_reason = decision.rejected_reason
                 H.persist_story(story, db)
