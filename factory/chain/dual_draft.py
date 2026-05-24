@@ -195,6 +195,12 @@ def produce_interpretations(
     return out
 
 
+# HTML-comment sentinel embedded in every link_alternatives comment so the
+# function can detect its own prior posts and stay idempotent across reruns
+# of ``handle_stories_spawned`` (e.g. retries, redeliveries).
+LINK_ALTERNATIVES_SENTINEL = "<!-- factory:dual-draft-link -->"
+
+
 def link_alternatives(
     story_a: Any,
     story_b: Any,
@@ -206,10 +212,13 @@ def link_alternatives(
 ) -> int | None:
     """Post a comparison comment on the Direction Tracker linking both stories.
 
-    Returns the comment id (truthy on success) or ``None`` if no
-    tracker issue is known. Idempotent only in the trivial sense: it
-    will append a new comment every call. (The Direction Tracker carries
-    an updated body via ``open_or_update_tracker_issue`` separately.)
+    Returns the comment id on a fresh post, ``None`` if no tracker issue is
+    known, and the existing comment's id on a no-op idempotent rerun.
+
+    Idempotency: every comment carries the
+    ``<!-- factory:dual-draft-link -->`` sentinel. On reentry we scan
+    existing comments for the sentinel and skip the post if one is
+    present.
     """
     tracker = direction.state.get("tracker_issue") if direction.state else None
     if not isinstance(tracker, int) or tracker <= 0:
@@ -221,11 +230,27 @@ def link_alternatives(
         # Caller forgot to pass repo; nothing to do.
         return None
 
+    repo = github_client.get_repo(app_repo)
+    issue = repo.get_issue(tracker)
+
+    # Idempotency check — if an existing comment already carries the
+    # sentinel, return its id and skip the post. Best-effort: list-comments
+    # may raise on a network blip; we treat that as "post anyway".
+    try:
+        existing = issue.get_comments()
+    except Exception:  # pragma: no cover — defensive
+        existing = []
+    for comment in existing:
+        body = getattr(comment, "body", "") or ""
+        if LINK_ALTERNATIVES_SENTINEL in body:
+            return int(getattr(comment, "id", 0)) or 1
+
     # Build the comparison comment body.
     int_a = interpretations[0] if len(interpretations) > 0 else None
     int_b = interpretations[1] if len(interpretations) > 1 else None
 
     lines: list[str] = []
+    lines.append(LINK_ALTERNATIVES_SENTINEL)
     lines.append("## Dual-draft alternatives spawned")
     lines.append("")
     lines.append(
@@ -252,7 +277,5 @@ def link_alternatives(
         "auto-cleans the other draft once one alternative merges."
     )
 
-    repo = github_client.get_repo(app_repo)
-    issue = repo.get_issue(tracker)
     comment = issue.create_comment("\n".join(lines))
     return int(getattr(comment, "id", 0)) or 1

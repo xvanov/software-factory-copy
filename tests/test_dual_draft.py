@@ -22,7 +22,9 @@ from sqlmodel import Session, create_engine, select
 from factory.app_config import AppConfig
 from factory.chain.dual_draft import (
     CONFIDENCE_THRESHOLD,
+    LINK_ALTERNATIVES_SENTINEL,
     Interpretation,
+    link_alternatives,
     produce_interpretations,
     should_spawn_dual_draft,
 )
@@ -208,6 +210,106 @@ def test_handle_stories_spawned_high_confidence_spawns_one_story(tmp_path: Path)
     assert len(stories) == 1, "expected single-story path"
     assert "alt-a" not in stories[0].slug
     assert "alt-b" not in stories[0].slug
+
+
+class _FakeComment:
+    def __init__(self, body: str, cid: int) -> None:
+        self.body = body
+        self.id = cid
+
+
+class _FakeIssue:
+    def __init__(self) -> None:
+        self.comments: list[_FakeComment] = []
+        self._next_id = 100
+
+    def get_comments(self) -> list[_FakeComment]:
+        return list(self.comments)
+
+    def create_comment(self, body: str) -> _FakeComment:
+        c = _FakeComment(body, self._next_id)
+        self._next_id += 1
+        self.comments.append(c)
+        return c
+
+
+class _FakeRepo:
+    def __init__(self, issue: _FakeIssue) -> None:
+        self._issue = issue
+
+    def get_issue(self, _n: int) -> _FakeIssue:
+        return self._issue
+
+
+class _FakeClient:
+    def __init__(self, issue: _FakeIssue) -> None:
+        self._repo = _FakeRepo(issue)
+
+    def get_repo(self, _name: str) -> _FakeRepo:
+        return self._repo
+
+
+def _mk_story(issue_number: int) -> Any:
+    class _S:
+        pass
+
+    s = _S()
+    s.github_issue_number = issue_number
+    return s
+
+
+def test_link_alternatives_is_idempotent_via_sentinel() -> None:
+    """Two consecutive ``link_alternatives`` calls produce exactly one comment.
+
+    Phase 7 NIT cleanup: prior to this, the function appended a fresh
+    comment every time it ran, so retries / webhook redeliveries would
+    spam the Direction Tracker.
+    """
+    direction = _mk_direction(explore=True)
+    interps = produce_interpretations(direction, {}, dry_run=True)
+    issue = _FakeIssue()
+    client = _FakeClient(issue)
+
+    first = link_alternatives(
+        _mk_story(11),
+        _mk_story(12),
+        interps,
+        direction,
+        client,
+        app_repo="owner/sacrifice",
+    )
+    second = link_alternatives(
+        _mk_story(11),
+        _mk_story(12),
+        interps,
+        direction,
+        client,
+        app_repo="owner/sacrifice",
+    )
+
+    assert first is not None and second is not None
+    assert first == second, "second call must return the existing comment's id"
+    assert len(issue.comments) == 1, "no duplicate comment posted on rerun"
+    assert LINK_ALTERNATIVES_SENTINEL in issue.comments[0].body
+
+
+def test_link_alternatives_embeds_sentinel_marker() -> None:
+    """Every new comment carries the sentinel HTML comment for future idempotency."""
+    direction = _mk_direction(explore=True)
+    interps = produce_interpretations(direction, {}, dry_run=True)
+    issue = _FakeIssue()
+    client = _FakeClient(issue)
+
+    link_alternatives(
+        _mk_story(1),
+        _mk_story(2),
+        interps,
+        direction,
+        client,
+        app_repo="owner/sacrifice",
+    )
+    assert len(issue.comments) == 1
+    assert issue.comments[0].body.startswith(LINK_ALTERNATIVES_SENTINEL)
 
 
 _ = Any  # silence unused import
