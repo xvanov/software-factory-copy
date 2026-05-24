@@ -5,6 +5,8 @@ Dry-run only; no LLM/GitHub. Verifies:
   * Fixture drift produces a ``(bug)``-typed direction on disk.
   * Empty fixture produces no direction.
   * The ``scheduled_runs`` row is recorded with the right counts.
+  * The persona prompt declares an Operating contract and requires JSON
+    output (P7.0 cleanup — prompt-content assertions).
 """
 
 from __future__ import annotations
@@ -17,6 +19,22 @@ from factory.chain.scheduled_tasks import (
     ScheduledRunRecord,
     run_scheduled_persona,
 )
+
+_FACTORY_ROOT = Path(__file__).resolve().parent.parent
+_PERSONA_PATH = _FACTORY_ROOT / "factory" / "personas" / "ralph.md"
+
+
+def test_persona_ralph_prompt_has_operating_contract() -> None:
+    """P7.0 cleanup: every persona prompt must declare its Operating contract."""
+    body = _PERSONA_PATH.read_text(encoding="utf-8")
+    assert "## Operating contract" in body, "ralph.md missing 'Operating contract' section"
+
+
+def test_persona_ralph_prompt_requires_json_output() -> None:
+    """P7.0 cleanup: Ralph emits structured JSON; the prompt must say so."""
+    body = _PERSONA_PATH.read_text(encoding="utf-8")
+    assert "JSON" in body, "ralph.md missing JSON output requirement"
+    assert "```json" in body, "ralph.md missing fenced JSON output schema"
 
 
 def _write_root(tmp_path: Path) -> Path:
