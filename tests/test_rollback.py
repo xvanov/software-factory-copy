@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlmodel import Session, create_engine, select
@@ -158,3 +159,126 @@ def test_merges_outside_window_are_ignored(factory_root_with_recent_merge: Path)
         fixture_ci_state_by_pr={42: "failure"},
     )
     assert actions == [], f"expected no actions for a merge older than window, got {actions!r}"
+
+
+def test_real_run_captures_revert_pr_number_from_gh(
+    factory_root_with_recent_merge: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P5.0 MEDIUM-2: real-run path must capture the new revert PR's number
+    from `gh pr revert`'s stdout. We mock the gh CLI binary to return a
+    --json payload, mock the GH client for the commit-status read and the
+    create_issue call, and assert ``revert_pr_number`` is populated.
+    """
+    import subprocess as _sp_mod
+
+    from factory.chain import rollback as rb_mod
+
+    root = factory_root_with_recent_merge
+
+    # --- Mock GH client ---
+    class _Status:
+        state = "failure"
+
+    class _Commit:
+        def get_combined_status(self) -> Any:  # noqa: ANN401
+            return _Status()
+
+    class _Issue:
+        number = 7777
+
+    class _Repo:
+        def get_commit(self, _sha: str) -> _Commit:
+            return _Commit()
+
+        def create_issue(self, **_kwargs: Any) -> _Issue:  # noqa: ANN401
+            return _Issue()
+
+    class _Client:
+        def get_repo(self, _repo: str) -> _Repo:
+            return _Repo()
+
+    # --- Mock subprocess.run to simulate `gh pr revert --json url,number`. ---
+    captured_args: list[list[str]] = []
+
+    class _Proc:
+        def __init__(self, stdout: str, stderr: str = "") -> None:
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = 0
+
+    def _fake_run(argv: list[str], **_kwargs: Any) -> _Proc:  # noqa: ANN401
+        captured_args.append(argv)
+        # gh returns JSON when --json flag is honored.
+        return _Proc(stdout='{"url":"https://github.com/xvanov/sacrifice/pull/4242","number":4242}')
+
+    monkeypatch.setattr(_sp_mod, "run", _fake_run)
+
+    actions = rb_mod.rollback_watch_tick(
+        root,
+        "sacrifice",
+        dry_run=False,
+        github_client=_Client(),
+    )
+    assert len(actions) == 1
+    a = actions[0]
+    assert a.action_type == "revert"
+    assert a.revert_pr_number == 4242, (
+        f"expected revert_pr_number captured from gh stdout JSON, got {a.revert_pr_number!r}"
+    )
+    assert a.regression_issue_number == 7777
+    # gh was invoked with --json url,number.
+    assert any("--json" in argv for argv in captured_args), captured_args
+
+
+def test_real_run_falls_back_to_url_parse_when_json_missing(
+    factory_root_with_recent_merge: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the installed gh CLI doesn't support --json on pr revert, the
+    rollback worker must still recover the revert PR number by parsing the
+    /pull/N pattern from stdout/stderr."""
+    import subprocess as _sp_mod
+
+    from factory.chain import rollback as rb_mod
+
+    root = factory_root_with_recent_merge
+
+    class _Status:
+        state = "failure"
+
+    class _Commit:
+        def get_combined_status(self) -> Any:  # noqa: ANN401
+            return _Status()
+
+    class _Issue:
+        number = 7778
+
+    class _Repo:
+        def get_commit(self, _sha: str) -> _Commit:
+            return _Commit()
+
+        def create_issue(self, **_kwargs: Any) -> _Issue:  # noqa: ANN401
+            return _Issue()
+
+    class _Client:
+        def get_repo(self, _repo: str) -> _Repo:
+            return _Repo()
+
+    class _Proc:
+        def __init__(self) -> None:
+            # No JSON; just a human-readable URL line as older gh prints.
+            self.stdout = "https://github.com/xvanov/sacrifice/pull/5151\n"
+            self.stderr = ""
+            self.returncode = 0
+
+    def _fake_run(_argv: list[str], **_kwargs: Any) -> _Proc:  # noqa: ANN401
+        return _Proc()
+
+    monkeypatch.setattr(_sp_mod, "run", _fake_run)
+
+    actions = rb_mod.rollback_watch_tick(
+        root,
+        "sacrifice",
+        dry_run=False,
+        github_client=_Client(),
+    )
+    assert actions[0].revert_pr_number == 5151

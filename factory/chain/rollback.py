@@ -139,7 +139,7 @@ def rollback_watch_tick(
         ci_state: str | None = None
         if fixture_ci_state_by_pr is not None:
             ci_state = fixture_ci_state_by_pr.get(m.pr_number)
-        elif not dry_run and github_client is not None:  # pragma: no cover - real GH
+        elif not dry_run and github_client is not None:
             repo = github_client.get_repo(cfg.repo)
             commit = repo.get_commit(m.head_sha)
             ci_state = commit.get_combined_status().state
@@ -148,18 +148,47 @@ def rollback_watch_tick(
             failing_tests = (fixture_failing_tests_by_pr or {}).get(m.pr_number, [])
             revert_pr_number: int | None = None
             regression_issue_number: int | None = None
-            if not dry_run and github_client is not None:  # pragma: no cover - real GH
+            if not dry_run and github_client is not None:
                 repo = github_client.get_repo(cfg.repo)
                 # Open the revert PR. PyGithub doesn't expose ``gh pr revert``
                 # directly; the closest is creating a branch + PR. The real
                 # path uses the GH CLI binary because gh handles
                 # cherry-pick-revert correctly.
+                import json as _json
+                import re as _re
                 import subprocess
 
-                subprocess.run(
-                    ["gh", "pr", "revert", str(m.pr_number), "--repo", cfg.repo],
+                proc = subprocess.run(
+                    [
+                        "gh",
+                        "pr",
+                        "revert",
+                        str(m.pr_number),
+                        "--repo",
+                        cfg.repo,
+                        "--json",
+                        "url,number",
+                    ],
+                    capture_output=True,
+                    text=True,
                     check=False,
                 )
+                # Parse the revert PR's number from either --json output or
+                # the URL pattern (``https://github.com/owner/repo/pull/NNN``).
+                # We try --json first; if that subcommand spelling isn't
+                # supported by the installed gh CLI we fall back to scanning
+                # the combined stdout+stderr for a pull-URL.
+                combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+                try:
+                    parsed = _json.loads(proc.stdout)
+                    if isinstance(parsed, dict) and "number" in parsed:
+                        revert_pr_number = int(parsed["number"])
+                except (ValueError, TypeError):
+                    pass
+                if revert_pr_number is None:
+                    match = _re.search(r"/pull/(\d+)", combined)
+                    if match:
+                        revert_pr_number = int(match.group(1))
                 # File the regression issue.
                 issue = repo.create_issue(
                     title=f"[p0] Regression after merging PR #{m.pr_number}",
