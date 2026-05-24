@@ -6,7 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from factory.model_router import all_known_personas, route
+from factory.model_router import active_provider, all_known_personas, route
+
+
+@pytest.fixture(autouse=True)
+def _force_direct_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The historical model_router tests assert the direct-provider routes.
+
+    The factory default flipped to ``azure`` in Phase 8; pin these tests to
+    ``direct`` so the assertions about DeepSeek/Anthropic model ids stay
+    meaningful. Azure-specific behavior lives in ``test_runner_azure.py``.
+    """
+    monkeypatch.setenv("FACTORY_PROVIDER", "direct")
 
 
 def test_static_persona_returns_string() -> None:
@@ -54,3 +65,10 @@ def test_keyerror_when_no_fallback(tmp_path: Path) -> None:
     custom.write_text("routes:\n  pm: x/y\n", encoding="utf-8")
     with pytest.raises(KeyError):
         route("nonexistent", routes_path=custom)
+
+
+def test_active_provider_reflects_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FACTORY_PROVIDER", "azure")
+    assert active_provider() == "azure"
+    monkeypatch.setenv("FACTORY_PROVIDER", "direct")
+    assert active_provider() == "direct"

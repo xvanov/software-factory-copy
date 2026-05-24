@@ -152,15 +152,27 @@ def _provider_env_key(model: str) -> str | None:
         return "ANTHROPIC_API_KEY"
     if model.startswith("openai/") or model.startswith("gpt"):
         return "OPENAI_API_KEY"
+    if model.startswith("azure_ai/") or model.startswith("azure/"):
+        return "AZURE_AI_API_KEY"
     return None
 
 
 def _resolve_api_key(cfg: LLMConfig) -> str | None:
+    # Bootstrap Azure Foundry env remap on first resolution so callers that
+    # only set AZURE_FOUNDRY_* still find AZURE_AI_API_KEY populated.
+    from factory.providers.azure_foundry import ensure_bootstrapped
+
+    ensure_bootstrapped()
     if cfg.api_key:
         return cfg.api_key
     env_key = _provider_env_key(cfg.model)
     if env_key:
-        return os.environ.get(env_key)
+        value = os.environ.get(env_key)
+        if value:
+            return value
+        # Fallback for Azure: accept the Foundry-named env var as well.
+        if env_key == "AZURE_AI_API_KEY":
+            return os.environ.get("AZURE_FOUNDRY_API_KEY")
     return None
 
 
@@ -322,8 +334,8 @@ async def sandbox_run(
     if api_key is None:
         err = (
             f"No API key available for model {llm_config.model!r}. Set the appropriate "
-            f"env var (DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY) "
-            f"or pass --dry-run."
+            f"env var (DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / "
+            f"AZURE_AI_API_KEY) or pass --dry-run."
         )
         _record_run(
             persona=persona,
@@ -364,12 +376,30 @@ async def sandbox_run(
         )
         return RunResult(success=False, error=err, summary=err)
 
-    llm = LLM(
-        model=llm_config.model,
-        api_key=SecretStr(api_key),
-        base_url=llm_config.base_url,
-        usage_id=f"factory:{persona}",
-    )
+    # For Azure Foundry, populate base_url + api_version from env if the
+    # caller didn't pass them explicitly. The LiteLLM monkey-patch in
+    # ``factory.providers.azure_foundry.ensure_bootstrapped`` (already called
+    # by ``_resolve_api_key`` above) makes the OpenAI-compatible path work
+    # for every ``azure_ai/...`` model id.
+    base_url = llm_config.base_url
+    api_version: str | None = None
+    if llm_config.model.startswith("azure_ai/") or llm_config.model.startswith("azure/"):
+        base_url = base_url or os.environ.get("AZURE_AI_API_BASE") or os.environ.get(
+            "AZURE_FOUNDRY_ENDPOINT"
+        )
+        api_version = os.environ.get("AZURE_AI_API_VERSION") or os.environ.get(
+            "AZURE_FOUNDRY_API_VERSION"
+        )
+
+    llm_kwargs: dict[str, Any] = {
+        "model": llm_config.model,
+        "api_key": SecretStr(api_key),
+        "base_url": base_url,
+        "usage_id": f"factory:{persona}",
+    }
+    if api_version is not None:
+        llm_kwargs["api_version"] = api_version
+    llm = LLM(**llm_kwargs)
     agent = get_default_agent(llm=llm, cli_mode=True)
     workspace = LocalWorkspace(working_dir=str(Path(repo_path).resolve()))
 
@@ -511,14 +541,31 @@ def text_run(
     except Exception as exc:
         raise RuntimeError(f"litellm not installed: {exc}") from exc
 
+    # Azure Foundry: ensure base_url is present so LiteLLM's azure_ai path
+    # hits ``<base>/chat/completions?api-version=X`` rather than the default
+    # Azure-OpenAI deployment-name URL.
+    effective_base_url = base_url
+    if effective_base_url is None and (
+        model_id.startswith("azure_ai/") or model_id.startswith("azure/")
+    ):
+        effective_base_url = os.environ.get("AZURE_AI_API_BASE") or os.environ.get(
+            "AZURE_FOUNDRY_ENDPOINT"
+        )
+
     messages = [{"role": "user", "content": prompt}]
     kwargs: dict[str, Any] = {
         "model": model_id,
         "messages": messages,
         "api_key": resolved_key,
     }
-    if base_url:
-        kwargs["base_url"] = base_url
+    if effective_base_url:
+        kwargs["base_url"] = effective_base_url
+    if model_id.startswith("azure_ai/") or model_id.startswith("azure/"):
+        api_version = os.environ.get("AZURE_AI_API_VERSION") or os.environ.get(
+            "AZURE_FOUNDRY_API_VERSION"
+        )
+        if api_version:
+            kwargs["api_version"] = api_version
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if schema is not None:

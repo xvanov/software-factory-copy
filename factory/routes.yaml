@@ -2,9 +2,20 @@
 # Edit freely — the model_router reads this at runtime. Self-improvement seam.
 #
 # Schema:
-#   routes.<persona>: <model_id>            # static persona → model
-#   routes.<persona>.<difficulty>: <id>     # difficulty-aware persona (dev today)
-#   defaults.fallback: <model_id>           # used when persona missing
+#   default_provider: <azure|direct>          # which top-level routes block to read
+#   routes.<persona>: <model_id>              # direct-provider routes (DeepSeek/Anthropic/OpenAI)
+#   routes.<persona>.<difficulty>: <id>       # difficulty-aware persona (dev today)
+#   azure_routes.<persona>: <model_id>        # Azure AI Foundry routes (azure_ai/<deployment>)
+#   azure_routes.<persona>.<difficulty>: <id> # difficulty-aware Azure persona
+#   defaults.fallback: <model_id>             # used when persona missing from active routes
+#   defaults.azure_fallback: <model_id>       # used when persona missing under azure_routes
+#
+# Provider selection precedence at runtime:
+#   1. FACTORY_PROVIDER env var ("azure" or "direct") overrides everything.
+#   2. default_provider (this file).
+#   3. "direct" if neither is set.
+
+default_provider: azure
 
 routes:
   pm: deepseek/deepseek-chat
@@ -26,5 +37,29 @@ routes:
   bug_hunter: deepseek/deepseek-chat
   security: anthropic/claude-opus-4-7
 
+# Azure AI Foundry deployments at innergy-internal-ai2-resource. As of the
+# Stage A probe only ``gpt-4.1`` is live there; the routes collapse to it
+# uniformly until additional deployments come online.
+azure_routes:
+  pm: azure_ai/gpt-4.1
+  analyst: azure_ai/gpt-4.1
+  architect: azure_ai/gpt-4.1
+  sm: azure_ai/gpt-4.1
+  dev:
+    standard: azure_ai/gpt-4.1
+    hard: azure_ai/gpt-4.1
+  test_designer: azure_ai/gpt-4.1
+  test_implementer: azure_ai/gpt-4.1
+  reviewer: azure_ai/gpt-4.1
+  tech_writer: azure_ai/gpt-4.1
+  release_manager: azure_ai/gpt-4.1
+  onboarder: azure_ai/gpt-4.1
+  ux_designer: azure_ai/gpt-4.1
+  ux_auditor: azure_ai/gpt-4.1
+  ralph: azure_ai/gpt-4.1
+  bug_hunter: azure_ai/gpt-4.1
+  security: azure_ai/gpt-4.1
+
 defaults:
   fallback: deepseek/deepseek-chat
+  azure_fallback: azure_ai/gpt-4.1
