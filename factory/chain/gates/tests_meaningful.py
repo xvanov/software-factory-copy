@@ -30,14 +30,21 @@ def evaluate(pr: PRContext, app_config: AppConfig) -> GateResult:
 
     # Mutation hook (opt-in). Phase 4 only wires the flag — no mutmut
     # subprocess invocation yet because real-run requires app-specific
-    # mutmut configuration the factory cannot synthesize.
-    mutation_status = "skipped"
+    # mutmut configuration the factory cannot synthesize. P5.0 MEDIUM-3
+    # carry-over: when an app opts in but no runner is wired the gate
+    # must FAIL rather than silently pass; otherwise mutation_testing=true
+    # is a no-op that gives operators false confidence.
     if app_config.gates.mutation_testing:
-        mutation_status = "opted_in_but_not_executed_in_phase_4"
+        return GateResult(
+            label=label,
+            passed=False,
+            reason="mutation_testing opted-in but no runner wired",
+            details={"mutation_status": "opted_in_no_runner", "findings": []},
+        )
 
     return GateResult(
         label=label,
         passed=True,
         reason="no slop findings",
-        details={"mutation_status": mutation_status, "findings": []},
+        details={"mutation_status": "skipped", "findings": []},
     )

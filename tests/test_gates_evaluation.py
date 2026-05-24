@@ -192,12 +192,16 @@ def test_tests_meaningful_mutation_status_skipped_by_default(
     assert r.details["mutation_status"] == "skipped"
 
 
-def test_tests_meaningful_mutation_status_opted_in_when_flag_true() -> None:
+def test_tests_meaningful_fails_when_mutation_opted_in_but_unwired() -> None:
+    """P5.0 MEDIUM-3: mutation_testing=true with no runner wired must FAIL
+    the gate. Silent pass was misleading — operators read the gate green
+    and believed mutation coverage was being checked."""
     cfg = AppConfig(name="x", repo="o/r", gates=AppGatesConfig(mutation_testing=True))
     pr = PRContext(pr_number=1, head_sha="a", base_branch="main", files_changed=[])
     r = tests_meaningful.evaluate(pr, cfg)
-    assert r.passed
-    assert r.details["mutation_status"] == "opted_in_but_not_executed_in_phase_4"
+    assert not r.passed, "mutation_testing opt-in without a runner must fail the gate"
+    assert r.reason == "mutation_testing opted-in but no runner wired"
+    assert r.details["mutation_status"] == "opted_in_no_runner"
 
 
 # --- flow_verified ------------------------------------------------------- #
