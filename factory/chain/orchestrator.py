@@ -24,10 +24,38 @@ from sqlmodel import Session, create_engine, select
 from factory.app_config import AppConfig, load_app_config
 from factory.chain import handlers as H
 from factory.chain.state_machine import StoryRecord, StoryState
+from factory.directions.parser import Direction
 from factory.settings.enforcer import can_dispatch
 from factory.settings.loader import load_settings
 from factory.settings.modes import get_mode
 from factory.settings.spend import hour_spend_usd, today_spend_usd
+
+# Handler kinds that have a "bug-fix variant" recognized by the enforcer's
+# ``fix-only`` mode. Kept in sync with
+# ``factory/settings/enforcer.py:_BUG_FIX_JOB_KINDS``.
+_BUG_AWARE_HANDLER_KINDS = {"sm", "test_design", "test_impl", "dev", "review"}
+
+
+def _resolve_job_kind(
+    story: StoryRecord,
+    direction: Direction | None,
+    handler_kind: str,
+) -> str:
+    """Compute the ``job_kind`` to pass to ``can_dispatch``.
+
+    Bug-typed work (``direction.type_tag == "bug"`` or ``story.scope ==
+    "bug"``) is appended with a ``-bug`` suffix so the enforcer's
+    ``fix-only`` mode permits the dispatch while still blocking feature
+    work. The enforcer's ``_mode_blocks`` already understands the suffix;
+    this helper is the single producer of the suffixed kinds.
+
+    Returns ``handler_kind`` unchanged for kinds that have no bug variant.
+    """
+    if handler_kind not in _BUG_AWARE_HANDLER_KINDS:
+        return handler_kind
+    type_tag = (direction.type_tag if direction is not None else None) or ""
+    is_bug = type_tag.lower() == "bug" or story.scope == "bug"
+    return f"{handler_kind}-bug" if is_bug else handler_kind
 
 
 @dataclass

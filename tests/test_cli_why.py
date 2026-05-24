@@ -70,3 +70,71 @@ def test_why_accepts_slug(seeded_root: Path) -> None:
     result = runner.invoke(cli_mod.app, ["why", "by-slug"])
     assert result.exit_code == 0
     assert "dev_retry" in result.stdout
+
+
+def test_why_projects_would_dispatch_under_normal_mode(seeded_root: Path) -> None:
+    """Story in STORY_CREATED under default settings should be 'would dispatch'."""
+    db = seeded_root / "state" / "factory.db"
+    story = persist_story(
+        StoryRecord(
+            direction_id="002",
+            app="sacrifice",
+            title="t",
+            slug="ready-story",
+            scope="backend",
+            state=StoryState.STORY_CREATED.value,
+        ),
+        db,
+    )
+    runner, cli_mod = _runner_with_root(seeded_root)
+    result = runner.invoke(cli_mod.app, ["why", str(story.id)])
+    assert result.exit_code == 0
+    # Output contains the projection line.
+    assert "would dispatch" in result.stdout
+    assert "job_kind=sm" in result.stdout
+
+
+def test_why_projects_would_be_blocked_when_paused(seeded_root: Path) -> None:
+    """When factory mode is 'paused', the projection is 'would be blocked'."""
+    db = seeded_root / "state" / "factory.db"
+    story = persist_story(
+        StoryRecord(
+            direction_id="002",
+            app="sacrifice",
+            title="t",
+            slug="paused-story",
+            scope="backend",
+            state=StoryState.STORY_CREATED.value,
+        ),
+        db,
+    )
+    # Flip the mode to paused — set_mode persists in the local state.db.
+    from factory.settings.modes import set_mode
+
+    set_mode("paused", seeded_root, db_path=db)
+
+    runner, cli_mod = _runner_with_root(seeded_root)
+    result = runner.invoke(cli_mod.app, ["why", str(story.id)])
+    assert result.exit_code == 0
+    assert "would be blocked" in result.stdout
+    assert "mode_paused_blocks_sm" in result.stdout
+
+
+def test_why_projects_would_be_blocked_terminal_state(seeded_root: Path) -> None:
+    """A terminal-from-dispatch state (PR_OPEN) prints 'terminal' projection."""
+    db = seeded_root / "state" / "factory.db"
+    story = persist_story(
+        StoryRecord(
+            direction_id="002",
+            app="sacrifice",
+            title="t",
+            slug="terminal-story",
+            scope="backend",
+            state=StoryState.PR_OPEN.value,
+        ),
+        db,
+    )
+    runner, cli_mod = _runner_with_root(seeded_root)
+    result = runner.invoke(cli_mod.app, ["why", str(story.id)])
+    assert result.exit_code == 0
+    assert "terminal" in result.stdout

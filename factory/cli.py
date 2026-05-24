@@ -677,11 +677,23 @@ def budget_cmd() -> None:
 def why_cmd(
     target: str = typer.Argument(..., help="Story id (StoryRecord.id) or slug"),
 ) -> None:
-    """Explain why a story is stuck/blocked."""
+    """Explain why a story is stuck/blocked.
+
+    Projects the next-tick decision by looking up the orchestrator's
+    ``_DISPATCH[story.state]`` handler kind and running ``can_dispatch``
+    against the same ``current_state`` dict the orchestrator builds. This
+    answers the operator's actual question ("would the next tick advance
+    this story, or block it, and why?") rather than just echoing the last
+    historical rejection.
+    """
     from sqlmodel import Session, create_engine, select
 
     from factory.chain.handlers import _engine
+    from factory.chain.handlers import stories_in_flight as _in_flight
+    from factory.chain.orchestrator import _DISPATCH, _build_current_state
     from factory.chain.state_machine import StoryRecord, StoryState, list_transitions_from
+    from factory.settings.enforcer import can_dispatch
+    from factory.settings.loader import load_settings
 
     db = _FACTORY_ROOT / "state" / "factory.db"
     _engine(db)
@@ -702,6 +714,42 @@ def why_cmd(
     next_edges_str = (
         ", ".join(f"{ev} -> {ns.value}" for ev, ns in next_edges) if next_edges else "(terminal)"
     )
+
+    # Project the next tick: which handler kind would fire, and would the
+    # enforcer allow it?
+    projection_line = "next-tick projection: (terminal — no handler dispatches from here)"
+    handler_name = _DISPATCH.get(StoryState(story.state))
+    if handler_name is not None:
+        # Resolve the actual job_kind the orchestrator would pass to the
+        # enforcer; ``_resolve_job_kind`` handles bug-suffix routing for
+        # bug-typed directions/stories.
+        from factory.chain.handlers import find_direction_for_story
+        from factory.chain.orchestrator import _resolve_job_kind
+
+        direction = find_direction_for_story(story, _FACTORY_ROOT)
+        job_kind = _resolve_job_kind(story, direction, handler_name)
+
+        in_flight_app = max(0, len(_in_flight(story.app, db)) - 1)
+        settings = load_settings(_FACTORY_ROOT)
+        state_dict = _build_current_state(
+            root=_FACTORY_ROOT,
+            db=db,
+            app=story.app,
+            in_flight_app=in_flight_app,
+            exclude_story_id=story.id,
+        )
+        decision = can_dispatch(job_kind, story.app, state_dict, settings)
+        if decision.allowed:
+            projection_line = (
+                f"next-tick projection: [bold green]would dispatch[/bold green] "
+                f"job_kind=[bold]{job_kind}[/bold]"
+            )
+        else:
+            projection_line = (
+                f"next-tick projection: [bold red]would be blocked[/bold red]: "
+                f"[bold]{decision.rejected_reason}[/bold] (job_kind={job_kind})"
+            )
+
     lines = [
         f"id=[bold]{story.id}[/bold]  slug=[bold]{story.slug}[/bold]",
         f"app=[bold]{story.app}[/bold]  state=[bold]{story.state}[/bold]",
@@ -710,6 +758,7 @@ def why_cmd(
         f"error=[bold]{story.error or '(none)'}[/bold]",
         f"branch={story.github_branch}  pr=#{story.github_pr_number}",
         f"next legal transitions: {next_edges_str}",
+        projection_line,
     ]
     console.print(Panel("\n".join(lines), title=f"why story {story.id}"))
 
