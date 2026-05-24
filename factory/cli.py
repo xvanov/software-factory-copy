@@ -353,7 +353,7 @@ def tick_cmd(
 
     summary = tick(_FACTORY_ROOT, app_name, dry_run=dry_run)
 
-    if not summary.handler_runs and not summary.errors:
+    if not summary.handler_runs and not summary.errors and not summary.rejected:
         console.print(
             Panel.fit(
                 f"No in-flight stories for app=[bold]{app_name}[/bold]. "
@@ -369,9 +369,19 @@ def tick_cmd(
     table.add_column("to")
     for slug, frm, to in summary.handler_runs:
         table.add_row(slug, frm, to)
-    console.print(table)
+    if summary.handler_runs:
+        console.print(table)
+    if summary.rejected:
+        rej_table = Table(title="rejected by caps/mode")
+        rej_table.add_column("story")
+        rej_table.add_column("reason")
+        for slug, reason in summary.rejected:
+            rej_table.add_row(slug, reason)
+        console.print(rej_table)
     console.print(
-        f"advanced={summary.stories_advanced} blocked={summary.stories_blocked} "
+        f"advanced={summary.stories_advanced} "
+        f"blocked_by_caps={summary.blocked_by_caps} "
+        f"blocked={summary.stories_blocked} "
         f"errors={len(summary.errors)}"
     )
     if summary.errors:
@@ -413,6 +423,325 @@ def story_cmd(
             title=f"story #{story.id}",
         )
     )
+
+
+# --------------------------------------------------------------------------- #
+# Phase-3 commands: inbox, queue, pause, resume, mode, budget, why,
+# settings, spend.
+# --------------------------------------------------------------------------- #
+
+
+def _list_apps() -> list[str]:
+    apps_dir = _FACTORY_ROOT / "apps"
+    if not apps_dir.exists():
+        return []
+    return sorted(p.name for p in apps_dir.iterdir() if (p / "config.yaml").exists())
+
+
+@app.command("inbox")
+def inbox_cmd(
+    app_name: str | None = typer.Option(
+        None, "--app", help="Filter inbox to a single app; default: all apps"
+    ),
+) -> None:
+    """Aggregate items needing human attention across apps."""
+    from sqlmodel import Session, create_engine, select
+
+    from factory.chain.handlers import _engine
+    from factory.chain.state_machine import StoryRecord
+    from factory.directions.parser import list_direction_dirs, parse_direction_dir
+    from factory.settings.loader import load_settings
+    from factory.settings.modes import get_mode
+    from factory.settings.spend import today_spend_usd
+
+    settings = load_settings(_FACTORY_ROOT)
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    _engine(db)
+    apps = [app_name] if app_name else _list_apps()
+
+    # Stories with last_rejection_reason or in BLOCKED state -> needs human.
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    needs_human_table = Table(title="Needs human action (stories)")
+    needs_human_table.add_column("app")
+    needs_human_table.add_column("id")
+    needs_human_table.add_column("slug")
+    needs_human_table.add_column("state")
+    needs_human_table.add_column("reason / blocker")
+    have_needs = False
+    with Session(eng) as session:
+        for a in apps:
+            rows = session.exec(select(StoryRecord).where(StoryRecord.app == a)).all()
+            for r in rows:
+                reason: str | None = None
+                if r.last_rejection_reason:
+                    reason = r.last_rejection_reason
+                elif r.state in {"blocked_tests_need_clarification", "reviewer_requested_changes"}:
+                    reason = r.state
+                if reason:
+                    needs_human_table.add_row(a, str(r.id), r.slug, r.state, reason)
+                    have_needs = True
+    if have_needs:
+        console.print(needs_human_table)
+    else:
+        console.print("[dim]No stories awaiting human action.[/dim]")
+
+    # needs-direction status from direction state.yaml.
+    nd_table = Table(title="needs-direction (directions)")
+    nd_table.add_column("app")
+    nd_table.add_column("direction")
+    nd_table.add_column("title")
+    nd_table.add_column("missing")
+    have_nd = False
+    for a in apps:
+        for ddir in list_direction_dirs(a, _FACTORY_ROOT):
+            try:
+                d = parse_direction_dir(a, ddir)
+            except Exception:
+                continue
+            if d.status == "needs-direction":
+                nd_table.add_row(
+                    a, ddir.name, d.title[:60], ", ".join(d.state.get("missing") or [])
+                )
+                have_nd = True
+    if have_nd:
+        console.print(nd_table)
+    else:
+        console.print("[dim]No directions in needs-direction.[/dim]")
+
+    # Budget warning.
+    spend = today_spend_usd(_FACTORY_ROOT, db_path=db)
+    cap = settings.caps.daily_spend_usd
+    if cap > 0 and spend >= cap * 0.75:
+        console.print(
+            Panel.fit(
+                f"[yellow]Budget warning:[/yellow] today's spend ${spend:.4f} >= 75% of "
+                f"daily cap ${cap:.2f}",
+                title="budget",
+            )
+        )
+
+    # Direction trackers awaiting action (status == 'pm-validated' but no
+    # downstream story yet) — rough heuristic; full Phase 7 will be richer.
+    trk_table = Table(title="active direction trackers")
+    trk_table.add_column("app")
+    trk_table.add_column("direction")
+    trk_table.add_column("status")
+    have_trk = False
+    for a in apps:
+        for ddir in list_direction_dirs(a, _FACTORY_ROOT):
+            try:
+                d = parse_direction_dir(a, ddir)
+            except Exception:
+                continue
+            if d.status not in {"created", "needs-direction"}:
+                trk_table.add_row(a, ddir.name, d.status)
+                have_trk = True
+    if have_trk:
+        console.print(trk_table)
+
+    console.print(
+        f"[dim]Current factory mode: [bold]{get_mode(_FACTORY_ROOT, db_path=db)}[/bold][/dim]"
+    )
+
+
+@app.command("queue")
+def queue_cmd(
+    app_name: str | None = typer.Option(None, "--app", help="Filter to one app"),
+) -> None:
+    """List in-flight StoryRecords with their state + last rejection reason."""
+    from sqlmodel import Session, create_engine, select
+
+    from factory.chain.handlers import _engine
+    from factory.chain.state_machine import StoryRecord, StoryState
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    _engine(db)
+    terminal = {
+        StoryState.PR_OPEN.value,
+        StoryState.CI_PENDING.value,
+        StoryState.CI_GREEN.value,
+        StoryState.READY_FOR_MERGE.value,
+        StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
+    }
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    table = Table(title="queue (in-flight stories)")
+    table.add_column("id")
+    table.add_column("app")
+    table.add_column("slug")
+    table.add_column("state")
+    table.add_column("retries")
+    table.add_column("rejection")
+    with Session(eng) as session:
+        stmt = select(StoryRecord)
+        if app_name:
+            stmt = stmt.where(StoryRecord.app == app_name)
+        rows = session.exec(stmt).all()
+    for r in rows:
+        if r.state in terminal:
+            continue
+        table.add_row(
+            str(r.id),
+            r.app,
+            r.slug,
+            r.state,
+            str(r.dev_retries),
+            r.last_rejection_reason or "",
+        )
+    console.print(table)
+
+
+@app.command("pause")
+def pause_cmd() -> None:
+    """Halt new dispatches: sets factory mode to ``paused``."""
+    from factory.settings.modes import set_mode
+
+    new = set_mode("paused", _FACTORY_ROOT)
+    console.print(Panel.fit(f"factory mode -> [bold yellow]{new}[/bold yellow]", title="pause"))
+
+
+@app.command("resume")
+def resume_cmd() -> None:
+    """Restore normal operation: sets factory mode to ``normal``."""
+    from factory.settings.modes import set_mode
+
+    new = set_mode("normal", _FACTORY_ROOT)
+    console.print(Panel.fit(f"factory mode -> [bold green]{new}[/bold green]", title="resume"))
+
+
+@app.command("mode")
+def mode_cmd(
+    name: str | None = typer.Argument(None, help="Mode name; omit to print the current mode"),
+) -> None:
+    """Show or set the factory mode."""
+    from factory.settings.loader import is_valid_mode, load_settings
+    from factory.settings.modes import get_mode, set_mode
+
+    settings = load_settings(_FACTORY_ROOT)
+    if name is None:
+        current = get_mode(_FACTORY_ROOT)
+        console.print(
+            f"current mode: [bold]{current}[/bold]\n"
+            f"available: {', '.join(settings.modes.available)}"
+        )
+        return
+    if not is_valid_mode(name, settings):
+        console.print(
+            f"[red]error:[/red] mode {name!r} not in allowed set: "
+            f"{', '.join(settings.modes.available)}"
+        )
+        raise typer.Exit(code=2)
+    new = set_mode(name, _FACTORY_ROOT, settings=settings)
+    console.print(Panel.fit(f"factory mode -> [bold]{new}[/bold]", title="mode"))
+
+
+@app.command("budget")
+def budget_cmd() -> None:
+    """Show today's spend, hourly spend, projected end-of-day, last 5 runs."""
+    from factory.settings.loader import load_settings
+    from factory.settings.spend import (
+        hour_spend_usd,
+        projected_end_of_day,
+        recent_runs,
+        today_spend_usd,
+    )
+
+    settings = load_settings(_FACTORY_ROOT)
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    today = today_spend_usd(_FACTORY_ROOT, db_path=db)
+    hour = hour_spend_usd(_FACTORY_ROOT, db_path=db)
+    proj = projected_end_of_day(_FACTORY_ROOT, db_path=db)
+    daily_cap = settings.caps.daily_spend_usd
+    hourly_cap = settings.caps.hourly_spend_usd
+    table = Table(title="budget")
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    table.add_row("today_spend_usd", f"${today:.4f}")
+    table.add_row("daily_cap_usd", f"${daily_cap:.4f}")
+    table.add_row("hour_spend_usd", f"${hour:.4f}")
+    table.add_row("hourly_cap_usd", f"${hourly_cap:.4f}")
+    table.add_row("projected_end_of_day_usd", f"${proj:.4f}")
+    console.print(table)
+    runs = recent_runs(_FACTORY_ROOT, db_path=db, limit=5)
+    if runs:
+        rtable = Table(title="last 5 runs")
+        rtable.add_column("ts")
+        rtable.add_column("persona")
+        rtable.add_column("model")
+        rtable.add_column("cost_usd", justify="right")
+        for r in runs:
+            rtable.add_row(r.ts, r.persona, r.model, f"${(r.cost_usd or 0):.4f}")
+        console.print(rtable)
+
+
+@app.command("why")
+def why_cmd(
+    target: str = typer.Argument(..., help="Story id (StoryRecord.id) or slug"),
+) -> None:
+    """Explain why a story is stuck/blocked."""
+    from sqlmodel import Session, create_engine, select
+
+    from factory.chain.handlers import _engine
+    from factory.chain.state_machine import StoryRecord, StoryState, list_transitions_from
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    _engine(db)
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        story: StoryRecord | None = None
+        try:
+            story = session.get(StoryRecord, int(target))
+        except ValueError:
+            rows = session.exec(select(StoryRecord).where(StoryRecord.slug == target)).all()
+            if rows:
+                story = rows[0]
+        if story is None:
+            console.print(f"[red]error:[/red] no story matched {target!r}")
+            raise typer.Exit(code=2)
+
+    next_edges = list_transitions_from(StoryState(story.state))
+    next_edges_str = (
+        ", ".join(f"{ev} -> {ns.value}" for ev, ns in next_edges) if next_edges else "(terminal)"
+    )
+    lines = [
+        f"id=[bold]{story.id}[/bold]  slug=[bold]{story.slug}[/bold]",
+        f"app=[bold]{story.app}[/bold]  state=[bold]{story.state}[/bold]",
+        f"retries=[bold]{story.dev_retries}[/bold]  tier=[bold]{story.current_model_tier}[/bold]",
+        f"last_rejection_reason=[bold]{story.last_rejection_reason or '(none)'}[/bold]",
+        f"error=[bold]{story.error or '(none)'}[/bold]",
+        f"branch={story.github_branch}  pr=#{story.github_pr_number}",
+        f"next legal transitions: {next_edges_str}",
+    ]
+    console.print(Panel("\n".join(lines), title=f"why story {story.id}"))
+
+
+@app.command("settings")
+def settings_cmd() -> None:
+    """Pretty-print the loaded factory_settings.yaml."""
+    from factory.settings.loader import load_settings
+
+    settings = load_settings(_FACTORY_ROOT)
+    import json as _json
+
+    console.print(Panel(_json.dumps(settings.model_dump(), indent=2), title="factory settings"))
+
+
+@app.command("spend")
+def spend_cmd(
+    days: int = typer.Option(7, "--days", help="Days of history to show"),
+) -> None:
+    """Historical spend breakdown (last N days)."""
+    from factory.settings.spend import spend_by_day
+
+    rows = spend_by_day(_FACTORY_ROOT, days=days)
+    table = Table(title=f"spend (last {days} days)")
+    table.add_column("date")
+    table.add_column("usd", justify="right")
+    total = 0.0
+    for d, usd in rows:
+        table.add_row(d, f"${usd:.4f}")
+        total += usd
+    table.add_row("total", f"${total:.4f}")
+    console.print(table)
 
 
 @app.command("webhook-serve")

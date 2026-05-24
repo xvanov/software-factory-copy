@@ -1,0 +1,22 @@
+caps:
+  global_concurrent_agents: 2
+  per_repo_concurrent_agents: 2
+  daily_spend_usd: 10
+  hourly_spend_usd: 2
+queues:
+  human_review_max_open_prs: 5
+  failing_ci_pause_threshold: 3
+rate_limits:
+  pm_invocations_per_hour: 4
+  ralph_runs_per_day: 24
+modes:
+  default: normal
+  available: [normal, fix-only, drain-reviews, paused, exploratory, deploy-frozen, ux-audit-only]
+direction_defaults:
+  require_user_flow_for_ui: true
+  require_api_spec_for_backend: true
+  allow_explore_tag: true
+  max_dev_retries: 3
+  escalate_model_on_retry: true
+  require_context_update_per_pr: true
+  enforce_canonical_doc_paths: true
