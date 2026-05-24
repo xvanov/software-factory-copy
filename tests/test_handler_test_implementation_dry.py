@@ -29,7 +29,14 @@ def app_config() -> AppConfig:
 
 
 def _story_through_design(temp_root: Path, app_config: AppConfig) -> StoryRecord:
+    """Build a story already past SM_DONE (so the test-design handler is the
+    next valid transition)."""
     db = temp_root / "state" / "factory.db"
+    # Write a stub story file so the real-run path of test_design would have
+    # content to read — dry-run doesn't need it but keeps the fixture honest.
+    stories_dir = temp_root / "apps" / "sacrifice" / "stories"
+    stories_dir.mkdir(parents=True, exist_ok=True)
+    (stories_dir / "0-add-healthz.md").write_text("# Story\n\n## Acceptance Criteria\n", "utf-8")
     s = persist_story(
         StoryRecord(
             direction_id="002",
@@ -37,7 +44,8 @@ def _story_through_design(temp_root: Path, app_config: AppConfig) -> StoryRecord
             title="Add /healthz",
             slug="add-healthz",
             scope="backend",
-            state=StoryState.STORY_CREATED.value,
+            state=StoryState.SM_DONE.value,
+            story_file_path="stories/0-add-healthz.md",
         ),
         db,
     )

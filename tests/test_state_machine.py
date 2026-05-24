@@ -20,6 +20,8 @@ from factory.chain.state_machine import (
     EVENT_REVIEWER_APPROVE,
     EVENT_REVIEWER_REQUEST_CHANGES,
     EVENT_REVIEWER_STARTED,
+    EVENT_SM_DONE,
+    EVENT_SM_STARTED,
     EVENT_TECH_WRITER_DONE,
     EVENT_TECH_WRITER_STARTED,
     EVENT_TEST_DESIGN_DONE,
@@ -50,6 +52,11 @@ def _story(state: StoryState = StoryState.STORY_CREATED) -> StoryRecord:
 def test_happy_path_advances_through_every_state() -> None:
     """Verify the whole chain happy-path: created -> ... -> pr_open."""
     s = _story()
+    # SM runs before test_design.
+    s.state = advance(s, EVENT_SM_STARTED).value
+    assert s.state == StoryState.SM_IN_PROGRESS.value
+    s.state = advance(s, EVENT_SM_DONE).value
+    assert s.state == StoryState.SM_DONE.value
     s.state = advance(s, EVENT_TEST_DESIGN_STARTED).value
     assert s.state == StoryState.TEST_DESIGN_IN_PROGRESS.value
     s.state = advance(s, EVENT_TEST_DESIGN_DONE).value
@@ -123,9 +130,19 @@ def test_illegal_transition_raises() -> None:
 
 
 def test_list_transitions_from_story_created() -> None:
-    """STORY_CREATED has exactly one outgoing edge: EVENT_TEST_DESIGN_STARTED."""
+    """STORY_CREATED has exactly one outgoing edge: EVENT_SM_STARTED."""
     edges = list_transitions_from(StoryState.STORY_CREATED)
-    assert edges == [(EVENT_TEST_DESIGN_STARTED, StoryState.TEST_DESIGN_IN_PROGRESS)]
+    assert edges == [(EVENT_SM_STARTED, StoryState.SM_IN_PROGRESS)]
+
+
+def test_sm_in_progress_transitions_to_sm_done() -> None:
+    s = _story(StoryState.SM_IN_PROGRESS)
+    assert advance(s, EVENT_SM_DONE) == StoryState.SM_DONE
+
+
+def test_sm_done_transitions_to_test_design_in_progress() -> None:
+    s = _story(StoryState.SM_DONE)
+    assert advance(s, EVENT_TEST_DESIGN_STARTED) == StoryState.TEST_DESIGN_IN_PROGRESS
 
 
 def test_blocked_state_has_no_outgoing_transitions() -> None:
@@ -137,6 +154,6 @@ def test_blocked_state_has_no_outgoing_transitions() -> None:
 def test_advance_does_not_mutate_story() -> None:
     """``advance`` is pure — the caller is responsible for persisting the new state."""
     s = _story(StoryState.STORY_CREATED)
-    next_state = advance(s, EVENT_TEST_DESIGN_STARTED)
+    next_state = advance(s, EVENT_SM_STARTED)
     assert s.state == StoryState.STORY_CREATED.value  # unchanged
-    assert next_state == StoryState.TEST_DESIGN_IN_PROGRESS
+    assert next_state == StoryState.SM_IN_PROGRESS

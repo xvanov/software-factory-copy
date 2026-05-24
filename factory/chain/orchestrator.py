@@ -37,11 +37,25 @@ class TickSummary:
 # transitioned into dev_in_progress, so we don't re-run; only DEV_RETRY and
 # the entry states get a handler).
 _DISPATCH = {
-    StoryState.STORY_CREATED: "test_design",
+    StoryState.STORY_CREATED: "sm",
+    StoryState.SM_DONE: "test_design",
+    # TODO(phase-3-or-4): Insert "architect" before test_design when the PM's
+    # ``child_stories`` count crosses the architectural threshold or the
+    # story scope is ``infra``. See ``factory/personas/architect.md`` for the
+    # prompt; the handler should rewrite ``context/current-state.md`` BEFORE
+    # the Test-Designer reads it. SM's prompt already documents the
+    # threshold (3+ stories, ``infra`` scope, schema/migration/dependency in
+    # the title), so the orchestrator can read sm_result_json to decide.
     StoryState.TEST_DESIGN_DONE: "test_impl",
     StoryState.TESTS_RED: "dev",
     StoryState.DEV_RETRY: "dev",
     StoryState.TESTS_GREEN: "review",
+    # TODO(phase-3-or-4): Invoke ``ux_designer`` (see
+    # ``factory/personas/ux_designer.md``) from inside the SM handler when
+    # the direction has UI scope and flow.md ambiguity is detected (no
+    # explicit user-visible steps, or contradictory descriptions). For now
+    # SM produces stories as-is; the ux_designer persona file is wired but
+    # not dispatched.
     StoryState.REVIEWER_DONE: "tech_writer",
     StoryState.TECH_WRITER_DONE: "docs_enforcer",
 }
@@ -56,6 +70,10 @@ def _invoke_handler(
     dry_run: bool,
     db_path: Path,
 ) -> H.HandlerResult:
+    if name == "sm":
+        return H.handle_sm(
+            story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
+        )
     if name == "test_design":
         return H.handle_test_design(
             story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path

@@ -30,6 +30,8 @@ class StoryState(StrEnum):
     """Every state the TDD chain can be in for a single story."""
 
     STORY_CREATED = "story_created"
+    SM_IN_PROGRESS = "sm_in_progress"
+    SM_DONE = "sm_done"
     TEST_DESIGN_IN_PROGRESS = "test_design_in_progress"
     TEST_DESIGN_DONE = "test_design_done"
     TEST_IMPLEMENTATION_IN_PROGRESS = "test_implementation_in_progress"
@@ -71,6 +73,7 @@ class StoryRecord(SQLModel, table=True):
     github_branch: str | None = None
     github_pr_number: int | None = None
     story_file_path: str = ""
+    sm_result_json: str | None = None  # JSON-serialized SM persona output
     test_plan_json: str | None = None  # JSON-serialized Test-Designer output
     test_implementer_result_json: str | None = None
     reviewer_result_json: str | None = None
@@ -80,9 +83,13 @@ class StoryRecord(SQLModel, table=True):
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     error: str | None = None
+    # Phase 3: last cap/mode rejection reason emitted by the dispatcher.
+    last_rejection_reason: str | None = None
 
 
 # Event names — strings the chain emits when a handler completes.
+EVENT_SM_STARTED = "sm_started"
+EVENT_SM_DONE = "sm_done"
 EVENT_TEST_DESIGN_STARTED = "test_design_started"
 EVENT_TEST_DESIGN_DONE = "test_design_done"
 EVENT_TEST_IMPL_STARTED = "test_impl_started"
@@ -106,7 +113,9 @@ EVENT_DOCS_ENFORCER_FAIL = "docs_enforcer_fail"
 # This is the source of truth for the chain's transition graph. Any
 # (state, event) pair not in this map is an illegal transition.
 _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
-    (StoryState.STORY_CREATED, EVENT_TEST_DESIGN_STARTED): StoryState.TEST_DESIGN_IN_PROGRESS,
+    (StoryState.STORY_CREATED, EVENT_SM_STARTED): StoryState.SM_IN_PROGRESS,
+    (StoryState.SM_IN_PROGRESS, EVENT_SM_DONE): StoryState.SM_DONE,
+    (StoryState.SM_DONE, EVENT_TEST_DESIGN_STARTED): StoryState.TEST_DESIGN_IN_PROGRESS,
     (StoryState.TEST_DESIGN_IN_PROGRESS, EVENT_TEST_DESIGN_DONE): StoryState.TEST_DESIGN_DONE,
     (
         StoryState.TEST_DESIGN_DONE,

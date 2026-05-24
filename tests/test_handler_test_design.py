@@ -26,14 +26,31 @@ def app_config() -> AppConfig:
 
 
 def _story(root: Path) -> StoryRecord:
+    """Story at SM_DONE with a real BMAD-format story file written to disk.
+
+    Mirrors the post-SM state the orchestrator now produces: ``handle_sm``
+    runs first and writes a story file at ``apps/<app>/stories/...``. The
+    Test-Designer should be able to read that file content directly.
+    """
     db = root / "state" / "factory.db"
+    stories_dir = root / "apps" / "sacrifice" / "stories"
+    stories_dir.mkdir(parents=True, exist_ok=True)
+    story_path_rel = "stories/0-add-healthz-endpoint.md"
+    (root / "apps" / "sacrifice" / story_path_rel).write_text(
+        "# Story 1.1: Add /healthz endpoint\n\n"
+        "## Acceptance Criteria\n\n"
+        "1. /healthz returns {version, status}\n\n"
+        "## Dev Notes\n\n[Source: context/modules/backend.md]\n",
+        encoding="utf-8",
+    )
     s = StoryRecord(
         direction_id="002",
         app="sacrifice",
         title="Add /healthz endpoint",
         slug="add-healthz-endpoint",
         scope="backend",
-        state=StoryState.STORY_CREATED.value,
+        state=StoryState.SM_DONE.value,
+        story_file_path=story_path_rel,
     )
     return persist_story(s, db)
 
@@ -78,3 +95,13 @@ def test_dry_run_backend_scope_uses_pytest_tool(temp_root: Path, app_config: App
     plan = json.loads(s.test_plan_json or "{}")
     assert plan["test_plan"][0]["tool"] == "pytest"
     assert plan["test_plan"][0]["file_path"].startswith("tests/")
+
+
+def test_story_file_is_real_and_readable(temp_root: Path, app_config: AppConfig) -> None:
+    """Sanity: the story file the Test-Designer would read is on disk and not empty."""
+    s = _story(temp_root)
+    full = temp_root / "apps" / s.app / s.story_file_path
+    assert full.exists()
+    text = full.read_text(encoding="utf-8")
+    assert "Acceptance Criteria" in text
+    assert "[Source: context/modules/backend.md]" in text

@@ -36,6 +36,8 @@ from factory.chain.state_machine import (
     EVENT_REVIEWER_APPROVE,
     EVENT_REVIEWER_REQUEST_CHANGES,
     EVENT_REVIEWER_STARTED,
+    EVENT_SM_DONE,
+    EVENT_SM_STARTED,
     EVENT_TECH_WRITER_DONE,
     EVENT_TECH_WRITER_STARTED,
     EVENT_TEST_DESIGN_DONE,
@@ -71,10 +73,38 @@ class HandlerResult:
 # --------------------------------------------------------------------------- #
 
 
+_MIGRATION_COLUMNS: dict[str, str] = {
+    # column_name -> SQL type (idempotent ALTER TABLE ADD COLUMN if missing).
+    "sm_result_json": "TEXT",
+    "last_rejection_reason": "TEXT",
+}
+
+
+def _ensure_story_columns(eng: Any) -> None:
+    """Idempotently add Phase 3 columns to the ``stories`` table if missing.
+
+    SQLModel.metadata.create_all() only creates tables that don't exist; it
+    won't add new columns to an existing table. For dev we don't need full
+    Alembic — just an ``ALTER TABLE ADD COLUMN`` for the small set of new
+    columns Phase 3 introduces. Adding a column twice raises; we suppress
+    that specific failure.
+    """
+    from sqlalchemy import text
+
+    with eng.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(stories)")).fetchall()
+        existing = {r[1] for r in rows}
+        for col, sqltype in _MIGRATION_COLUMNS.items():
+            if col in existing:
+                continue
+            conn.execute(text(f"ALTER TABLE stories ADD COLUMN {col} {sqltype}"))
+
+
 def _engine(db_path: Path) -> Any:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     eng = create_engine(f"sqlite:///{db_path}", echo=False)
     SQLModel.metadata.create_all(eng)
+    _ensure_story_columns(eng)
     return eng
 
 
@@ -184,6 +214,251 @@ def handle_stories_spawned(
         persist_story(story, db)
         out.append(story)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# sm (Scrum Master)
+# --------------------------------------------------------------------------- #
+
+
+def _dry_run_sm(
+    story: StoryRecord, direction: Direction | None, software_factory_root: Path
+) -> dict[str, Any]:
+    """Deterministic Scrum-Master result for dry-run mode.
+
+    Produces a BMAD-format story file embedding:
+      * the direction's flow.md verbatim if present
+      * the direction's api_spec.md verbatim if present
+      * acceptance criteria verbatim
+      * pointers to context/current-state.md and context/modules/<scope>.md.
+    """
+    flow_text = ""
+    api_text = ""
+    acceptance_lines: list[str] = []
+    if direction is not None:
+        if direction.has_flow:
+            try:
+                flow_text = (direction.dir_path / "flow.md").read_text(encoding="utf-8").rstrip()
+            except FileNotFoundError:
+                flow_text = ""
+        if direction.has_api_spec:
+            try:
+                api_text = (direction.dir_path / "api_spec.md").read_text(encoding="utf-8").rstrip()
+            except FileNotFoundError:
+                api_text = ""
+        acceptance_lines = list(direction.acceptance)
+
+    ac_block = (
+        "\n".join(f"{i + 1}. {ac}" for i, ac in enumerate(acceptance_lines))
+        if acceptance_lines
+        else "1. (no explicit acceptance criteria — see Dev Notes)"
+    )
+
+    dev_notes_parts = [
+        "- Story carries verbatim embeds of user-supplied artifacts below.",
+        f"- Read context/current-state.md and context/modules/{story.scope}.md before "
+        "implementing.",
+        "[Source: context/current-state.md]",
+        f"[Source: context/modules/{story.scope}.md]",
+    ]
+    if flow_text:
+        dev_notes_parts.append("\n#### Flow (verbatim from direction)\n\n" + flow_text)
+    if api_text:
+        dev_notes_parts.append("\n#### API spec (verbatim from direction)\n\n" + api_text)
+    dev_notes_parts.append("\n#### Acceptance criteria (verbatim from direction)\n\n" + ac_block)
+    dev_notes = "\n".join(dev_notes_parts)
+
+    file_content = (
+        f"# Story 1.1: {story.title}\n\n"
+        "Status: ready-for-dev\n\n"
+        "## Story\n\n"
+        f"As a user, I want {story.title.lower()}, so that the documented outcome holds.\n\n"
+        "## Acceptance Criteria\n\n"
+        f"{ac_block}\n\n"
+        "## Tasks / Subtasks\n\n"
+        "- [ ] Task 1 (AC: #1)\n"
+        "  - [ ] Subtask 1.1\n\n"
+        "## Dev Notes\n\n"
+        f"{dev_notes}\n\n"
+        "### References\n\n"
+        f"- [Source: context/modules/{story.scope}.md]\n"
+        "- [Source: context/current-state.md]\n\n"
+        "## Dev Agent Record\n\n"
+        "### Agent Model Used\n\n"
+        "(populated by dev)\n\n"
+        "### File List\n\n"
+        "## Senior Developer Review\n\n"
+        "## Review Follow-ups\n"
+    )
+
+    return {
+        "stories": [
+            {
+                "title": story.title,
+                "slug": story.slug,
+                "scope": story.scope,
+                "file_content": file_content,
+                "target_path": story.story_file_path
+                or f"stories/{story.github_issue_number or 0}-{story.slug}.md",
+            }
+        ],
+        "summary": f"Dry-run SM story for {story.slug!r}.",
+    }
+
+
+_SM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["stories", "summary"],
+    "properties": {
+        "stories": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["title", "slug", "scope", "file_content", "target_path"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "slug": {"type": "string"},
+                    "scope": {"type": "string"},
+                    "file_content": {"type": "string"},
+                    "target_path": {"type": "string"},
+                },
+            },
+        },
+        "summary": {"type": "string"},
+    },
+}
+
+
+def handle_sm(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+    *,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+    fixture: dict[str, Any] | None = None,
+) -> HandlerResult:
+    """Run the Scrum-Master persona; write the BMAD story file to disk.
+
+    In dry-run mode: deterministic fixture story is composed from the
+    direction's flow.md / api_spec.md / acceptance criteria (if any). The
+    story file is written to ``apps/<app>/stories/<issue|0>-<slug>.md``.
+    In real-run mode: invokes ``text_run("sm", ...)`` with the SM persona
+    prompt + context prelude + PM result + Direction. The chain writes the
+    file content from the SM result.
+    """
+    db = db_path or (software_factory_root / "state" / "factory.db")
+    story.state = advance(story, EVENT_SM_STARTED).value
+    persist_story(story, db)
+
+    direction = find_direction_for_story(story, software_factory_root)
+
+    if fixture is not None:
+        result = fixture
+    elif dry_run:
+        result = _dry_run_sm(story, direction, software_factory_root)
+    else:
+        from factory.context.loader import compose_context_prelude
+        from factory.runner import text_run
+
+        persona = "sm"
+        persona_prompt = _read_persona_prompt(persona)
+        prelude = compose_context_prelude(
+            persona=persona,
+            app_repo_path=software_factory_root / "apps" / story.app,
+            task_scope=story.scope,
+        )
+        flow_text = ""
+        api_text = ""
+        direction_body = ""
+        pm_block = ""
+        if direction is not None:
+            direction_body = direction.raw_body
+            if direction.has_flow:
+                try:
+                    flow_text = (direction.dir_path / "flow.md").read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    flow_text = ""
+            if direction.has_api_spec:
+                try:
+                    api_text = (direction.dir_path / "api_spec.md").read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    api_text = ""
+            pm_result = direction.state.get("pm_result") or {}
+            try:
+                pm_block = json.dumps(pm_result, indent=2)
+            except TypeError:
+                pm_block = "(pm_result not JSON-serializable)"
+
+        full_prompt = (
+            f"{persona_prompt.rstrip()}\n\n"
+            "---\n\n"
+            "## Context\n\n"
+            f"{prelude.rstrip()}\n\n"
+            "## PM result\n\n"
+            f"```json\n{pm_block}\n```\n\n"
+            "## Direction\n\n"
+            f"{direction_body.rstrip()}\n\n"
+            f"### flow.md\n\n{flow_text.rstrip() if flow_text else '(none)'}\n\n"
+            f"### api_spec.md\n\n{api_text.rstrip() if api_text else '(none)'}\n\n"
+            "## Story metadata\n\n"
+            f"- title: {story.title}\n"
+            f"- slug: {story.slug}\n"
+            f"- scope: {story.scope}\n"
+            f"- target_path: {story.story_file_path}\n\n"
+            "Return the JSON object. No prose outside the JSON."
+        )
+        model_id = route(persona)
+        result_any = text_run(
+            persona=persona,
+            prompt=full_prompt,
+            model_id=model_id,
+            schema=_SM_SCHEMA,
+            max_tokens=_STRONG_MAX_TOKENS,
+        )
+        if not isinstance(result_any, dict):
+            return HandlerResult(
+                next_state=StoryState(story.state),
+                error="sm returned non-dict",
+            )
+        result = result_any
+
+    # Find the story entry that matches this StoryRecord (by slug, fall back to first).
+    stories_out = result.get("stories") or []
+    matched: dict[str, Any] | None = None
+    for s in stories_out:
+        if s.get("slug") == story.slug:
+            matched = s
+            break
+    if matched is None and stories_out:
+        matched = stories_out[0]
+
+    if matched is None:
+        story.error = "sm produced no stories"
+        story.state = advance(story, EVENT_SM_DONE).value
+        story.sm_result_json = json.dumps(result)
+        persist_story(story, db)
+        return HandlerResult(
+            next_state=StoryState(story.state),
+            payload=result,
+            error=story.error,
+        )
+
+    # Resolve the on-disk target path. Prefer the SM's emitted target_path; if
+    # it carries the "<issue-number>" placeholder of 0, substitute the real
+    # issue number when known.
+    target_path_rel = str(matched.get("target_path") or story.story_file_path)
+    if story.github_issue_number is not None and target_path_rel.startswith("stories/0-"):
+        target_path_rel = f"stories/{story.github_issue_number}-{story.slug}.md"
+
+    target_abs = software_factory_root / "apps" / story.app / target_path_rel
+    target_abs.parent.mkdir(parents=True, exist_ok=True)
+    target_abs.write_text(matched.get("file_content") or "", encoding="utf-8")
+    story.story_file_path = target_path_rel
+    story.sm_result_json = json.dumps(result)
+    story.state = advance(story, EVENT_SM_DONE).value
+    persist_story(story, db)
+    return HandlerResult(next_state=StoryState(story.state), payload=result)
 
 
 # --------------------------------------------------------------------------- #
