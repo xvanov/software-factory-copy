@@ -23,6 +23,7 @@ from sqlmodel import Session, create_engine, select
 
 from factory.app_config import AppConfig, load_app_config
 from factory.chain import handlers as H
+from factory.chain.auto_merge import MergeAction, auto_merge_tick
 from factory.chain.state_machine import StoryRecord, StoryState
 from factory.directions.parser import Direction
 from factory.settings.enforcer import can_dispatch
@@ -72,6 +73,9 @@ class TickSummary:
     rejected: list[tuple[str, str]] = field(default_factory=list)
     # ^ (story_slug, rejected_reason)
     errors: list[tuple[str, str]] = field(default_factory=list)
+    # End-of-tick auto-merge decisions (one entry per PR evaluated).
+    # Empty when ``auto_merge.enabled=false`` or no PRs are eligible.
+    merges: list[MergeAction] = field(default_factory=list)
 
 
 # Per-state handler dispatch — what to run when a story is in this state.
@@ -290,9 +294,10 @@ def tick(
     summary = TickSummary(app=app, dry_run=dry_run)
     stories = H.stories_in_flight(app, db)
 
-    if not stories:
-        return summary
-
+    # Even when no in-flight stories exist, we still want the
+    # end-of-tick auto-merge hook to fire so PRs that landed in
+    # PR_OPEN on a previous tick (and are therefore terminal here) get
+    # a fresh merge attempt.
     for story in stories:
         # Advance up to ``max_advances_per_story`` steps for this story.
         for _ in range(max_advances_per_story):
@@ -357,6 +362,31 @@ def tick(
             if story.state == StoryState.PR_OPEN.value:
                 break
 
+    # End-of-tick auto-merge hook. Runs after every story handler has had
+    # its turn so a story that JUST advanced into PR_OPEN this tick gets
+    # a merge attempt on the same tick. Gated by
+    # ``factory_settings.auto_merge.enabled`` and skipped in modes where
+    # forward motion is suppressed (``paused``, ``drain-reviews``).
+    if settings.auto_merge.enabled:
+        current_mode = get_mode(root, db_path=db)
+        if current_mode not in {"paused", "drain-reviews"}:
+            try:
+                merge_actions = auto_merge_tick(
+                    root,
+                    app,
+                    dry_run=dry_run,
+                    db_path=db,
+                    merge_method=settings.auto_merge.merge_method,
+                    wait_for_ci=settings.auto_merge.wait_for_ci,
+                    delete_branch_after_merge=settings.auto_merge.delete_branch_after_merge,
+                )
+                summary.merges = merge_actions
+            except Exception as exc:
+                # Auto-merge failures must not break the tick — the
+                # operator can still inspect the chain via ``factory
+                # story`` and re-run auto-merge by hand.
+                summary.errors.append(("auto-merge", repr(exc)))
+
     if _dry_run_db_temp is not None:
         _dry_run_db_temp.unlink(missing_ok=True)
     return summary
@@ -372,4 +402,14 @@ def tick_summary_as_dict(summary: TickSummary) -> dict[str, Any]:
         "handler_runs": summary.handler_runs,
         "rejected": summary.rejected,
         "errors": summary.errors,
+        "merges": [
+            {
+                "pr_number": m.pr_number,
+                "merged": m.merged,
+                "reason": m.reason,
+                "gates_passed": list(m.gates_passed),
+                "blocking_labels": list(m.blocking_labels),
+            }
+            for m in summary.merges
+        ],
     }

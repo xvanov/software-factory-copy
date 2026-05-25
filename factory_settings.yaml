@@ -23,6 +23,18 @@ direction_defaults:
   escalate_model_on_retry: true
   require_context_update_per_pr: true
   enforce_canonical_doc_paths: true
+# End-of-tick auto-merge worker. When ``enabled`` is true,
+# ``factory tick`` calls ``auto_merge_tick`` after every story handler
+# runs and merges PRs whose chain gates have passed. ``wait_for_ci``
+# uses ``gh pr merge --auto`` so GitHub holds the merge until required
+# checks pass; for repos without required checks the merge happens
+# immediately.
+auto_merge:
+  enabled: true
+  trigger: end_of_tick
+  merge_method: squash
+  delete_branch_after_merge: true
+  wait_for_ci: true
 # Phase 6 scheduled personas. ``factory tick`` consults this on every run
 # and dispatches due entries via ``factory.chain.scheduled_tasks``. Rate
 # limits referenced by ``rate_limit_key`` look up the same-named field in

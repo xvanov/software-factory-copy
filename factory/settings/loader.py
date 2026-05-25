@@ -63,12 +63,34 @@ class DirectionDefaults(BaseModel):
     enforce_canonical_doc_paths: bool = True
 
 
+class AutoMergeConfig(BaseModel):
+    """Controls the end-of-tick auto-merge worker.
+
+    When ``enabled`` is true, ``orchestrator.tick`` calls
+    ``auto_merge_tick`` after every story handler runs. ``trigger`` is
+    reserved for future hooks (webhook-driven, scheduled) — currently
+    only ``end_of_tick`` is honored.
+
+    ``merge_method`` is passed through to ``gh pr merge`` (``squash`` |
+    ``merge`` | ``rebase``). ``wait_for_ci`` adds ``--auto`` so GitHub
+    holds the merge until required checks pass; for repos without
+    required checks the merge happens immediately.
+    """
+
+    enabled: bool = False
+    trigger: str = "end_of_tick"
+    merge_method: str = "squash"
+    delete_branch_after_merge: bool = True
+    wait_for_ci: bool = True
+
+
 class FactorySettings(BaseModel):
     caps: CapsConfig = Field(default_factory=CapsConfig)
     queues: QueuesConfig = Field(default_factory=QueuesConfig)
     rate_limits: RateLimitsConfig = Field(default_factory=RateLimitsConfig)
     modes: ModesConfig = Field(default_factory=ModesConfig)
     direction_defaults: DirectionDefaults = Field(default_factory=DirectionDefaults)
+    auto_merge: AutoMergeConfig = Field(default_factory=AutoMergeConfig)
 
 
 _CACHED: dict[Path, FactorySettings] = {}

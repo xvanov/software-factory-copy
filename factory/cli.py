@@ -454,7 +454,12 @@ def tick_cmd(
             dep_table.add_row(a.merged_sha[:12], derived)
         console.print(dep_table)
 
-    if not summary.handler_runs and not summary.errors and not summary.rejected:
+    if (
+        not summary.handler_runs
+        and not summary.errors
+        and not summary.rejected
+        and not summary.merges
+    ):
         console.print(
             Panel.fit(
                 f"No in-flight stories for app=[bold]{app_name}[/bold]. "
@@ -479,10 +484,25 @@ def tick_cmd(
         for slug, reason in summary.rejected:
             rej_table.add_row(slug, reason)
         console.print(rej_table)
+    if summary.merges:
+        merge_table = Table(title="auto-merge decisions this tick")
+        merge_table.add_column("pr")
+        merge_table.add_column("merged")
+        merge_table.add_column("reason")
+        merge_table.add_column("gates", justify="right")
+        for m in summary.merges:
+            merge_table.add_row(
+                f"#{m.pr_number}",
+                "[green]yes[/green]" if m.merged else "[red]no[/red]",
+                m.reason[:80],
+                str(len(m.gates_passed)),
+            )
+        console.print(merge_table)
     console.print(
         f"advanced={summary.stories_advanced} "
         f"blocked_by_caps={summary.blocked_by_caps} "
         f"blocked={summary.stories_blocked} "
+        f"merges={sum(1 for m in summary.merges if m.merged)}/{len(summary.merges)} "
         f"errors={len(summary.errors)}"
     )
     if summary.errors:

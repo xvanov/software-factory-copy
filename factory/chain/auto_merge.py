@@ -51,6 +51,16 @@ _MERGEABLE_STATES = {
     StoryState.READY_FOR_MERGE.value,
 }
 
+# Gate labels the docs chain produces. The docs chain skips the TDD
+# red→green loop, so the 10 TDD gate labels don't apply. The single
+# label the docs chain DOES enforce is ``canonical-paths-only`` — when
+# ``handle_docs_enforcer`` reaches PR_OPEN with no violations, the
+# canonical-paths gate has effectively passed for the PR.
+#
+# Kept as a frozenset so the worker can swap the gate set on
+# ``chain_kind`` without re-checking the TDD list.
+_DOCS_CHAIN_GATE_LABELS: frozenset[str] = frozenset({"canonical-paths-only"})
+
 
 class MergeActionRecord(SQLModel, table=True):
     """One row per auto-merge decision (merged or no-op)."""
@@ -122,6 +132,16 @@ def _record_merge_action(action: MergeAction, head_sha: str, db_path: Path) -> N
         session.commit()
 
 
+def _is_docs_chain(story: StoryRecord | None) -> bool:
+    """Return True if ``story`` is part of the docs chain.
+
+    A missing story is treated as TDD (the historical default) so the
+    full 10-gate check still applies — this keeps the worker
+    conservative when the fixture skips the StoryRecord lookup.
+    """
+    return story is not None and story.chain_kind == "docs"
+
+
 def _evaluate_one_pr(
     *,
     app: str,
@@ -129,38 +149,58 @@ def _evaluate_one_pr(
     app_config: AppConfig,
     dry_run: bool,
     github_client: Any,
+    merge_method: str = "squash",
+    wait_for_ci: bool = True,
+    delete_branch_after_merge: bool = True,
 ) -> MergeAction:
-    """Run all 10 gates against a fixture PR; return a MergeAction."""
+    """Decide if a PR should be merged; merge it in real-run.
 
-    # Build the PRContext for the gate evaluator.
-    pr_ctx = PRContext(
-        pr_number=fixture.pr_number,
-        head_sha=fixture.head_sha,
-        base_branch=fixture.base_branch,
-        files_changed=fixture.files_changed,
-        labels=list(fixture.labels),
-        ci_state=fixture.ci_state,
-        repo_root=fixture.repo_root,
-        story=fixture.story,
-        dry_run=dry_run,
-    )
-    results = evaluate_all_gates(pr_ctx, app_config)
-    gates_passed = [label for label, r in results.items() if r.passed]
+    Branches on ``story.chain_kind``:
 
-    # Compute the labels the chain would have added on previous ticks. In
-    # real-run we trust the actual PR labels; in dry-run we synthesize from
-    # the gate results so a test fixture with all gates green is "all
-    # labels present" without having to enumerate them in the fixture.
-    if dry_run:
-        present_labels = set(fixture.labels) | set(gates_passed)
+    * ``tdd`` (or unknown): the historical 10-gate check.
+    * ``docs``: the docs chain skips the TDD red→green loop and
+      doesn't apply the 10 TDD labels; the canonical-paths enforcer
+      runs before reaching PR_OPEN, so we only check
+      mergeable-state + blocking-labels.
+    """
+    story = fixture.story
+    docs_chain = _is_docs_chain(story)
+
+    # The TDD gate evaluator is only relevant for the TDD chain; for
+    # docs PRs we skip it (the enforcer already vetted the diff in the
+    # ``handle_docs_enforcer`` step).
+    if docs_chain:
+        gates_passed: list[str] = sorted(_DOCS_CHAIN_GATE_LABELS)
+        missing_labels: list[str] = []
     else:
-        present_labels = set(fixture.labels)
+        pr_ctx = PRContext(
+            pr_number=fixture.pr_number,
+            head_sha=fixture.head_sha,
+            base_branch=fixture.base_branch,
+            files_changed=fixture.files_changed,
+            labels=list(fixture.labels),
+            ci_state=fixture.ci_state,
+            repo_root=fixture.repo_root,
+            story=story,
+            dry_run=dry_run,
+        )
+        results = evaluate_all_gates(pr_ctx, app_config)
+        gates_passed = [label for label, r in results.items() if r.passed]
 
-    missing_labels = [label for label in ALL_GATE_LABELS if label not in present_labels]
+        # Compute the labels the chain would have added on previous
+        # ticks. In real-run we trust the actual PR labels; in dry-run
+        # we synthesize from the gate results so a test fixture with
+        # all gates green is "all labels present" without having to
+        # enumerate them in the fixture.
+        if dry_run:
+            present_labels = set(fixture.labels) | set(gates_passed)
+        else:
+            present_labels = set(fixture.labels)
+        missing_labels = [label for label in ALL_GATE_LABELS if label not in present_labels]
+
     blocking_present = sorted(set(fixture.labels) & BLOCKING_LABELS)
 
-    # Story state guard.
-    story = fixture.story
+    # Story state guard (applies to both chains).
     if story is not None and story.state not in _MERGEABLE_STATES:
         return MergeAction(
             app=app,
@@ -191,30 +231,83 @@ def _evaluate_one_pr(
             blocking_labels=blocking_present,
         )
 
-    # All 10 gates passed + no blockers. Squash-merge.
-    if not dry_run and github_client is not None:
-        try:
-            repo = github_client.get_repo(app_config.repo)
-            pr = repo.get_pull(fixture.pr_number)
-            pr.merge(merge_method="squash")
-        except Exception as exc:  # pragma: no cover - real-run path
+    # Gates passed + no blockers. Merge.
+    if not dry_run:
+        merge_err = _gh_pr_merge(
+            app_config=app_config,
+            pr_number=fixture.pr_number,
+            merge_method=merge_method,
+            wait_for_ci=wait_for_ci,
+            delete_branch=delete_branch_after_merge,
+            github_client=github_client,
+        )
+        if merge_err is not None:  # pragma: no cover - real-run path
             return MergeAction(
                 app=app,
                 pr_number=fixture.pr_number,
                 merged=False,
-                reason=f"gh merge failed: {exc!r}",
+                reason=f"gh merge failed: {merge_err}",
                 gates_passed=gates_passed,
                 blocking_labels=blocking_present,
             )
 
+    reason = (
+        "docs chain enforcer passed; no blocking labels"
+        if docs_chain
+        else "all 10 gates passed; no blocking labels"
+    )
     return MergeAction(
         app=app,
         pr_number=fixture.pr_number,
         merged=True,
-        reason="all 10 gates passed; no blocking labels",
+        reason=reason,
         gates_passed=gates_passed,
         blocking_labels=blocking_present,
     )
+
+
+def _gh_pr_merge(
+    *,
+    app_config: AppConfig,
+    pr_number: int,
+    merge_method: str,
+    wait_for_ci: bool,
+    delete_branch: bool,
+    github_client: Any,
+) -> str | None:  # pragma: no cover - real-run path; no tests exercise gh shell-out
+    """Invoke ``gh pr merge`` for the PR. Returns None on success or an
+    error string on failure.
+
+    Uses the ``gh`` CLI (rather than pygithub) so ``--auto`` is
+    available — pygithub's ``pr.merge()`` cannot wait for required
+    checks. The shell-out is fenced behind ``pragma: no cover`` because
+    no test exercises this real-run path.
+    """
+    import subprocess
+
+    method_flag = {"squash": "--squash", "merge": "--merge", "rebase": "--rebase"}.get(
+        merge_method, "--squash"
+    )
+    cmd = ["gh", "pr", "merge", str(pr_number), "--repo", app_config.repo, method_flag]
+    if wait_for_ci:
+        cmd.append("--auto")
+    if delete_branch:
+        cmd.append("--delete-branch")
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        return f"gh exit={exc.returncode}: {exc.stderr.strip()}"
+    except FileNotFoundError:
+        # gh not installed — fall back to pygithub if available.
+        if github_client is None:
+            return "gh CLI not found and no github_client provided"
+        try:
+            repo = github_client.get_repo(app_config.repo)
+            pr = repo.get_pull(pr_number)
+            pr.merge(merge_method=merge_method)
+        except Exception as exc:
+            return f"pygithub merge failed: {exc!r}"
+    return None
 
 
 def auto_merge_tick(
@@ -225,6 +318,9 @@ def auto_merge_tick(
     fixture_prs: list[FixturePR] | None = None,
     github_client: Any = None,
     db_path: Path | None = None,
+    merge_method: str = "squash",
+    wait_for_ci: bool = True,
+    delete_branch_after_merge: bool = True,
 ) -> list[MergeAction]:
     """Single pass of the auto-merge worker against ``app``.
 
@@ -241,6 +337,38 @@ def auto_merge_tick(
     cfg = load_app_config(app, root)
 
     fixtures: list[FixturePR] = list(fixture_prs or [])
+    if not fixtures and github_client is None:
+        # No explicit fixtures and no GH client. Synthesize fixtures from
+        # local StoryRecords that landed in a mergeable state — this is
+        # the path the orchestrator's end-of-tick hook uses to surface
+        # candidate merges from the chain itself.
+        eng = _engine(db)
+        with Session(eng) as session:
+            mergeable_stories = session.exec(
+                select(StoryRecord).where(
+                    StoryRecord.app == app,
+                    StoryRecord.state.in_(list(_MERGEABLE_STATES)),  # type: ignore[attr-defined]
+                )
+            ).all()
+        for db_story in mergeable_stories:
+            pr_no = db_story.github_pr_number
+            if pr_no is None:
+                # Docs chain may reach PR_OPEN in dry-run without a real
+                # PR number; synthesize a placeholder so the worker still
+                # records a decision row the operator can audit.
+                pr_no = -(db_story.id or 0)
+            fixtures.append(
+                FixturePR(
+                    pr_number=int(pr_no),
+                    head_sha=f"local-{db_story.id}",
+                    base_branch=cfg.default_branch or "main",
+                    labels=[],
+                    files_changed=[],
+                    ci_state="success",
+                    story=db_story,
+                    repo_root=None,
+                )
+            )
     if not fixtures and not dry_run and github_client is not None:  # pragma: no cover - real GH
         repo = github_client.get_repo(cfg.repo)
         for pr in repo.get_pulls(state="open"):
@@ -274,6 +402,9 @@ def auto_merge_tick(
             app_config=cfg,
             dry_run=dry_run,
             github_client=github_client,
+            merge_method=merge_method,
+            wait_for_ci=wait_for_ci,
+            delete_branch_after_merge=delete_branch_after_merge,
         )
         _record_merge_action(action, f.head_sha, db)
         # On a successful merge, enqueue a deploy candidate for the

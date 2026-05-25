@@ -168,3 +168,77 @@ def test_no_fixtures_no_actions(factory_root: Path) -> None:
     """Dry-run with no PRs returns an empty list, not an error."""
     actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[])
     assert actions == []
+
+
+# --------------------------------------------------------------------------- #
+# Docs-chain auto-merge — the docs chain skips the 10 TDD gates because the
+# canonical-paths enforcer already vetted the PR before reaching PR_OPEN.
+# --------------------------------------------------------------------------- #
+
+
+def _docs_story(*, state: str = StoryState.PR_OPEN.value) -> StoryRecord:
+    """Minimal docs-chain StoryRecord at ``state`` with no TDD payload."""
+    return StoryRecord(
+        direction_id="005",
+        app="sacrifice",
+        title="Bootstrap context",
+        slug="bootstrap-ctx",
+        scope="docs",
+        state=state,
+        chain_kind="docs",
+        github_pr_number=99,
+    )
+
+
+def test_docs_chain_pr_open_merges_without_tdd_gates(factory_root: Path) -> None:
+    """A docs-chain story at PR_OPEN with no TDD gate labels merges; the
+    chain enforcer already ran in ``handle_docs_enforcer``."""
+    fixture = FixturePR(
+        pr_number=99,
+        head_sha="docs-sha",
+        base_branch="main",
+        labels=[],
+        files_changed=["context/project.md"],
+        ci_state="success",
+        story=_docs_story(),
+    )
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[fixture])
+    assert actions[0].merged, actions[0].reason
+    assert "docs chain" in actions[0].reason
+
+
+def test_docs_chain_blocking_label_blocks(factory_root: Path) -> None:
+    """A docs-chain story with a blocking label is refused, same as TDD."""
+    fixture = FixturePR(
+        pr_number=99,
+        head_sha="docs-sha",
+        base_branch="main",
+        labels=["needs-human-verification"],
+        files_changed=["context/project.md"],
+        ci_state="success",
+        story=_docs_story(),
+    )
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[fixture])
+    assert not actions[0].merged
+    assert "blocking labels" in actions[0].reason
+
+
+def test_tdd_chain_still_requires_all_ten_gates(factory_root: Path) -> None:
+    """Regression guard: the docs-chain branch must NOT relax TDD gates.
+    A TDD story missing one gate is still refused (here we drop the
+    tech_writer payload so docs-current fails)."""
+    story = _good_story()
+    story.tech_writer_result_json = None  # docs-current gate will fail
+    fixture = FixturePR(
+        pr_number=42,
+        head_sha="tdd-sha",
+        base_branch="main",
+        labels=[],
+        files_changed=["src/foo.py"],
+        ci_state="success",
+        story=story,
+    )
+    actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[fixture])
+    assert not actions[0].merged
+    assert "missing gate labels" in actions[0].reason
+    assert "docs-current" in actions[0].reason

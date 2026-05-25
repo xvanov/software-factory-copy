@@ -54,6 +54,36 @@ def test_is_valid_mode() -> None:
     assert not is_valid_mode("not-a-mode", s)
 
 
+def test_auto_merge_defaults_when_section_missing(tmp_path: Path) -> None:
+    """When ``factory_settings.yaml`` omits ``auto_merge:``, the loader
+    yields the documented defaults: off, squash, wait-for-ci, delete-
+    branch-after-merge."""
+    settings = load_settings(tmp_path)
+    assert settings.auto_merge.enabled is False
+    assert settings.auto_merge.trigger == "end_of_tick"
+    assert settings.auto_merge.merge_method == "squash"
+    assert settings.auto_merge.delete_branch_after_merge is True
+    assert settings.auto_merge.wait_for_ci is True
+
+
+def test_auto_merge_overrides_parse(tmp_path: Path) -> None:
+    """Custom ``auto_merge:`` values round-trip through the loader."""
+    (tmp_path / "factory_settings.yaml").write_text(
+        "auto_merge:\n"
+        "  enabled: true\n"
+        "  trigger: end_of_tick\n"
+        "  merge_method: rebase\n"
+        "  delete_branch_after_merge: false\n"
+        "  wait_for_ci: false\n",
+        encoding="utf-8",
+    )
+    settings = reload_settings(tmp_path)
+    assert settings.auto_merge.enabled is True
+    assert settings.auto_merge.merge_method == "rebase"
+    assert settings.auto_merge.delete_branch_after_merge is False
+    assert settings.auto_merge.wait_for_ci is False
+
+
 def test_reload_busts_the_cache(tmp_path: Path) -> None:
     (tmp_path / "factory_settings.yaml").write_text(
         "caps:\n  daily_spend_usd: 1.0\n", encoding="utf-8"
