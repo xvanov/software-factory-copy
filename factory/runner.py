@@ -146,20 +146,34 @@ def _read_persona_prompt(persona: str) -> str:
 
 
 def _provider_env_key(model: str) -> str | None:
+    """Return the env-var name that holds the API key for ``model``.
+
+    Two Azure prefixes are kept distinct:
+
+    * ``azure_ai/...``  → Azure AI Foundry          → ``AZURE_AI_API_KEY``
+    * ``azure/...``     → Azure OpenAI / Cognitive  → ``AZURE_API_KEY``
+
+    The two surfaces share neither URL shape nor key scope.
+    """
     if model.startswith("deepseek/"):
         return "DEEPSEEK_API_KEY"
     if model.startswith("anthropic/") or model.startswith("claude"):
         return "ANTHROPIC_API_KEY"
     if model.startswith("openai/") or model.startswith("gpt"):
         return "OPENAI_API_KEY"
-    if model.startswith("azure_ai/") or model.startswith("azure/"):
+    if model.startswith("azure_ai/"):
         return "AZURE_AI_API_KEY"
+    if model.startswith("azure/"):
+        return "AZURE_API_KEY"
     return None
 
 
 def _resolve_api_key(cfg: LLMConfig) -> str | None:
-    # Bootstrap Azure Foundry env remap on first resolution so callers that
-    # only set AZURE_FOUNDRY_* still find AZURE_AI_API_KEY populated.
+    # Bootstrap Azure env remap on first resolution. Covers BOTH surfaces:
+    #   * AZURE_FOUNDRY_* → AZURE_AI_API_* (Foundry / azure_ai)
+    #   * AZURE_ENDPOINT  → AZURE_API_BASE (Azure-OpenAI / azure)
+    # ...and sets ``litellm.drop_params = True`` so gpt-5.x reasoning models
+    # accept ``max_tokens`` (auto-translated to ``max_completion_tokens``).
     from factory.providers.azure_foundry import ensure_bootstrapped
 
     ensure_bootstrapped()
@@ -170,8 +184,12 @@ def _resolve_api_key(cfg: LLMConfig) -> str | None:
         value = os.environ.get(env_key)
         if value:
             return value
-        # Fallback for Azure: accept the Foundry-named env var as well.
+        # Fallbacks for the two Azure surfaces — accept legacy names too.
         if env_key == "AZURE_AI_API_KEY":
+            return os.environ.get("AZURE_FOUNDRY_API_KEY")
+        if env_key == "AZURE_API_KEY":
+            # Same-shape key — accept the Foundry-named var as a fallback so
+            # operators with both surfaces in one .env don't duplicate the key.
             return os.environ.get("AZURE_FOUNDRY_API_KEY")
     return None
 
@@ -376,20 +394,37 @@ async def sandbox_run(
         )
         return RunResult(success=False, error=err, summary=err)
 
-    # For Azure Foundry, populate base_url + api_version from env if the
-    # caller didn't pass them explicitly. The LiteLLM monkey-patch in
-    # ``factory.providers.azure_foundry.ensure_bootstrapped`` (already called
-    # by ``_resolve_api_key`` above) makes the OpenAI-compatible path work
-    # for every ``azure_ai/...`` model id.
+    # For Azure (either surface), populate base_url + api_version from env if
+    # the caller didn't pass them. The two surfaces read different env vars:
+    #
+    #   * ``azure_ai/...``  → AZURE_AI_API_BASE  / AZURE_AI_API_VERSION
+    #                         (fallback: AZURE_FOUNDRY_ENDPOINT / _API_VERSION)
+    #   * ``azure/...``     → AZURE_API_BASE     / AZURE_API_VERSION
+    #                         (fallback: AZURE_ENDPOINT, plus the foundry vars
+    #                          for operators sharing a single key/endpoint)
+    #
+    # The LiteLLM monkey-patch in ``factory.providers.azure_foundry.ensure_
+    # bootstrapped`` (already called by ``_resolve_api_key`` above) makes the
+    # OpenAI-compatible Foundry path work for every ``azure_ai/...`` id.
     base_url = llm_config.base_url
     api_version: str | None = None
-    if llm_config.model.startswith("azure_ai/") or llm_config.model.startswith("azure/"):
+    if llm_config.model.startswith("azure_ai/"):
         base_url = (
             base_url
             or os.environ.get("AZURE_AI_API_BASE")
             or os.environ.get("AZURE_FOUNDRY_ENDPOINT")
         )
         api_version = os.environ.get("AZURE_AI_API_VERSION") or os.environ.get(
+            "AZURE_FOUNDRY_API_VERSION"
+        )
+    elif llm_config.model.startswith("azure/"):
+        base_url = (
+            base_url
+            or os.environ.get("AZURE_API_BASE")
+            or os.environ.get("AZURE_ENDPOINT")
+            or os.environ.get("AZURE_FOUNDRY_ENDPOINT")
+        )
+        api_version = os.environ.get("AZURE_API_VERSION") or os.environ.get(
             "AZURE_FOUNDRY_API_VERSION"
         )
 
@@ -543,15 +578,28 @@ def text_run(
     except Exception as exc:
         raise RuntimeError(f"litellm not installed: {exc}") from exc
 
-    # Azure Foundry: ensure base_url is present so LiteLLM's azure_ai path
-    # hits ``<base>/chat/completions?api-version=X`` rather than the default
-    # Azure-OpenAI deployment-name URL.
+    # Azure (either surface): ensure base_url is present so LiteLLM hits the
+    # right URL shape. Env-var precedence differs by surface — see
+    # ``_provider_env_key`` for the rationale.
     effective_base_url = base_url
-    if effective_base_url is None and (
-        model_id.startswith("azure_ai/") or model_id.startswith("azure/")
-    ):
-        effective_base_url = os.environ.get("AZURE_AI_API_BASE") or os.environ.get(
-            "AZURE_FOUNDRY_ENDPOINT"
+    api_version: str | None = None
+    if model_id.startswith("azure_ai/"):
+        if effective_base_url is None:
+            effective_base_url = os.environ.get("AZURE_AI_API_BASE") or os.environ.get(
+                "AZURE_FOUNDRY_ENDPOINT"
+            )
+        api_version = os.environ.get("AZURE_AI_API_VERSION") or os.environ.get(
+            "AZURE_FOUNDRY_API_VERSION"
+        )
+    elif model_id.startswith("azure/"):
+        if effective_base_url is None:
+            effective_base_url = (
+                os.environ.get("AZURE_API_BASE")
+                or os.environ.get("AZURE_ENDPOINT")
+                or os.environ.get("AZURE_FOUNDRY_ENDPOINT")
+            )
+        api_version = os.environ.get("AZURE_API_VERSION") or os.environ.get(
+            "AZURE_FOUNDRY_API_VERSION"
         )
 
     messages = [{"role": "user", "content": prompt}]
@@ -562,12 +610,8 @@ def text_run(
     }
     if effective_base_url:
         kwargs["base_url"] = effective_base_url
-    if model_id.startswith("azure_ai/") or model_id.startswith("azure/"):
-        api_version = os.environ.get("AZURE_AI_API_VERSION") or os.environ.get(
-            "AZURE_FOUNDRY_API_VERSION"
-        )
-        if api_version:
-            kwargs["api_version"] = api_version
+    if api_version:
+        kwargs["api_version"] = api_version
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if schema is not None:

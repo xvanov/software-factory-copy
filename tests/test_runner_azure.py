@@ -1,8 +1,13 @@
-"""Azure AI Foundry provider plumbing (Phase 8).
+"""Azure provider plumbing.
 
-These tests exercise the env remap, the LiteLLM-detection monkey-patch, and
-the runner's API-key resolution for ``azure_ai/...`` model ids. No network
-is touched — Stage C smoke tests cover the live endpoint manually.
+Covers BOTH Azure surfaces:
+
+* ``azure_ai/...`` — Foundry path. Env vars: AZURE_FOUNDRY_* / AZURE_AI_API_*.
+* ``azure/...``    — Azure OpenAI / Cognitive Services. Env vars:
+                     AZURE_ENDPOINT / AZURE_API_BASE / AZURE_API_KEY /
+                     AZURE_API_VERSION.
+
+No network is touched — Stage C smoke tests cover the live endpoint manually.
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ import pytest
 
 from factory import model_router, providers
 from factory.providers import azure_foundry
-from factory.runner import LLMConfig, _resolve_api_key
+from factory.runner import LLMConfig, _provider_env_key, _resolve_api_key
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +27,11 @@ def _reset_azure_bootstrap() -> None:
     azure_foundry.reset_for_tests()
     yield
     azure_foundry.reset_for_tests()
+
+
+# --------------------------------------------------------------------------- #
+# Foundry surface (azure_ai/...)
+# --------------------------------------------------------------------------- #
 
 
 def test_resolve_api_key_for_azure_ai_reads_dedicated_env(
@@ -45,7 +55,7 @@ def test_resolve_api_key_for_azure_ai_falls_back_to_foundry_env(
     assert _resolve_api_key(cfg) == "foundry-key-B"
 
 
-def test_ensure_bootstrapped_remaps_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_bootstrapped_remaps_foundry_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """The remap copies all three AZURE_FOUNDRY_* names into AZURE_AI_API_*."""
     monkeypatch.delenv("AZURE_AI_API_BASE", raising=False)
     monkeypatch.delenv("AZURE_AI_API_KEY", raising=False)
@@ -90,8 +100,97 @@ def test_ensure_bootstrapped_patches_litellm_azure_ai_detection() -> None:
     assert cfg._is_azure_openai_model("gpt-4o-mini", None) is False
 
 
+# --------------------------------------------------------------------------- #
+# Azure-OpenAI / Cognitive Services surface (azure/...)
+# --------------------------------------------------------------------------- #
+
+
+def test_provider_env_key_distinguishes_two_azure_prefixes() -> None:
+    """``azure_ai/`` and ``azure/`` resolve to DIFFERENT env-var names.
+
+    The two surfaces share neither URL shape nor key scope; conflating their
+    keys silently sends Foundry traffic to an Azure-OpenAI key (and vice
+    versa) — the test guards that boundary explicitly.
+    """
+    assert _provider_env_key("azure_ai/gpt-4.1") == "AZURE_AI_API_KEY"
+    assert _provider_env_key("azure/gpt-5.4") == "AZURE_API_KEY"
+
+
+def test_resolve_api_key_for_azure_reads_dedicated_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``azure/<deployment>`` → reads ``AZURE_API_KEY`` (LiteLLM-standard name)."""
+    monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+    monkeypatch.setenv("AZURE_API_KEY", "openai-azure-key-C")
+    cfg = LLMConfig(model="azure/gpt-5.4")
+    assert _resolve_api_key(cfg) == "openai-azure-key-C"
+
+
+def test_resolve_api_key_for_azure_falls_back_to_foundry_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operator who only set AZURE_FOUNDRY_API_KEY can still call ``azure/`` ids.
+
+    Useful for the shared-tenant case where one Azure subscription serves both
+    surfaces and the operator has a single key in their .env.
+    """
+    monkeypatch.delenv("AZURE_API_KEY", raising=False)
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "shared-key-D")
+    cfg = LLMConfig(model="azure/gpt-5.4")
+    assert _resolve_api_key(cfg) == "shared-key-D"
+
+
+def test_ensure_bootstrapped_remaps_azure_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``AZURE_ENDPOINT`` (operator-friendly name) → ``AZURE_API_BASE``
+    (LiteLLM-standard name) at bootstrap.
+
+    ``AZURE_API_KEY`` / ``AZURE_API_VERSION`` already match LiteLLM's expected
+    names so they need no remap.
+    """
+    monkeypatch.delenv("AZURE_API_BASE", raising=False)
+    monkeypatch.setenv("AZURE_ENDPOINT", "https://example.cognitiveservices.azure.com/")
+
+    azure_foundry.ensure_bootstrapped()
+
+    import os
+
+    assert os.environ["AZURE_API_BASE"] == "https://example.cognitiveservices.azure.com/"
+
+
+def test_ensure_bootstrapped_does_not_overwrite_explicit_api_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the operator explicitly sets ``AZURE_API_BASE``, we leave it alone
+    even when ``AZURE_ENDPOINT`` is also set."""
+    monkeypatch.setenv("AZURE_ENDPOINT", "https://endpoint.example/")
+    monkeypatch.setenv("AZURE_API_BASE", "https://operator-explicit.example/")
+
+    azure_foundry.ensure_bootstrapped()
+
+    import os
+
+    assert os.environ["AZURE_API_BASE"] == "https://operator-explicit.example/"
+
+
+def test_ensure_bootstrapped_enables_litellm_drop_params() -> None:
+    """gpt-5.x reasoning models reject ``max_tokens`` and want
+    ``max_completion_tokens``. We set ``litellm.drop_params = True`` so the
+    legacy parameter is auto-translated by LiteLLM rather than 400-ing."""
+    azure_foundry.ensure_bootstrapped()
+    import litellm
+
+    assert litellm.drop_params is True
+
+
+# --------------------------------------------------------------------------- #
+# routes.yaml + model_router integration
+# --------------------------------------------------------------------------- #
+
+
 def test_routes_yaml_default_provider_is_azure() -> None:
-    """The shipped ``routes.yaml`` must declare azure as default for Phase 8."""
+    """The shipped ``routes.yaml`` must declare azure as default."""
     import os
 
     # Clear any test-only override (e.g. ``test_model_router.py``'s fixture).
@@ -103,7 +202,7 @@ def test_route_returns_azure_model_under_default_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With ``default_provider: azure`` every persona resolves to an
-    ``azure_ai/...`` model id."""
+    ``azure/...`` model id (Azure-OpenAI surface)."""
     monkeypatch.delenv("FACTORY_PROVIDER", raising=False)
     for persona in (
         "pm",
@@ -117,7 +216,42 @@ def test_route_returns_azure_model_under_default_provider(
         "security",
     ):
         model_id = model_router.route(persona)
-        assert model_id.startswith("azure_ai/"), f"{persona} routed to {model_id!r}"
+        assert model_id.startswith("azure/"), f"{persona} routed to {model_id!r}"
+
+
+def test_route_dev_uses_deepseek_v4_pro(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dev / test_implementer should route to deepseek-v4-pro (heavy impl)."""
+    monkeypatch.delenv("FACTORY_PROVIDER", raising=False)
+    assert model_router.route("dev", "standard") == "azure/deepseek-v4-pro"
+    assert model_router.route("dev", "hard") == "azure/deepseek-v4-pro"
+    assert model_router.route("test_implementer") == "azure/deepseek-v4-pro"
+
+
+def test_route_text_personas_use_gpt_5_4(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Structured-text + code-judgment personas route to gpt-5.4.
+
+    Code-judgment personas (reviewer / test_designer / security) were intended
+    for ``gpt-5.3-codex`` but that deployment is Responses-API-only and the
+    runner is Chat-Completions-only today. Falling back to gpt-5.4 keeps the
+    reviewer ≠ dev invariant because dev / test_implementer run on
+    deepseek-v4-pro.
+    """
+    monkeypatch.delenv("FACTORY_PROVIDER", raising=False)
+    for persona in (
+        "pm",
+        "analyst",
+        "sm",
+        "tech_writer",
+        "onboarder",
+        "architect",
+        "ralph",
+        "bug_hunter",
+        "release_manager",
+        "reviewer",
+        "test_designer",
+        "security",
+    ):
+        assert model_router.route(persona) == "azure/gpt-5.4", persona
 
 
 def test_factory_provider_env_override_takes_precedence(
@@ -127,7 +261,7 @@ def test_factory_provider_env_override_takes_precedence(
     monkeypatch.setenv("FACTORY_PROVIDER", "direct")
     assert model_router.route("pm") == "deepseek/deepseek-chat"
     monkeypatch.setenv("FACTORY_PROVIDER", "azure")
-    assert model_router.route("pm") == "azure_ai/gpt-4.1"
+    assert model_router.route("pm") == "azure/gpt-5.4"
 
 
 def test_route_uses_azure_fallback_when_persona_missing(tmp_path: Path) -> None:
@@ -136,13 +270,13 @@ def test_route_uses_azure_fallback_when_persona_missing(tmp_path: Path) -> None:
     custom.write_text(
         "default_provider: azure\n"
         "azure_routes:\n"
-        "  pm: azure_ai/gpt-4.1\n"
+        "  pm: azure/gpt-5.4\n"
         "defaults:\n"
         "  fallback: deepseek/deepseek-chat\n"
-        "  azure_fallback: azure_ai/gpt-4.1\n",
+        "  azure_fallback: azure/gpt-5.4\n",
         encoding="utf-8",
     )
-    assert model_router.route("nonexistent", routes_path=custom) == "azure_ai/gpt-4.1"
+    assert model_router.route("nonexistent", routes_path=custom) == "azure/gpt-5.4"
 
 
 # Silence the providers-import-only lint by reaching the module symbol.

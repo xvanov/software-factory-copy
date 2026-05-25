@@ -146,17 +146,56 @@ def test_persona_dev(
 
 
 def _ensure_github_client() -> Any:
-    """Construct a ``pygithub.Github`` client. Fails with a clear message if no token."""
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    """Construct a ``pygithub.Github`` client. Fails with a clear message if no token.
+
+    Token precedence: ``GITHUB_TOKEN`` env > ``GH_TOKEN`` env > ``gh auth token``.
+    The ``gh`` CLI fallback means an operator who has run ``gh auth login`` once
+    does not need to also paste the token into ``.env``.
+    """
+    from factory.providers.github import resolve_github_token
+
+    token = resolve_github_token()
     if not token:
         console.print(
-            "[red]error:[/red] no GitHub token set. Set [bold]GITHUB_TOKEN[/bold] "
-            "or [bold]GH_TOKEN[/bold] in the environment (or .env)."
+            "[red]error:[/red] no GitHub token available. Either set "
+            "[bold]GITHUB_TOKEN[/bold] (or [bold]GH_TOKEN[/bold]) in the "
+            "environment / .env, or run [bold]gh auth login[/bold] so "
+            "[bold]gh auth token[/bold] returns one."
         )
         raise typer.Exit(code=2)
     from github import Github
 
     return Github(token)
+
+
+def _has_any_llm_provider_key() -> tuple[bool, str]:
+    """Return ``(has_key, hint)`` describing whether SOME LLM provider is usable.
+
+    The pre-check that used to look for ``DEEPSEEK_API_KEY`` / ``ANTHROPIC_API_KEY``
+    predates Azure being the default provider. With ``default_provider: azure``
+    the relevant env vars are ``AZURE_API_KEY`` (Azure-OpenAI) or
+    ``AZURE_AI_API_KEY`` / ``AZURE_FOUNDRY_API_KEY`` (Foundry). Accept any of
+    them — the runner picks the right key per model via ``_provider_env_key``.
+
+    The hint string is shown to the operator on failure.
+    """
+    candidates = (
+        "DEEPSEEK_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "AZURE_API_KEY",
+        "AZURE_AI_API_KEY",
+        "AZURE_FOUNDRY_API_KEY",
+    )
+    for name in candidates:
+        if os.environ.get(name):
+            return True, ""
+    hint = (
+        "set one of "
+        + ", ".join(f"[bold]{n}[/bold]" for n in candidates)
+        + " in .env. Pass [bold]--dry-run[/bold] for offline mode."
+    )
+    return False, hint
 
 
 @app.command("new-direction")
@@ -266,13 +305,12 @@ def pm_sync_cmd(
 
     github_client: Any = None
     if not dry_run:
-        # Verify both keys early — fail fast with a clear message.
-        if not (os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
-            console.print(
-                "[red]error:[/red] real pm-sync requires DEEPSEEK_API_KEY (or "
-                "ANTHROPIC_API_KEY) for the PM persona LLM call. Pass --dry-run "
-                "to skip the call."
-            )
+        # Verify SOME provider key is set; the runner picks the right one per
+        # model. With ``default_provider: azure``, AZURE_API_KEY is the usual
+        # answer; legacy direct-provider runs still accept DEEPSEEK / ANTHROPIC.
+        ok, hint = _has_any_llm_provider_key()
+        if not ok:
+            console.print("[red]error:[/red] real pm-sync requires an LLM provider key. " + hint)
             raise typer.Exit(code=2)
         github_client = _ensure_github_client()
 
@@ -342,14 +380,11 @@ def tick_cmd(
 
     from factory.chain.orchestrator import tick
 
-    if not dry_run and not (
-        os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
-    ):
-        console.print(
-            "[red]error:[/red] real tick requires DEEPSEEK_API_KEY (or "
-            "ANTHROPIC_API_KEY). Pass --dry-run for offline mode."
-        )
-        raise typer.Exit(code=2)
+    if not dry_run:
+        ok, hint = _has_any_llm_provider_key()
+        if not ok:
+            console.print("[red]error:[/red] real tick requires an LLM provider key. " + hint)
+            raise typer.Exit(code=2)
 
     # Phase 6: drive the scheduler BEFORE the story chain so findings
     # filed by Ralph/etc become directions that this same tick can pick
@@ -1360,14 +1395,11 @@ def _scheduled_persona_now(
     """
     load_dotenv()
     load_dotenv(_FACTORY_ROOT / ".env", override=False)
-    if not dry_run and not (
-        os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
-    ):
-        console.print(
-            f"[red]error:[/red] real {label} requires DEEPSEEK_API_KEY (or "
-            "ANTHROPIC_API_KEY). Pass --dry-run for offline mode."
-        )
-        raise typer.Exit(code=2)
+    if not dry_run:
+        ok, hint = _has_any_llm_provider_key()
+        if not ok:
+            console.print(f"[red]error:[/red] real {label} requires an LLM provider key. " + hint)
+            raise typer.Exit(code=2)
     from factory.chain.scheduled_tasks import run_scheduled_persona
 
     out = run_scheduled_persona(
