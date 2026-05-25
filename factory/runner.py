@@ -263,6 +263,21 @@ def _build_initial_message(
     )
 
 
+# Per-persona override map for ``sandbox_run.max_iterations``. Personas with
+# bounded workflows (Onboarder's 4-phase scan, Test-Implementer's plan
+# execution) get tighter caps so the chain doesn't burn budget on an agent
+# that lost the plot. ``dev`` keeps the default 200 because it legitimately
+# needs many turns for red→green→refactor.
+#
+# The cap is the *fallback* when the caller passes ``max_iterations=200``
+# (the function default). Explicit values from the caller always win — that's
+# how tests bound runs and how a power-user can override.
+PERSONA_ITERATION_CAPS: dict[str, int] = {
+    "onboarder": 60,  # Phase 1-4 with 30 reads + 20 navigation + 10 buffer
+    "test_implementer": 100,  # plan execution; doesn't need dev's retry budget
+}
+
+
 async def sandbox_run(
     persona: str,
     story_path: Path,
@@ -440,6 +455,14 @@ async def sandbox_run(
     agent = get_default_agent(llm=llm, cli_mode=True)
     workspace = LocalWorkspace(working_dir=str(Path(repo_path).resolve()))
 
+    # Apply per-persona iteration cap when the caller used the default. We
+    # detect "default" by comparing to the signature default (200). Callers
+    # who explicitly pass a non-default value win; this only narrows the
+    # ceiling for personas that historically over-iterate.
+    effective_max_iterations = max_iterations
+    if max_iterations == 200 and persona in PERSONA_ITERATION_CAPS:
+        effective_max_iterations = PERSONA_ITERATION_CAPS[persona]
+
     loop = asyncio.get_running_loop()
 
     def _do_run() -> tuple[int, int, float]:
@@ -448,7 +471,7 @@ async def sandbox_run(
         conversation: Any = Conversation(
             agent=agent,
             workspace=workspace,
-            max_iteration_per_run=max_iterations,
+            max_iteration_per_run=effective_max_iterations,
             delete_on_close=False,
         )
         try:
