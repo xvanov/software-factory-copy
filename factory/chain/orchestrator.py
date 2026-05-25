@@ -259,9 +259,31 @@ def tick(
     root = Path(software_factory_root)
     db = db_path or (root / "state" / "factory.db")
 
+    # Dry-run isolation: when the caller did not pass an explicit ``db_path``
+    # (i.e. the CLI is hitting the production state DB), copy the live DB to
+    # a temp file so dry-run handler state mutations (advance() +
+    # persist_story) don't pollute the real DB. Without this, a single
+    # dry-run tick can advance a story all the way to ``pr_open`` in the
+    # real DB, causing the next real tick to treat the story as terminal
+    # and skip it. Tests that pass an explicit ``db_path`` opt out of
+    # isolation — they own the DB they hand in.
+    _dry_run_db_temp: Path | None = None
+    if dry_run and db_path is None and db.exists():
+        import os
+        import shutil
+        import tempfile
+
+        fd, tmp_name = tempfile.mkstemp(prefix="factory_dryrun_", suffix=".db")
+        os.close(fd)
+        _dry_run_db_temp = Path(tmp_name)
+        shutil.copyfile(db, _dry_run_db_temp)
+        db = _dry_run_db_temp
+
     try:
         cfg = load_app_config(app, root)
     except FileNotFoundError as exc:
+        if _dry_run_db_temp is not None:
+            _dry_run_db_temp.unlink(missing_ok=True)
         return TickSummary(app=app, dry_run=dry_run, errors=[(app, f"app config missing: {exc}")])
 
     settings = load_settings(root)
@@ -335,6 +357,8 @@ def tick(
             if story.state == StoryState.PR_OPEN.value:
                 break
 
+    if _dry_run_db_temp is not None:
+        _dry_run_db_temp.unlink(missing_ok=True)
     return summary
 
 
