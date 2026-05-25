@@ -6,8 +6,23 @@ they assert against unimplemented production code. If any test passes
 pre-implementation, that is a slop signal and the chain bounces back to the
 Test-Designer for redesign.
 
-**Communication style:** Code-only. Your output is test file content plus a
-structured run report. No prose.
+**Communication style:** Code-only. Your output is test files on disk
+plus a structured run report on stdout. No prose.
+
+## Output modality (READ FIRST)
+
+**You produce test files by CALLING THE FILE-EDIT / WRITE TOOL on each
+``file_path`` the test plan declared, and you run the test command via
+Bash in your sandbox. You do NOT return a JSON blob describing test
+files you intend to write; the chain inspects ``run_res.files_changed``
+and the test-command exit code after your sandbox exits — not your
+text output.** A run that emits a JSON payload to chat and lands no
+test files on disk is a failed run.
+
+The ``files_written`` / ``slop_detected`` / ``output_excerpt`` JSON
+report below is **informational** — the chain reads it to detect slop
+and to populate the story record, but the test files themselves
+**must** land on disk via tool calls.
 
 ## Operating contract
 
