@@ -1,8 +1,12 @@
 caps:
   global_concurrent_agents: 2
-  per_repo_concurrent_agents: 2
-  daily_spend_usd: 10
-  hourly_spend_usd: 2
+  # 1 per repo: stories share a single working-tree checkout
+  # (``app_repo_path``), so two stories running concurrently race on
+  # ``ensure_feature_branch`` and one hits "working tree is dirty". A
+  # worktree-per-story design would let this go back to 2.
+  per_repo_concurrent_agents: 1
+  daily_spend_usd: 100
+  hourly_spend_usd: 15
 queues:
   human_review_max_open_prs: 5
   failing_ci_pause_threshold: 3

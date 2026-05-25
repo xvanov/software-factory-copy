@@ -38,10 +38,11 @@ gates:
   format_check_command: "ruff format --check ."
   type_check_command: "mypy backend"
   # Run from backend/ — sacrifice's pyproject.toml + pytest config live
-  # there, not at the repo root. ``pytest`` from the root yields
-  # "no tests directory" and the chain's red/green gate misreads as
-  # always-red.
-  test_command: "cd backend && python -m pytest -q"
+  # there, not at the repo root. Limit to ``tests/`` (the unit-test
+  # tree); ``backend/e2e_test.py`` requires a running stack (postgres,
+  # backend, celery) and is the operator's smoke gate, not the dev-loop
+  # gate.
+  test_command: "cd backend && python -m pytest -q tests/"
   coverage_command: "pytest --cov=backend --cov-report=json --cov-fail-under=70"
   e2e_command: "npx playwright test"
   mutation_testing: false
