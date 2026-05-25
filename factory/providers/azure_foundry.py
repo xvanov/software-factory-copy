@@ -110,6 +110,52 @@ def _enable_litellm_drop_params() -> None:
         return
 
 
+# Estimated per-token costs for ``azure/deepseek-v4-pro``. LiteLLM ships
+# without a pricing entry for this Azure deployment, so every sandbox dev /
+# test_implementer run lands a ``cost=0.0`` row in ``state/factory.db.runs``
+# even though the model burns 700K+ tokens per call. Without a price, the
+# chain's spend caps are useless against the heaviest model.
+#
+# These rates are an estimate anchored on DeepSeek-V3 list pricing
+# (~$0.27 / $1.10 per 1M) with a typical Azure deployment markup applied.
+# UPDATE from real Azure billing data when available — search for this
+# constant and bump it. The registered metadata also tags the entry with
+# ``factory_cost_note`` so anyone inspecting ``litellm.model_cost`` sees the
+# caveat directly.
+_DEEPSEEK_V4_PRO_INPUT_PER_TOKEN = 0.0000005  # $0.50 per 1M (ESTIMATED)
+_DEEPSEEK_V4_PRO_OUTPUT_PER_TOKEN = 0.0000015  # $1.50 per 1M (ESTIMATED)
+
+
+def _register_litellm_pricing() -> None:
+    """Register cost-per-token entries for Azure deployments LiteLLM doesn't know.
+
+    Currently registers ``azure/deepseek-v4-pro`` only; the other deployments
+    on the resource (``azure/gpt-5.4``) get prices from LiteLLM's built-in
+    table. Re-registering an already-known model is a no-op for the price
+    fields; LiteLLM simply overwrites them.
+
+    The pricing values are flagged as ESTIMATED in the metadata — the source
+    of truth is the constants above this function.
+    """
+    try:
+        import litellm
+
+        litellm.register_model(
+            {
+                "azure/deepseek-v4-pro": {
+                    "input_cost_per_token": _DEEPSEEK_V4_PRO_INPUT_PER_TOKEN,
+                    "output_cost_per_token": _DEEPSEEK_V4_PRO_OUTPUT_PER_TOKEN,
+                    "litellm_provider": "azure",
+                    "mode": "chat",
+                    # Marker so anyone inspecting the cost map sees the caveat.
+                    "factory_cost_note": "ESTIMATED — verify against Azure billing",
+                },
+            }
+        )
+    except Exception:  # pragma: no cover — LiteLLM should always be importable
+        return
+
+
 def ensure_bootstrapped() -> None:
     """Idempotent bootstrap. Call before any Azure-bound LLM completion."""
     global _bootstrapped
@@ -118,6 +164,7 @@ def ensure_bootstrapped() -> None:
     _remap_env()
     _patch_litellm_azure_ai()
     _enable_litellm_drop_params()
+    _register_litellm_pricing()
     _bootstrapped = True
 
 
