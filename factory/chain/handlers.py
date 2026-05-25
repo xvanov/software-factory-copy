@@ -833,7 +833,8 @@ def handle_test_implementation(
         # Locate the actual app source tree. ``software_factory_root/apps/<app>``
         # is the factory's per-app metadata directory (config + directions +
         # stories), NOT the app source. The sandbox MUST run inside the real
-        # repo (e.g. ``~/sacrifice/``) so its tool calls, ``git status``, and
+        # repo (the path declared in apps/<app>/config.yaml::app_repo_path,
+        # typically a sibling of the factory root) so tool calls, ``git status``, and
         # any pytest invocation operate against actual code. The previous
         # mismatch caused the sandbox to commit ``apps/<app>/stories/`` files
         # to factory main and made the pytest gate run against an empty
@@ -1424,9 +1425,9 @@ def handle_tech_writer(
             )
             for u in updates_raw
         ]
-        # Context lives in the real app repo (e.g. ``~/sacrifice/context/``),
-        # not the factory's per-app metadata directory. Same root cause as
-        # the test_impl / dev repo_path fix.
+        # Context lives in the real app repo (under the app's
+        # ``app_repo_path``/``context/``), not the factory's per-app metadata
+        # directory. Same root cause as the test_impl / dev repo_path fix.
         repo_path = resolve_app_repo_path(app_config, software_factory_root)
         try:
             apply_context_updates(updates, repo_path)

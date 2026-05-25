@@ -226,8 +226,9 @@ def _run_pytest(repo_path: Path, test_command: str | None = None) -> tuple[bool,
     Resolution order:
       1. If ``test_command`` is provided (typically from
          ``app_config.gates.test_command``), run it verbatim via shell. This
-         lets monorepo apps like sacrifice — where pytest must run from
-         ``backend/`` not the repo root — declare the exact invocation.
+         lets monorepo apps — where pytest must run from a sub-directory
+         like ``backend/`` rather than the repo root — declare the exact
+         invocation themselves.
       2. Otherwise look for ``tests/`` or root-level ``test_*.py`` and run
          ``python -m pytest -q`` from the repo root.
       3. If neither path is viable, return ``(False, "no tests directory")``

@@ -29,7 +29,7 @@ on disk via tool calls.** Talking about the files in your response is not
 enough; the tool calls are what land them.
 
 You write files relative to the app repo root (e.g. ``context/project.md``,
-NOT ``/home/k/sacrifice/context/project.md``). Create parent directories
+NOT an absolute path like ``/home/user/<app>/context/project.md``). Create parent directories
 as needed (e.g. ``context/modules/`` before writing ``context/modules/auth.md``).
 
 For each file you produce, the workflow is:

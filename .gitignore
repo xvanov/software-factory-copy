@@ -13,3 +13,6 @@ build/
 state/*.db
 state/*.db-journal
 state/dry_run_scratch/
+# Per-story event logs (JSONL, append-only, grow with chain activity).
+# Surface via ``factory why`` / ``factory trace``; recreated on demand.
+state/logs/

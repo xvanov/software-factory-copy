@@ -326,9 +326,9 @@ def pm_sync(
 
     # App repo path for the context prelude. Phase 7 resolves this via the
     # app's ``config.yaml::app_repo_path`` (default ``../<name>``); on
-    # operator-typical layouts that's a sibling of the factory root (e.g.
-    # ``~/sacrifice/``). If the path doesn't exist on disk yet, the loader
-    # returns the NO_CONTEXT_AVAILABLE notice cleanly.
+    # operator-typical layouts that's a sibling of the factory root.
+    # If the path doesn't exist on disk yet, the loader returns the
+    # NO_CONTEXT_AVAILABLE notice cleanly.
     # ``load_app_config`` may raise FileNotFoundError when the apps/ entry
     # for this app doesn't exist (e.g. test fixtures without a config) —
     # the earlier ``app_config = load_app_config(...)`` block has already

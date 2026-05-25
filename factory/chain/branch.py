@@ -12,8 +12,8 @@ Phase-8 sandbox runs use ``OpenHands SDK`` to drive the dev/test_implementer
 personas inside a real git working tree. The agent's tool calls invoke
 ``git add``/``git commit`` against whatever branch is currently checked out
 — and before this module, that was ``main``. The first bootstrap-context
-run produced one local commit on ``~/sacrifice/main`` (kept local only;
-never pushed) — visible evidence of the bug.
+run produced one local commit on the dogfood app's ``main`` (kept local
+only; never pushed) — visible evidence of the bug.
 
 Idempotency contract
 --------------------

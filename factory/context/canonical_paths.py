@@ -13,8 +13,8 @@ Rules (enforced by chain handlers in Phase 2+):
     archives. The lineage of change lives in directions/, stories/, and git
     history, not in context/.
 
-Paths are evaluated relative to the app repo root (e.g. relative to
-``~/sacrifice/`` for the Sacrifice dogfood app).
+Paths are evaluated relative to the app repo root — wherever the app's
+``app_repo_path`` from ``apps/<name>/config.yaml`` resolves on disk.
 """
 
 from __future__ import annotations

@@ -34,16 +34,16 @@ comfortable with the dry-run output:
 
 ```cron
 # Ralph — hourly spec-vs-reality diff
-0 * * * * cd ~/software-factory && .venv/bin/factory ralph-now --app sacrifice
+0 * * * * cd ~/software-factory && .venv/bin/factory ralph-now --app <app>
 
 # Bug-Hunter — daily security/quality scan at 04:00
-0 4 * * * cd ~/software-factory && .venv/bin/factory bug-hunt-now --app sacrifice
+0 4 * * * cd ~/software-factory && .venv/bin/factory bug-hunt-now --app <app>
 
 # UX-Auditor — daily Playwright drive at 05:00
-0 5 * * * cd ~/software-factory && .venv/bin/factory ux-audit-now --app sacrifice
+0 5 * * * cd ~/software-factory && .venv/bin/factory ux-audit-now --app <app>
 
 # Security — weekly deeper audit on Monday at 09:00 UTC
-0 9 * * 1 cd ~/software-factory && .venv/bin/factory security-now --app sacrifice
+0 9 * * 1 cd ~/software-factory && .venv/bin/factory security-now --app <app>
 ```
 
 Each entry consults the per-persona daily-run cap in
@@ -55,10 +55,10 @@ before invoking the persona; runs that exceed the cap are refused with
 Use `--dry-run` to exercise the chain end-to-end without an API key:
 
 ```bash
-factory ralph-now --app sacrifice --dry-run
-factory bug-hunt-now --app sacrifice --dry-run
-factory security-now --app sacrifice --dry-run
-factory ux-audit-now --app sacrifice --dry-run
+factory ralph-now --app <app> --dry-run
+factory bug-hunt-now --app <app> --dry-run
+factory security-now --app <app> --dry-run
+factory ux-audit-now --app <app> --dry-run
 ```
 
 ## Phase 7 polish: inbox, status, idle, dual-draft
@@ -84,17 +84,17 @@ Pass `--app <name>` to restrict to a single app.
 
 ### Pinned factory-status GitHub issue (per app)
 
-`factory status-sync --app sacrifice` opens (or updates) one GH issue
+`factory status-sync --app <app>` opens (or updates) one GH issue
 per app, labeled `factory-status`, titled `[FACTORY] <app> live status`.
 The body carries the current mode, queue depth, today's spend, last 5
 deploys, active blockers, and active Direction Trackers. Idempotent.
 
 ```bash
 # Dry-run — print the body without touching GH.
-factory status-sync --app sacrifice --dry-run
+factory status-sync --app <app> --dry-run
 
 # Real-run — requires GITHUB_TOKEN.
-factory status-sync --app sacrifice
+factory status-sync --app <app>
 ```
 
 ### Idle detection + `factory-idle` issue
@@ -106,10 +106,10 @@ Re-running while the issue is open updates the body — no duplicates.
 
 ```bash
 # Dry-run — print the snapshot when idle, or "not idle" otherwise.
-factory idle-check --app sacrifice --dry-run
+factory idle-check --app <app> --dry-run
 
 # Real-run.
-factory idle-check --app sacrifice
+factory idle-check --app <app>
 ```
 
 ### Dual-draft PRs (rare ambiguity workflow)
@@ -126,10 +126,10 @@ automatically inside `factory pm-sync` when applicable.
 
 ```cron
 # Pinned factory-status issue — every 5 minutes.
-*/5 * * * * cd ~/software-factory && .venv/bin/factory status-sync --app sacrifice
+*/5 * * * * cd ~/software-factory && .venv/bin/factory status-sync --app <app>
 
 # Idle detection — every 30 minutes.
-*/30 * * * * cd ~/software-factory && .venv/bin/factory idle-check --app sacrifice
+*/30 * * * * cd ~/software-factory && .venv/bin/factory idle-check --app <app>
 ```
 
 ### `_factory_improver` stub persona (v2-dormant)

@@ -200,7 +200,7 @@ def _has_any_llm_provider_key() -> tuple[bool, str]:
 
 @app.command("new-direction")
 def new_direction(
-    app_name: str = typer.Option(..., "--app", help="App name (e.g. sacrifice)"),
+    app_name: str = typer.Option(..., "--app", help="App name (under apps/<name>/)"),
 ) -> None:
     """Interactive direction creation. Walks the user through the prompts."""
     load_dotenv()
@@ -214,7 +214,7 @@ def new_direction(
 
 @app.command("tell")
 def tell(
-    app_name: str = typer.Option(..., "--app", help="App name (e.g. sacrifice)"),
+    app_name: str = typer.Option(..., "--app", help="App name (under apps/<name>/)"),
     text: str = typer.Argument(..., help='Direction text (e.g. "fix the broken submit button").'),
 ) -> None:
     """Append a prose-only direction (no flow/api_spec). PM will likely flag needs-direction."""

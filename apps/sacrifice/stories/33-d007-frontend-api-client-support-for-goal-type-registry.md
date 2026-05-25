@@ -3,32 +3,35 @@
 ## Title
 D007 Frontend API client support for goal type registry
 
-## Description
-As a frontend developer
-I want the API client to expose `listGoalTypes()`
-so that future frontend flows can consume the backend GoalType registry without additional client plumbing.
+## Scope
+frontend
 
-## Acceptance Criteria
+## Summary
+Add `listGoalTypes()` to `frontend/services/api.ts` for the new backend registry endpoint. No other frontend UX or screen changes are included in this direction.
+
+# Acceptance Criteria
+
 - AC1: `frontend/services/api.ts` gains a `listGoalTypes()` call. No other frontend changes in this direction.
-- AC2: `GET /api/goal-types` returns the list of registered goal types (see `api_spec.md`).
-- AC3: No broader frontend UX changes in this direction beyond the API client method.
 
-## Tasks / Subtasks
-- [ ] Add `listGoalTypes()` to `frontend/services/api.ts`. (AC1, AC2)
-  - [ ] Match the request method, path, and response shape from `api_spec.md`. (AC2)
-  - [ ] Reuse existing API client auth/error handling patterns already present in `frontend/services/api.ts`. (AC1)
-- [ ] Do not modify screens, hooks, navigation, or UX copy as part of this story. (AC1, AC3)
-- [ ] Add or update focused client-level tests if this repository already covers `frontend/services/api.ts`; otherwise keep scope limited to the method implementation only. (AC1, AC3)
-- [ ] Validate method contract against backend story output for `GET /api/goal-types`. (AC2)
+# Tasks / Subtasks
 
-## Dev Notes
-### Direction flow.md (verbatim)
-```md
+- [ ] T1 Add `listGoalTypes()` to `frontend/services/api.ts`. (AC1)
+  - [ ] T1.1 Call `GET /api/goal-types` per `api_spec.md`. (AC1)
+  - [ ] T1.2 Model the response shape returned by the endpoint: `goal_types[]` with `name`, `description`, `sample_prompts`, and `criteria_schema`. (AC1)
+  - [ ] T1.3 Preserve existing auth/request conventions already used by the frontend API client. (AC1)
+- [ ] T2 Confirm no other frontend files are changed in this story. (AC1)
+
+# Dev Notes
+
+## Direction flow.md
+
+```text
 (none)
 ```
 
-### Direction api_spec.md (verbatim)
-```md
+## Direction api_spec.md
+
+```markdown
 # API spec
 
 ## Endpoints
@@ -66,13 +69,16 @@ so that future frontend flows can consume the backend GoalType registry without 
   - `401` — unauthenticated
 ```
 
-### Context pointers to load
-- [Source: context/project.md#Stack]
-- [Source: context/navigation.md#When working on the Expo client]
-- [Source: context/navigation.md#When working on goals, proof submission, or verification status]
+## Context pointers to load
 
-### Direction acceptance criteria (verbatim)
-```md
+- [Source: context/project.md#Identity]
+- [Source: context/project.md#Active constraints]
+- [Source: context/navigation.md#When working on the Expo client]
+- [Source: context/navigation.md#When working on goal creation]
+
+## Direction acceptance criteria (verbatim)
+
+```markdown
 - A new package `backend/app/goal_types/` exists, with each goal type as a self-contained sub-package containing at minimum:
   - `definition.py` — registers `name`, human-readable `description`, `sample_prompts` (list[str]) used by chat matching in D009, and `criteria_schema` (JSON schema for the goal's `criteria_data`).
   - `verifier.py` — verification entrypoint conforming to the abstract base interface.
@@ -88,28 +94,33 @@ so that future frontend flows can consume the backend GoalType registry without 
 - `context/modules/backend-app.md` and `context/modules/backend-workers.md` are rewritten to reflect the new layout (no historical "previously branched on goal_type" notes — current truth only).
 ```
 
-### Implementation constraints
-- Frontend scope is intentionally narrow: `frontend/services/api.ts` only. No screen, navigation, or UX work belongs here. [PM result]
-- Consume the backend contract exactly as specified in `api_spec.md`; do not invent alternative shapes. [Direction]
-- Preserve existing frontend client conventions for base URL, auth, and response handling. [Source: context/project.md#Active constraints]
+## Constraints / handoff notes
 
-## References
+- This story is intentionally limited to `frontend/services/api.ts` only.
+- No screen, navigation, or UX changes are allowed in this direction.
+- Match existing frontend API/auth conventions already present in the repo.
+
+# References
+
 - `frontend/services/api.ts`
-- `frontend/hooks/useAuth.tsx`
-- `frontend/screens/`
-- `backend/app/routes/goals.py`
+- `frontend/AGENTS.md`
 
-## Dev Agent Record
-- Status: Not started
-- Agent Model: TBD
-- Debug Log References: TBD
-- Completion Notes: TBD
-- File List: TBD
+# Dev Agent Record
 
-## Senior Developer Review
-- Status: Pending
-- Reviewer: TBD
-- Review Notes: TBD
+## Status
+Not started
 
-## Review Follow-ups
+## Notes
+- Reserved for implementation agent.
+
+# Senior Developer Review
+
+## Status
+Pending
+
+## Notes
+- Reserved for senior developer review.
+
+# Review Follow-ups
+
 - None yet.
