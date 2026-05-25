@@ -896,7 +896,11 @@ def handle_dev(
             payload["summary"] = "Dry-run dev failure: tests still red."
     else:
         from factory.app_config import resolve_app_repo_path
-        from factory.chain.branch import ensure_feature_branch
+        from factory.chain.branch import (
+            _run_git,
+            ensure_feature_branch,
+            find_test_files_in_diff,
+        )
         from factory.runner import LLMConfig, sandbox_run
 
         repo_path = software_factory_root / "apps" / story.app
@@ -916,6 +920,13 @@ def handle_dev(
         story.github_branch = branch
         persist_story(story, db)
 
+        # Snapshot the pre-dev tip so we can diff post-dev commits to enforce
+        # the "Dev must not modify test files" invariant. The persona prompt
+        # carries the rule for the LLM; this check is the chain-side
+        # enforcement that catches violations regardless of what the model
+        # decided to do.
+        pre_dev_sha = _run_git(target_repo, "rev-parse", "HEAD").stdout.strip()
+
         llm = LLMConfig(model=route("dev", difficulty=difficulty))
         import asyncio
 
@@ -929,6 +940,32 @@ def handle_dev(
                 dry_run=False,
             )
         )
+
+        # If Dev touched any test file, abort to BLOCKED_TESTS_NEED_CLARIFICATION.
+        # Test files are frozen during the Dev run; if a test is wrong, the
+        # persona prompt requires writing ``TESTS_NEED_CLARIFICATION:`` so the
+        # chain can route back to Test-Designer. A silently-modified test that
+        # then "passes" would be the worst possible regression.
+        touched_tests = find_test_files_in_diff(target_repo, base_ref=pre_dev_sha)
+        if touched_tests:
+            story.state = advance(story, EVENT_DEV_EXHAUSTED).value
+            story.error = f"dev modified test files (forbidden); paths={touched_tests[:5]}"
+            persist_story(story, db)
+            return HandlerResult(
+                next_state=StoryState(story.state),
+                payload={
+                    "files_changed": run_res.files_changed,
+                    "test_run_passed": False,
+                    "tests_modified_by_dev": touched_tests,
+                    "summary": (
+                        f"Dev modified test files: {', '.join(touched_tests[:5])}. "
+                        "Test files are frozen during dev runs; routing back to "
+                        "Test-Designer for clarification."
+                    ),
+                },
+                error=story.error,
+            )
+
         tests_green = bool(run_res.test_run_passed)
         payload = {
             "files_changed": run_res.files_changed,
