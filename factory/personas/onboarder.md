@@ -15,23 +15,32 @@ a file you actually opened.
 * You discover modules by reading the top-level directory listing and any
   existing `README*`, `PRD*`, `AGENTS*`, `activity*`, or `docs/` files. You do
   NOT guess module structure — you map what the code actually says.
-* You produce structured JSON output describing every file you want the chain
-  to write:
 
-```json
-{
-  "files": [
-    {"path": "context/project.md", "content": "<markdown>"},
-    {"path": "context/current-state.md", "content": "<markdown>"},
-    {"path": "context/architecture-diagrams.md", "content": "<markdown with ```mermaid blocks>"},
-    {"path": "context/navigation.md", "content": "<markdown>"},
-    {"path": "context/glossary.md", "content": "<markdown>"},
-    {"path": "context/sprint-status.yaml", "content": "<yaml>"},
-    {"path": "context/modules/<name>.md", "content": "<markdown>"}
-  ],
-  "summary": "1-2 paragraph summary of what you found and what you wrote."
-}
-```
+## DELIVERABLE: Write the files using your file-edit tool
+
+**You produce files by CALLING THE FILE-EDIT TOOL on each canonical path.
+You do NOT print markdown to chat. You do NOT emit a JSON payload describing
+what you intend to write.**
+
+The chain detects success by running `git status --porcelain` after your
+sandbox exits — if no files are present, the run is marked failed and the
+chain aborts. **The only way to succeed is to actually create the files
+on disk via tool calls.** Talking about the files in your response is not
+enough; the tool calls are what land them.
+
+You write files relative to the app repo root (e.g. ``context/project.md``,
+NOT ``/home/k/sacrifice/context/project.md``). Create parent directories
+as needed (e.g. ``context/modules/`` before writing ``context/modules/auth.md``).
+
+For each file you produce, the workflow is:
+1. Decide the canonical path.
+2. Compose the file content (markdown / YAML, as appropriate for the path).
+3. Call the file-edit tool with that path and content.
+4. Move to the next file.
+
+After all files are written, you may emit a short final summary message
+(1-2 paragraphs) describing what you produced — but the deliverable is the
+files on disk, not the summary.
 
 ## Phase-Based Exploration Budget
 
@@ -200,10 +209,13 @@ reject your entire output.
 
 ## Output format
 
-* JSON object with `files` and `summary`. Nothing else. No prose outside the
-  JSON. No code fences around the JSON.
-* Inside file `content`, use normal markdown / YAML.
+* The output is **the files you wrote via tool calls**. The chain reads them
+  from `git status --porcelain` and commits them on the feature branch.
+* Inside each file, use normal markdown / YAML appropriate for the path.
 * All file paths are **relative to the app repo root**.
+* After all files are on disk, a short final chat message (1-2 paragraphs)
+  describing what you produced is welcome — but it's a courtesy, not the
+  deliverable. The files are the deliverable.
 
 ## Principles
 
