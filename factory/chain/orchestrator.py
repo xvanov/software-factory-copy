@@ -189,28 +189,60 @@ def _invoke_handler(
     raise RuntimeError(f"unknown handler name: {name}")
 
 
+# States that don't count toward concurrency caps. ``STORY_CREATED`` is a
+# pre-dispatch queue state — no agent is running yet, the story is just
+# waiting for its first handler. PM-sync routinely spawns N children at
+# once into STORY_CREATED; without this exclusion the cap deadlocks the
+# whole batch (every story sees the other N-1 as competitors and is
+# refused, so none ever advances). Terminal states are excluded for the
+# usual reason: the work is done.
+_NON_CAP_COUNTING_STATES = {
+    # pre-dispatch
+    StoryState.STORY_CREATED.value,
+    # terminal / post-orchestrator
+    StoryState.PR_OPEN.value,
+    StoryState.CI_PENDING.value,
+    StoryState.CI_GREEN.value,
+    StoryState.READY_FOR_MERGE.value,
+    StoryState.DEPLOYED.value,
+    StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
+    StoryState.BLOCKED_DEPLOY_FAILED.value,
+}
+
+
 def _count_global_in_flight(db: Path, exclude_story_id: int | None = None) -> int:
-    """Count non-terminal stories across all apps (for the global cap).
+    """Count actively-dispatched stories across all apps (for the global cap).
 
     ``exclude_story_id`` lets the orchestrator subtract the story it's
     currently inspecting so the cap measures "competitors", not "myself".
+
+    Stories in ``STORY_CREATED`` are queued (no agent dispatched yet) and
+    therefore do not count — see ``_NON_CAP_COUNTING_STATES``.
     """
     eng = create_engine(f"sqlite:///{db}", echo=False)
-    terminal = {
-        StoryState.PR_OPEN.value,
-        StoryState.CI_PENDING.value,
-        StoryState.CI_GREEN.value,
-        StoryState.READY_FOR_MERGE.value,
-        StoryState.DEPLOYED.value,
-        StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
-        StoryState.BLOCKED_DEPLOY_FAILED.value,
-    }
     with Session(eng) as session:
         rows = session.exec(select(StoryRecord)).all()
     return sum(
         1
         for r in rows
-        if r.state not in terminal and (exclude_story_id is None or r.id != exclude_story_id)
+        if r.state not in _NON_CAP_COUNTING_STATES
+        and (exclude_story_id is None or r.id != exclude_story_id)
+    )
+
+
+def _count_app_in_flight(db: Path, app: str, exclude_story_id: int | None = None) -> int:
+    """Count actively-dispatched stories for ``app`` (for the per-repo cap).
+
+    Same queued-vs-dispatched semantics as ``_count_global_in_flight``.
+    """
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        rows = session.exec(select(StoryRecord).where(StoryRecord.app == app)).all()
+    return sum(
+        1
+        for r in rows
+        if r.state not in _NON_CAP_COUNTING_STATES
+        and (exclude_story_id is None or r.id != exclude_story_id)
     )
 
 
@@ -309,14 +341,11 @@ def tick(
 
             # Backpressure check before dispatch. The current_state dict is
             # recomputed each iteration so the in-flight counts reflect any
-            # newly-completed stories. The current story is part of those
-            # counts; subtract 1 so the cap measures "stories blocked by
-            # this dispatch in addition to me", not "would I be the N+1th".
-            #
-            # Subtract 1 because ``stories_in_flight`` includes the story we
-            # are about to dispatch; we measure competitors only. Without
-            # this, ``per_repo_concurrent_agents=1`` would self-block.
-            in_flight_app = max(0, len(H.stories_in_flight(app, db)) - 1)
+            # newly-completed stories. Use the cap-aware counter
+            # (``_count_app_in_flight``) so queued ``STORY_CREATED`` siblings
+            # spawned in the same PM-sync batch don't self-block the entire
+            # batch — only stories with an active agent count.
+            in_flight_app = _count_app_in_flight(db, app, exclude_story_id=story.id)
             state_dict = _build_current_state(
                 root=root,
                 db=db,
