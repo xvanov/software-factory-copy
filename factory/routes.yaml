@@ -45,14 +45,15 @@ routes:
 #   - gpt-5.3-codex     (code specialist, RESPONSES-API-ONLY — see note below)
 #   - deepseek-v4-pro   (heavy implementation, 500K TPM)
 #
-# ``gpt-5.3-codex`` is currently UNROUTED. The factory's text_run / sandbox_run
-# both go through litellm.completion (Chat Completions). The codex deployment
-# rejects Chat Completions with 400 "operation unsupported" and is reachable
-# only via the Responses API (``/openai/responses``, api-version 2025-03-01-
-# preview or later). Routing personas to it requires a Responses-API code
-# path in runner.text_run; that lands in a future direction. For now, all
-# code-judgment personas use gpt-5.4 (still satisfies reviewer ≠ dev because
-# dev / test_implementer run on deepseek-v4-pro).
+# ``gpt-5.3-codex`` is currently UNROUTED. The codex deployment rejects Chat
+# Completions with 400 "operation unsupported" and is reachable only via the
+# Responses API. ``.env`` now sets ``AZURE_API_VERSION=2025-03-01-preview``
+# (which supports BOTH Chat Completions AND Responses API), so the OpenHands
+# SDK's auto-route-to-Responses for gpt-5.x family works. Routing the codex
+# model through ``text_run`` still requires a dedicated Responses-API code
+# path (text_run currently uses litellm.completion); that's a future direction.
+# For now, all code-judgment personas use gpt-5.4 (still satisfies reviewer ≠
+# dev because dev / test_implementer run on deepseek-v4-pro).
 azure_routes:
   # Structured-text personas → gpt-5.4 (general purpose, JSON-friendly)
   pm: azure/gpt-5.4
