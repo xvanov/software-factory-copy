@@ -85,6 +85,11 @@ _PM_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "enum": ["frontend", "backend", "infra", "test", "docs"],
                     },
+                    # ``chain_kind`` decides which chain variant runs for the
+                    # story: the historical TDD pipeline or the lightweight
+                    # docs path. Optional in the schema for backward compat;
+                    # the handler defaults missing values to ``"tdd"``.
+                    "chain_kind": {"type": "string", "enum": ["tdd", "docs"]},
                     "rationale": {"type": "string"},
                 },
             },
@@ -156,11 +161,25 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
 
     if validation.is_valid:
         child_stories: list[dict[str, str]] = []
+        # Docs-typed directions get a single ``chain_kind: "docs"`` story by
+        # default — the dry-run fixture mirrors what a live PM call would
+        # emit for a context-bootstrap or onboarder-style direction. The
+        # docs path skips test_design/test_impl/dev entirely.
+        if typ == "docs":
+            child_stories.append(
+                {
+                    "title": title_short,
+                    "scope": "docs",
+                    "chain_kind": "docs",
+                    "rationale": "Documentation-only direction; routed through the docs chain.",
+                }
+            )
         if direction.has_api_spec:
             child_stories.append(
                 {
                     "title": f"Implement API: {title_short}",
                     "scope": "backend",
+                    "chain_kind": "tdd",
                     "rationale": "Direction declares an API contract; one backend story to implement it.",
                 }
             )
@@ -169,6 +188,7 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
                 {
                     "title": f"Implement UI flow: {title_short}",
                     "scope": "frontend",
+                    "chain_kind": "tdd",
                     "rationale": "Direction declares a user flow; one frontend story to implement it.",
                 }
             )
@@ -177,6 +197,7 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
                 {
                     "title": title_short,
                     "scope": "backend",
+                    "chain_kind": "tdd",
                     "rationale": "Explore-tagged direction; single backend story as a starting point.",
                 }
             )

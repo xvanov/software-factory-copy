@@ -80,8 +80,14 @@ class TickSummary:
 # pre-conditions (e.g. dev_in_progress -> the dev handler is the one that
 # transitioned into dev_in_progress, so we don't re-run; only DEV_RETRY and
 # the entry states get a handler).
+# Per-state handler dispatch — what to run when a story is in this state.
+#
+# STORY_CREATED is special: which handler runs depends on the story's
+# ``chain_kind``. The actual dispatch decision lives in ``_dispatch_for_story``
+# so the state machine stays pure. Stories with chain_kind="docs" route to
+# ``docs_sm`` here; chain_kind="tdd" (default) routes to ``sm``.
 _DISPATCH = {
-    StoryState.STORY_CREATED: "sm",
+    StoryState.STORY_CREATED: "sm",  # TDD default; overridden for docs chain
     StoryState.SM_DONE: "test_design",
     # TODO(phase-3-or-4): Insert "architect" before test_design when the PM's
     # ``child_stories`` count crosses the architectural threshold or the
@@ -102,11 +108,29 @@ _DISPATCH = {
     # not dispatched.
     StoryState.REVIEWER_DONE: "tech_writer",
     StoryState.TECH_WRITER_DONE: "docs_enforcer",
+    # Docs chain dispatch (skips the TDD red→green loop).
+    StoryState.DOCS_SM_DONE: "docs_onboarder",
+    StoryState.DOCS_ONBOARDER_DONE: "docs_enforcer",
     # Phase 5 — post-merge deploy. The auto-merge worker (and the webhook
     # path) flips a story to DEPLOY_PENDING; from there the orchestrator
     # tick drives handle_deploy.
     StoryState.DEPLOY_PENDING: "deploy",
 }
+
+
+def _dispatch_for_story(story: StoryRecord) -> str | None:
+    """Pick the handler name for ``story`` given its current state.
+
+    Pure wrapper around ``_DISPATCH`` plus the docs-chain branch at
+    ``STORY_CREATED`` — that one entry point depends on ``story.chain_kind``,
+    everything else is a simple table lookup.
+    """
+    state = StoryState(story.state)
+    if state == StoryState.STORY_CREATED:
+        if story.chain_kind == "docs":
+            return "docs_sm"
+        return "sm"
+    return _DISPATCH.get(state)
 
 
 def _invoke_handler(
@@ -144,6 +168,14 @@ def _invoke_handler(
         )
     if name == "docs_enforcer":
         return H.handle_docs_enforcer(
+            story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
+        )
+    if name == "docs_sm":
+        return H.handle_docs_sm(
+            story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
+        )
+    if name == "docs_onboarder":
+        return H.handle_docs_onboarder(
             story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
         )
     if name == "deploy":
@@ -242,8 +274,7 @@ def tick(
     for story in stories:
         # Advance up to ``max_advances_per_story`` steps for this story.
         for _ in range(max_advances_per_story):
-            current = StoryState(story.state)
-            handler_name = _DISPATCH.get(current)
+            handler_name = _dispatch_for_story(story)
             if handler_name is None:
                 # No handler for this state — either in-progress (waiting on
                 # webhook) or terminal. Stop driving.

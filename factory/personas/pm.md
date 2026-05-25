@@ -26,12 +26,40 @@ prose.
   "tracker_title": "<<70 chars>",
   "tracker_body": "<markdown body of tracker issue>",
   "child_stories": [
-    {"title": "...", "scope": "frontend|backend|infra|test|docs", "rationale": "..."}
+    {
+      "title": "...",
+      "scope": "frontend|backend|infra|test|docs",
+      "chain_kind": "tdd|docs",
+      "rationale": "..."
+    }
   ],
   "labels": ["feature", "priority/p2"],
   "confidence": 0.0
 }
 ```
+
+### `chain_kind` rules
+
+Pick exactly one per child story:
+
+* `tdd` (default) — the story's deliverable includes executable code (or a
+  config change driving runtime behavior). The chain runs the full
+  test-design → test-impl → dev → reviewer pipeline.
+* `docs` — the story's deliverable is ONLY documentation under canonical
+  paths (`context/`, `prd.md`, `stories/`, `architecture.md`). Use when:
+  - The story produces ONLY content under `context/` or another canonical
+    doc path (no source code files touched).
+  - The direction is a context-bootstrap or onboarder-style task.
+  - The acceptance criteria are all of the form "<doc-path> exists" or
+    "<doc-path> contains X" with no executable verification.
+
+  Set `chain_kind: "docs"`. The chain routes through a docs-only pipeline
+  (docs-SM → Onboarder → enforcer → PR) that skips test_design / test_impl
+  / dev entirely.
+
+If you're uncertain, default to `tdd`. The docs chain is for stories where
+"green tests" would be a category error — not for stories that happen to
+touch a few documentation files alongside code.
 
 * `confidence` is a float between 0.0 and 1.0 — your own self-assessment of how
   well you understood the direction. Below 0.6 means the chain should consider

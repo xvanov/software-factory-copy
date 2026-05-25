@@ -27,7 +27,21 @@ from sqlmodel import Field, SQLModel
 
 
 class StoryState(StrEnum):
-    """Every state the TDD chain can be in for a single story."""
+    """Every state a story can be in.
+
+    Two chain variants share the same enum; the orchestrator picks the
+    starting handler based on ``story.chain_kind``:
+
+    * ``tdd`` (default): SM → test_design → test_impl → dev → reviewer →
+      tech_writer → docs_enforcer → PR_OPEN. The historical pipeline.
+    * ``docs``: docs_sm → docs_onboarder → docs_enforcer → PR_OPEN. Used for
+      stories whose deliverable is canonical documentation (e.g. the initial
+      ``context/`` bootstrap). Skips the TDD red→green loop because there is
+      no executable code to drive against tests.
+
+    Both variants converge at ``DOCS_ENFORCER_CHECK`` and onward; the
+    enforcer + PR + deploy states are shared.
+    """
 
     STORY_CREATED = "story_created"
     SM_IN_PROGRESS = "sm_in_progress"
@@ -44,6 +58,12 @@ class StoryState(StrEnum):
     REVIEWER_REQUESTED_CHANGES = "reviewer_requested_changes"
     TECH_WRITER_IN_PROGRESS = "tech_writer_in_progress"
     TECH_WRITER_DONE = "tech_writer_done"
+    # Docs chain: lightweight path for documentation-only stories. Onboarder
+    # writes the canonical files in one shot; no test loop.
+    DOCS_SM_IN_PROGRESS = "docs_sm_in_progress"
+    DOCS_SM_DONE = "docs_sm_done"
+    DOCS_ONBOARDER_IN_PROGRESS = "docs_onboarder_in_progress"
+    DOCS_ONBOARDER_DONE = "docs_onboarder_done"
     DOCS_ENFORCER_CHECK = "docs_enforcer_check"
     PR_OPEN = "pr_open"
     CI_PENDING = "ci_pending"
@@ -72,6 +92,11 @@ class StoryRecord(SQLModel, table=True):
     slug: str
     scope: str  # frontend | backend | infra | test | docs
     state: str = Field(default=StoryState.STORY_CREATED.value, index=True)
+    # Which chain variant drives this story. ``tdd`` is the historical
+    # default; ``docs`` routes through docs_sm → docs_onboarder →
+    # docs_enforcer for documentation-only deliverables. The orchestrator
+    # reads this when dispatching out of STORY_CREATED.
+    chain_kind: str = Field(default="tdd", index=True)
     github_issue_number: int | None = None
     github_branch: str | None = None
     github_pr_number: int | None = None
@@ -118,6 +143,12 @@ EVENT_TECH_WRITER_DONE = "tech_writer_done"
 EVENT_DOCS_ENFORCER_CHECK = "docs_enforcer_check"
 EVENT_DOCS_ENFORCER_PASS = "docs_enforcer_pass"
 EVENT_DOCS_ENFORCER_FAIL = "docs_enforcer_fail"
+# Docs chain events.
+EVENT_DOCS_SM_STARTED = "docs_sm_started"
+EVENT_DOCS_SM_DONE = "docs_sm_done"
+EVENT_DOCS_ONBOARDER_STARTED = "docs_onboarder_started"
+EVENT_DOCS_ONBOARDER_DONE = "docs_onboarder_done"
+EVENT_DOCS_ONBOARDER_FAILED = "docs_onboarder_failed"
 # Phase 5: post-merge deploy chain.
 EVENT_MERGED = "merged"  # auto-merge or webhook flips READY_FOR_MERGE -> DEPLOY_PENDING.
 EVENT_DEPLOY_STARTED = "deploy_started"
@@ -130,6 +161,7 @@ EVENT_DEPLOY_SKIPPED = "deploy_skipped"  # mode/cap rejection or deploy.enabled=
 # This is the source of truth for the chain's transition graph. Any
 # (state, event) pair not in this map is an illegal transition.
 _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
+    # ---- TDD chain (chain_kind == "tdd") ----
     (StoryState.STORY_CREATED, EVENT_SM_STARTED): StoryState.SM_IN_PROGRESS,
     (StoryState.SM_IN_PROGRESS, EVENT_SM_DONE): StoryState.SM_DONE,
     (StoryState.SM_DONE, EVENT_TEST_DESIGN_STARTED): StoryState.TEST_DESIGN_IN_PROGRESS,
@@ -183,6 +215,29 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
         StoryState.DOCS_ENFORCER_CHECK,
         EVENT_DOCS_ENFORCER_FAIL,
     ): StoryState.REVIEWER_REQUESTED_CHANGES,
+    # ---- Docs chain (chain_kind == "docs") ----
+    # Skips the TDD red→green loop. Onboarder produces canonical doc files
+    # in one sandbox pass; the enforcer + PR open path is shared with TDD.
+    (StoryState.STORY_CREATED, EVENT_DOCS_SM_STARTED): StoryState.DOCS_SM_IN_PROGRESS,
+    (StoryState.DOCS_SM_IN_PROGRESS, EVENT_DOCS_SM_DONE): StoryState.DOCS_SM_DONE,
+    (
+        StoryState.DOCS_SM_DONE,
+        EVENT_DOCS_ONBOARDER_STARTED,
+    ): StoryState.DOCS_ONBOARDER_IN_PROGRESS,
+    (
+        StoryState.DOCS_ONBOARDER_IN_PROGRESS,
+        EVENT_DOCS_ONBOARDER_DONE,
+    ): StoryState.DOCS_ONBOARDER_DONE,
+    # Onboarder failure (e.g. sandbox crash, no files produced) goes to the
+    # same BLOCKED state the TDD chain uses for "humans must look at this".
+    (
+        StoryState.DOCS_ONBOARDER_IN_PROGRESS,
+        EVENT_DOCS_ONBOARDER_FAILED,
+    ): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
+    (
+        StoryState.DOCS_ONBOARDER_DONE,
+        EVENT_DOCS_ENFORCER_CHECK,
+    ): StoryState.DOCS_ENFORCER_CHECK,
     # Phase 5 — post-merge deploy. The auto-merge worker flips
     # READY_FOR_MERGE → DEPLOY_PENDING on successful merge (also reachable
     # from CI_GREEN and PR_OPEN since some chains skip the intermediate

@@ -33,6 +33,11 @@ from factory.chain.state_machine import (
     EVENT_DOCS_ENFORCER_CHECK,
     EVENT_DOCS_ENFORCER_FAIL,
     EVENT_DOCS_ENFORCER_PASS,
+    EVENT_DOCS_ONBOARDER_DONE,
+    EVENT_DOCS_ONBOARDER_FAILED,
+    EVENT_DOCS_ONBOARDER_STARTED,
+    EVENT_DOCS_SM_DONE,
+    EVENT_DOCS_SM_STARTED,
     EVENT_REVIEWER_APPROVE,
     EVENT_REVIEWER_REQUEST_CHANGES,
     EVENT_REVIEWER_STARTED,
@@ -77,6 +82,10 @@ _MIGRATION_COLUMNS: dict[str, str] = {
     # column_name -> SQL type (idempotent ALTER TABLE ADD COLUMN if missing).
     "sm_result_json": "TEXT",
     "last_rejection_reason": "TEXT",
+    # Docs-chain support. Default ``"tdd"`` keeps pre-existing stories on the
+    # historical pipeline; new docs-scope stories opt in via PM's child_story
+    # output (``chain_kind: "docs"``).
+    "chain_kind": "TEXT NOT NULL DEFAULT 'tdd'",
 }
 
 
@@ -216,6 +225,10 @@ def handle_stories_spawned(
         # default to ``backend`` (most common case for ambiguous asks).
         first_child = (pm_result.get("child_stories") or [{}])[0]
         scope = str(first_child.get("scope") or "backend")
+        # ``chain_kind`` is inherited from the first child story since
+        # dual-draft produces two interpretations of the same underlying
+        # work item; the variant doesn't change per-interpretation.
+        chain_kind = str(first_child.get("chain_kind") or "tdd")
 
         for interp in interpretations:
             slug_base = _slug_of(interp.title or direction.title or "story")
@@ -249,6 +262,7 @@ def handle_stories_spawned(
                 slug=slug,
                 scope=scope,
                 state=StoryState.STORY_CREATED.value,
+                chain_kind=chain_kind,
                 github_issue_number=issue_number,
                 github_branch=f"story/{issue_number or 0}-{slug}",
                 story_file_path=story_file_path,
@@ -277,6 +291,10 @@ def handle_stories_spawned(
         slug = _slug_of(child.get("title") or "story")
         title = str(child.get("title") or "Untitled story")[:200]
         scope = str(child.get("scope") or "backend")
+        # ``chain_kind`` decides which chain variant drives this story.
+        # PM emits ``"docs"`` for documentation-only deliverables (the new
+        # docs chain) and ``"tdd"`` (default) for everything else.
+        chain_kind = str(child.get("chain_kind") or "tdd")
         issue_number = None
         story_file_path = f"stories/0-{slug}.md"
 
@@ -303,6 +321,7 @@ def handle_stories_spawned(
             slug=slug,
             scope=scope,
             state=StoryState.STORY_CREATED.value,
+            chain_kind=chain_kind,
             github_issue_number=issue_number,
             github_branch=f"story/{issue_number or 0}-{slug}",
             story_file_path=story_file_path,
@@ -1245,6 +1264,279 @@ def handle_tech_writer(
 
 
 # --------------------------------------------------------------------------- #
+# docs_sm — lightweight story-prep for the docs chain
+# --------------------------------------------------------------------------- #
+
+
+def _dry_run_docs_sm(story: StoryRecord) -> dict[str, Any]:
+    """Deterministic docs-SM result for dry-run mode.
+
+    Returns the minimum the downstream Onboarder handler needs: a story-file
+    body sketch and the list of canonical paths the Onboarder should produce.
+    The full BMAD story envelope isn't required — the docs path skips the
+    Test-Designer entirely.
+    """
+    return {
+        "story_file_body": (
+            f"# {story.title}\n\n"
+            f"## Goal\n\nProduce canonical documentation in the app repo.\n\n"
+            f"## Canonical paths\n\n"
+            f"- `context/project.md`\n"
+            f"- `context/current-state.md`\n"
+            f"- `context/navigation.md`\n"
+            f"- `context/glossary.md`\n"
+            f"- `context/architecture-diagrams.md`\n"
+            f"- `context/sprint-status.yaml`\n"
+            f"- `context/modules/<name>.md` per discovered module\n"
+        ),
+        "canonical_paths": [
+            "context/project.md",
+            "context/current-state.md",
+            "context/navigation.md",
+            "context/glossary.md",
+            "context/architecture-diagrams.md",
+            "context/sprint-status.yaml",
+        ],
+    }
+
+
+def handle_docs_sm(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+    *,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+) -> HandlerResult:
+    """Lightweight SM specialized for the docs chain.
+
+    Produces a story file under ``apps/<app>/stories/<issue>-<slug>.md`` that
+    enumerates which canonical paths the Onboarder should produce. NOT a full
+    BMAD story — the docs path skips test_design/test_impl/dev entirely.
+
+    In ``dry_run``, emits a deterministic fixture. In real-run, calls
+    ``text_run("sm", ...)`` with a docs-flavored prompt. The story file write
+    happens BEFORE advancing state so a crash mid-write leaves the chain
+    recoverable.
+    """
+    db = db_path or (software_factory_root / "state" / "factory.db")
+    story.state = advance(story, EVENT_DOCS_SM_STARTED).value
+    persist_story(story, db)
+
+    if dry_run:
+        result = _dry_run_docs_sm(story)
+    else:
+        # Real-run: text_run on a docs-flavored prompt. We re-use the SM
+        # persona file but prefix the prompt with a directive to emit a
+        # minimal docs story (skip test plans, dev notes, etc.). The SM prompt
+        # already knows about canonical paths from CANONICAL_CONTEXT_PATHS.
+        from factory.runner import text_run
+
+        persona_prompt = _read_persona_prompt("sm")
+        direction = find_direction_for_story(story, software_factory_root)
+        direction_title = direction.title if direction else story.title
+        direction_why = (direction.why if direction else "") or ""
+
+        docs_directive = (
+            "You are running in DOCS-CHAIN mode for this story. The story's "
+            "deliverable is canonical documentation under the app's ``context/`` "
+            "tree — NO executable code, NO test plans, NO dev notes. Produce a "
+            "minimal story body listing the canonical paths the Onboarder must "
+            "write and the directive's acceptance criteria verbatim. Output "
+            "JSON ONLY with this shape:\n"
+            '  {"story_file_body": "<markdown body>", '
+            '"canonical_paths": ["context/...", "context/..."]}'
+        )
+        prompt = (
+            f"{docs_directive}\n\n---\n\n"
+            f"{persona_prompt.rstrip()}\n\n---\n\n"
+            f"## Direction\n\n# {direction_title}\n\n{direction_why}\n"
+        )
+        schema = {
+            "type": "object",
+            "properties": {
+                "story_file_body": {"type": "string"},
+                "canonical_paths": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["story_file_body", "canonical_paths"],
+        }
+        result_any = text_run(
+            persona="sm",
+            prompt=prompt,
+            model_id=route("sm"),
+            schema=schema,
+            max_tokens=2048,
+            db_path=db,
+        )
+        result = result_any if isinstance(result_any, dict) else _dry_run_docs_sm(story)
+
+    # Persist the SM JSON before any filesystem write so a crash leaves the
+    # DB consistent with what the next handler will see.
+    story.sm_result_json = json.dumps(result)
+
+    # Write the story file under apps/<app>/stories/<issue>-<slug>.md.
+    story_path_abs = software_factory_root / "apps" / story.app / story.story_file_path
+    story_path_abs.parent.mkdir(parents=True, exist_ok=True)
+    story_path_abs.write_text(result.get("story_file_body", "") + "\n", encoding="utf-8")
+
+    story.state = advance(story, EVENT_DOCS_SM_DONE).value
+    persist_story(story, db)
+    return HandlerResult(next_state=StoryState(story.state), payload=result)
+
+
+# --------------------------------------------------------------------------- #
+# docs_onboarder — single-shot sandbox run that writes the canonical files
+# --------------------------------------------------------------------------- #
+
+
+def _dry_run_docs_onboarder(story: StoryRecord) -> dict[str, Any]:
+    """Dry-run fixture: pretend the Onboarder wrote a plausible canonical set."""
+    return {
+        "files_changed": [
+            "context/project.md",
+            "context/current-state.md",
+            "context/navigation.md",
+            "context/glossary.md",
+            "context/architecture-diagrams.md",
+            "context/sprint-status.yaml",
+        ],
+        "summary": "Dry-run docs_onboarder: canonical files would be produced.",
+    }
+
+
+def handle_docs_onboarder(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+    *,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+) -> HandlerResult:
+    """Run the Onboarder persona via sandbox_run.
+
+    The Onboarder reads the app repo, infers the project + module map, and
+    writes the canonical context set on the feature branch. The single
+    sandbox pass replaces the entire test_impl/dev loop the TDD chain would
+    have driven.
+
+    Uses ``resolve_app_repo_path`` for the sandbox working directory (Bug A
+    fix) and ``ensure_feature_branch`` for the per-story branch (Fix 1).
+    Commits produced by the sandbox land on the feature branch in the real
+    app repo.
+    """
+    db = db_path or (software_factory_root / "state" / "factory.db")
+    story.state = advance(story, EVENT_DOCS_ONBOARDER_STARTED).value
+    persist_story(story, db)
+
+    if dry_run:
+        payload = _dry_run_docs_onboarder(story)
+        story.state = advance(story, EVENT_DOCS_ONBOARDER_DONE).value
+        story.tech_writer_result_json = json.dumps(
+            {
+                "context_updates": [
+                    {"path": p, "action": "rewrite", "content": ""}
+                    for p in payload["files_changed"]
+                ]
+            }
+        )
+        persist_story(story, db)
+        return HandlerResult(next_state=StoryState(story.state), payload=payload)
+
+    from factory.app_config import resolve_app_repo_path
+    from factory.chain.branch import ensure_feature_branch
+    from factory.runner import LLMConfig, sandbox_run
+
+    target_repo = resolve_app_repo_path(app_config, software_factory_root)
+    branch = ensure_feature_branch(
+        target_repo,
+        story_id=story.github_issue_number,
+        slug=story.slug,
+        base_branch=app_config.default_branch or "main",
+    )
+    story.github_branch = branch
+    persist_story(story, db)
+
+    story_file_path_obj = software_factory_root / "apps" / story.app / story.story_file_path
+    llm = LLMConfig(model=route("onboarder"))
+    import asyncio
+
+    run_res = asyncio.run(
+        sandbox_run(
+            persona="onboarder",
+            story_path=story_file_path_obj,
+            repo_path=target_repo,
+            llm_config=llm,
+            dry_run=False,
+        )
+    )
+
+    # Onboarder writes files via SDK tool calls. The factory then explicitly
+    # commits whatever's left untracked on the feature branch — the SDK
+    # doesn't always commit cleanly across the full set.
+    from factory.chain.branch import _run_git
+
+    try:
+        _run_git(target_repo, "add", "-A")
+        # Only commit if there's anything to commit; an empty commit would be
+        # a chain bug (Onboarder produced nothing) and we want to surface it.
+        status = _run_git(target_repo, "status", "--porcelain").stdout.strip()
+        if status:
+            _run_git(
+                target_repo,
+                "commit",
+                "-m",
+                f"docs(context): bootstrap canonical context for {story.app}\n\n"
+                f"Produced by Onboarder for story {story.id} ({story.slug}).",
+            )
+        else:
+            # Nothing produced — Onboarder failed silently. Surface it.
+            story.state = advance(story, EVENT_DOCS_ONBOARDER_FAILED).value
+            story.error = "onboarder produced no files"
+            persist_story(story, db)
+            return HandlerResult(
+                next_state=StoryState(story.state),
+                payload={"files_changed": [], "summary": run_res.summary[-1000:]},
+                error=story.error,
+            )
+    except Exception as exc:
+        story.state = advance(story, EVENT_DOCS_ONBOARDER_FAILED).value
+        story.error = f"docs_onboarder commit failed: {exc}"
+        persist_story(story, db)
+        return HandlerResult(
+            next_state=StoryState(story.state),
+            payload={"files_changed": run_res.files_changed, "summary": str(exc)},
+            error=story.error,
+        )
+
+    # Capture the diff between the feature branch and base for the enforcer.
+    diff_proc = _run_git(
+        target_repo,
+        "diff",
+        "--name-only",
+        f"{app_config.default_branch or 'main'}..HEAD",
+    )
+    diff_files = [line.strip() for line in diff_proc.stdout.splitlines() if line.strip()]
+
+    # Persist the file list under tech_writer_result_json so the existing
+    # ``handle_docs_enforcer`` can pick it up unchanged — the field name is
+    # legacy; semantically it's "list of files this story touched".
+    story.tech_writer_result_json = json.dumps(
+        {"context_updates": [{"path": p, "action": "rewrite", "content": ""} for p in diff_files]}
+    )
+
+    story.state = advance(story, EVENT_DOCS_ONBOARDER_DONE).value
+    persist_story(story, db)
+    payload = {
+        "files_changed": diff_files,
+        "summary": run_res.summary[-2000:],
+        "tokens_in": run_res.tokens_in,
+        "tokens_out": run_res.tokens_out,
+        "cost_usd": run_res.cost_usd,
+    }
+    return HandlerResult(next_state=StoryState(story.state), payload=payload)
+
+
+# --------------------------------------------------------------------------- #
 # docs_enforcer
 # --------------------------------------------------------------------------- #
 
@@ -1262,11 +1554,13 @@ def handle_docs_enforcer(
     """Run the canonical-paths enforcer over the PR's file list.
 
     Violations → REVIEWER_REQUESTED_CHANGES + label + comment.
-    Clean → PR_OPEN.
+    Clean → PR_OPEN. Opens the GitHub PR programmatically when reached via
+    the docs chain (TDD path leaves PR creation to a future webhook).
 
     In dry-run mode without an explicit ``pr_files`` list, we derive a
     plausible set from the tech_writer result (so the enforcer sees the
-    same paths the tech_writer claimed to write).
+    same paths the tech_writer claimed to write). Docs chain populates the
+    same JSON field with its diff file list.
     """
     db = db_path or (software_factory_root / "state" / "factory.db")
     story.state = advance(story, EVENT_DOCS_ENFORCER_CHECK).value
@@ -1303,9 +1597,94 @@ def handle_docs_enforcer(
         persist_story(story, db)
         return HandlerResult(next_state=StoryState(story.state), payload=payload, error=story.error)
 
+    # Docs chain branches here: when the enforcer reaches this point coming
+    # from the docs chain, open the PR programmatically. The TDD path
+    # historically leaves PR creation to a separate worker; we mirror that
+    # behavior here when the chain_kind is "tdd".
+    if (
+        not dry_run
+        and story.chain_kind == "docs"
+        and story.github_pr_number is None
+        and story.github_branch
+    ):
+        opened = _open_pr_for_docs_story(story, app_config)
+        if opened is not None:
+            story.github_pr_number = opened
+            persist_story(story, db)
+            payload["pr_number"] = opened
+
     story.state = advance(story, EVENT_DOCS_ENFORCER_PASS).value
     persist_story(story, db)
     return HandlerResult(next_state=StoryState(story.state), payload=payload)
+
+
+def _open_pr_for_docs_story(story: StoryRecord, app_config: AppConfig) -> int | None:
+    """Push the feature branch and open a PR via the ``gh`` CLI.
+
+    Returns the PR number on success, ``None`` on any failure. Failures are
+    swallowed — the chain still transitions to ``PR_OPEN`` and the operator
+    can open the PR by hand from the (already-pushed) branch.
+
+    Uses ``gh`` rather than pygithub because the chain runs locally with
+    ``gh auth login`` already configured; no extra token plumbing needed.
+    """
+    import subprocess
+
+    from factory.app_config import resolve_app_repo_path
+
+    # Defer import to keep the handler's hot path simple.
+    target_repo = resolve_app_repo_path(app_config, Path("/home/k/software-factory"))
+    base = app_config.default_branch or "main"
+    branch = story.github_branch
+    title = f"docs(context): {story.title}"
+    body = (
+        f"Generated by factory docs chain for story #{story.github_issue_number}.\n\n"
+        f"Branch: `{branch}`\n"
+        f"Story slug: `{story.slug}`\n"
+        f"Direction: `{story.direction_id}`\n\n"
+        f"Canonical context files added/updated. Auto-merge is OFF — review and merge by hand."
+    )
+    try:
+        # Push the branch first; gh pr create needs an upstream ref.
+        subprocess.run(
+            ["git", "push", "-u", "origin", str(branch)],
+            cwd=str(target_repo),
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        proc = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                app_config.repo,
+                "--base",
+                base,
+                "--head",
+                str(branch),
+                "--title",
+                title,
+                "--body",
+                body,
+            ],
+            cwd=str(target_repo),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    # gh prints the PR URL on stdout; parse the trailing digits.
+    url = (proc.stdout or "").strip().splitlines()[-1] if proc.stdout else ""
+    # URL shape: https://github.com/<org>/<repo>/pull/<n>
+    m = re.search(r"/pull/(\d+)$", url)
+    if m:
+        return int(m.group(1))
+    return None
 
 
 # --------------------------------------------------------------------------- #

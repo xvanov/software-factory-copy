@@ -130,9 +130,16 @@ def test_illegal_transition_raises() -> None:
 
 
 def test_list_transitions_from_story_created() -> None:
-    """STORY_CREATED has exactly one outgoing edge: EVENT_SM_STARTED."""
-    edges = list_transitions_from(StoryState.STORY_CREATED)
-    assert edges == [(EVENT_SM_STARTED, StoryState.SM_IN_PROGRESS)]
+    """STORY_CREATED has TWO outgoing edges: the TDD start (SM_STARTED) and
+    the docs-chain start (DOCS_SM_STARTED). Which one fires is decided by the
+    orchestrator based on ``story.chain_kind``."""
+    edges = set(list_transitions_from(StoryState.STORY_CREATED))
+    assert (EVENT_SM_STARTED, StoryState.SM_IN_PROGRESS) in edges
+    # Imported here to keep the existing import list focused on TDD events.
+    from factory.chain.state_machine import EVENT_DOCS_SM_STARTED
+
+    assert (EVENT_DOCS_SM_STARTED, StoryState.DOCS_SM_IN_PROGRESS) in edges
+    assert len(edges) == 2
 
 
 def test_sm_in_progress_transitions_to_sm_done() -> None:
@@ -157,3 +164,68 @@ def test_advance_does_not_mutate_story() -> None:
     next_state = advance(s, EVENT_SM_STARTED)
     assert s.state == StoryState.STORY_CREATED.value  # unchanged
     assert next_state == StoryState.SM_IN_PROGRESS
+
+
+# --------------------------------------------------------------------------- #
+# Docs chain transitions
+# --------------------------------------------------------------------------- #
+
+
+def test_docs_chain_full_path_to_pr_open() -> None:
+    """Walk the docs chain from STORY_CREATED to PR_OPEN.
+
+    The docs path is intentionally shorter than the TDD pipeline: docs_sm →
+    onboarder → enforcer → PR. We replay each transition explicitly to
+    guard against accidentally re-routing a docs story through test_design.
+    """
+    from factory.chain.state_machine import (
+        EVENT_DOCS_ENFORCER_CHECK,
+        EVENT_DOCS_ENFORCER_PASS,
+        EVENT_DOCS_ONBOARDER_DONE,
+        EVENT_DOCS_ONBOARDER_STARTED,
+        EVENT_DOCS_SM_DONE,
+        EVENT_DOCS_SM_STARTED,
+    )
+
+    s = _story(StoryState.STORY_CREATED)
+
+    s.state = advance(s, EVENT_DOCS_SM_STARTED).value
+    assert s.state == StoryState.DOCS_SM_IN_PROGRESS.value
+
+    s.state = advance(s, EVENT_DOCS_SM_DONE).value
+    assert s.state == StoryState.DOCS_SM_DONE.value
+
+    s.state = advance(s, EVENT_DOCS_ONBOARDER_STARTED).value
+    assert s.state == StoryState.DOCS_ONBOARDER_IN_PROGRESS.value
+
+    s.state = advance(s, EVENT_DOCS_ONBOARDER_DONE).value
+    assert s.state == StoryState.DOCS_ONBOARDER_DONE.value
+
+    s.state = advance(s, EVENT_DOCS_ENFORCER_CHECK).value
+    assert s.state == StoryState.DOCS_ENFORCER_CHECK.value
+
+    s.state = advance(s, EVENT_DOCS_ENFORCER_PASS).value
+    assert s.state == StoryState.PR_OPEN.value
+
+
+def test_docs_chain_cannot_cross_into_tdd_states() -> None:
+    """Once in DOCS_SM_DONE, the TDD-only events must be rejected.
+
+    The docs chain skips test_design entirely; sending a docs story the
+    ``EVENT_TEST_DESIGN_STARTED`` event would be a chain bug. ``advance``
+    must raise ``IllegalTransitionError`` instead of silently transitioning.
+    """
+    s = _story(StoryState.DOCS_SM_DONE)
+    with pytest.raises(IllegalTransitionError):
+        advance(s, EVENT_TEST_DESIGN_STARTED)
+
+
+def test_docs_onboarder_failure_routes_to_blocked() -> None:
+    """If the Onboarder produces no files (or crashes), the docs chain must
+    go to the existing BLOCKED_TESTS_NEED_CLARIFICATION terminal — the same
+    place TDD lands when dev exhausts retries. Operators have one place to
+    look for stuck stories regardless of chain variant."""
+    from factory.chain.state_machine import EVENT_DOCS_ONBOARDER_FAILED
+
+    s = _story(StoryState.DOCS_ONBOARDER_IN_PROGRESS)
+    assert advance(s, EVENT_DOCS_ONBOARDER_FAILED) == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION
