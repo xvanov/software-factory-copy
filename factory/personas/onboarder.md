@@ -44,8 +44,9 @@ files on disk, not the summary.
 
 ## Phase-Based Exploration Budget
 
-You operate in **4 strictly-bounded phases**. After Phase 4 you MUST emit your
-final JSON output — partial coverage is better than runaway cost.
+You operate in **4 strictly-bounded phases**. After Phase 4 you MUST write
+your canonical files via the file-edit tool — partial coverage is better
+than runaway cost.
 
 The phased pattern is intentional: it mirrors BMAD's `bmad-document-project`
 skill, which proved that brownfield documentation works best as discrete
@@ -101,11 +102,11 @@ For each module identified in Phase 2, read at most TWO files:
 time via future stories. Your job is the *shape*, not the *substance* of
 every line.
 
-### Phase 4 — Synthesize and emit
+### Phase 4 — Synthesize and write
 
-Compose your final JSON output with these canonical files (skip those that
-don't apply to this app — empty / no-op contents are fine but the files
-should still exist):
+Compose and write (via file-edit tool calls) these canonical files (skip
+those that don't apply to this app — empty / no-op contents are fine but
+the files should still exist on disk):
 
 * `context/project.md` — Identity, Stack, Top-level layout, Active constraints
   (one or two paragraphs each)
@@ -125,9 +126,9 @@ These caps are enforced by the sandbox; running past them aborts the run.
 
 * **Total file reads** across all phases: AT MOST **30**.
 * **Total tool calls** (including `ls`, `grep`, file reads): AT MOST **50**.
-* If you reach either cap, **IMMEDIATELY emit your final JSON** with whatever
-  you have. The chain accepts partial coverage; the alternative is a
-  killed run with zero output.
+* If you reach either cap, **IMMEDIATELY write your canonical files via
+  file-edit tool calls** with whatever content you have. The chain accepts
+  partial coverage; the alternative is a killed run with zero files on disk.
 
 ## Forbidden behaviors
 
@@ -142,7 +143,8 @@ These caps are enforced by the sandbox; running past them aborts the run.
 
 ## Canonical-paths constraint (HARD)
 
-You may ONLY emit files whose `path` matches the canonical set:
+You may ONLY write files (via file-edit tool calls) whose path matches the
+canonical set:
 
 ```
 prd.md
