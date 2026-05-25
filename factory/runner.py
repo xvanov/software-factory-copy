@@ -298,9 +298,26 @@ def _build_initial_message(
 # The cap is the *fallback* when the caller passes ``max_iterations=200``
 # (the function default). Explicit values from the caller always win — that's
 # how tests bound runs and how a power-user can override.
+# JSON-mode truncation retry policy. Provider returns finish_reason="length"
+# or a partial JSON string when ``max_tokens`` is exceeded. We double the cap
+# and retry, up to ``_MAX_OUTPUT_RETRIES`` times, capped at
+# ``_MAX_OUTPUT_RETRY_CEILING``. Default seed when callers don't pass
+# ``max_tokens`` is conservative — providers bill by actual tokens used so
+# the cost cost of generous caps on outputs that fit is zero.
+_DEFAULT_MAX_OUTPUT_TOKENS = 8192
+_MAX_OUTPUT_RETRIES = 4
+_MAX_OUTPUT_RETRY_CEILING = 65536
+
+
 PERSONA_ITERATION_CAPS: dict[str, int] = {
-    "onboarder": 60,  # Phase 1-4 with 30 reads + 20 navigation + 10 buffer
-    "test_implementer": 100,  # plan execution; doesn't need dev's retry budget
+    # Bumped substantially after D007 showed 60/100 was too tight: onboarder
+    # needs to read enough code to write coherent context docs, and
+    # test_implementer needs room to write and rewrite tests when its first
+    # cut is brittle. Token cost isn't the constraint — sandbox iterations
+    # are essentially-free wall-clock until they cap out. Dev keeps the
+    # default 600 because it does most of the heavy red→green refactor work.
+    "onboarder": 180,
+    "test_implementer": 300,
 }
 
 
@@ -314,7 +331,7 @@ async def sandbox_run(
     dry_run: bool = False,
     db_path: Path | None = None,
     task_scope: str | None = None,
-    max_iterations: int = 200,
+    max_iterations: int = 600,
     direction_chain: list[Any] | None = None,
     software_factory_root: Path | None = None,
     test_command: str | None = None,
@@ -492,8 +509,14 @@ async def sandbox_run(
     # detect "default" by comparing to the signature default (200). Callers
     # who explicitly pass a non-default value win; this only narrows the
     # ceiling for personas that historically over-iterate.
+    # Apply per-persona iteration cap when the caller used the signature
+    # default (we read the live default off the function signature so this
+    # detection survives future bumps to the default without code churn).
+    import inspect as _inspect
+
+    _signature_default = _inspect.signature(sandbox_run).parameters["max_iterations"].default
     effective_max_iterations = max_iterations
-    if max_iterations == 200 and persona in PERSONA_ITERATION_CAPS:
+    if max_iterations == _signature_default and persona in PERSONA_ITERATION_CAPS:
         effective_max_iterations = PERSONA_ITERATION_CAPS[persona]
 
     loop = asyncio.get_running_loop()
@@ -659,55 +682,96 @@ def text_run(
         )
 
     messages = [{"role": "user", "content": prompt}]
-    kwargs: dict[str, Any] = {
-        "model": model_id,
-        "messages": messages,
-        "api_key": resolved_key,
-    }
-    if effective_base_url:
-        kwargs["base_url"] = effective_base_url
-    if api_version:
-        kwargs["api_version"] = api_version
-    if max_tokens is not None:
-        kwargs["max_tokens"] = max_tokens
     if schema is not None:
-        kwargs["response_format"] = {"type": "json_object"}
         messages[0]["content"] = (
             f"{prompt}\n\nReturn ONLY a JSON object matching this schema:\n"
             f"{json.dumps(schema, indent=2)}"
         )
 
-    response = litellm.completion(**kwargs)
-    text = response["choices"][0]["message"]["content"]
-    usage = response.get("usage", {}) or {}
-    tokens_in = int(usage.get("prompt_tokens", 0) or 0)
-    tokens_out = int(usage.get("completion_tokens", 0) or 0)
-    try:
-        cost_usd = float(getattr(response, "_hidden_params", {}).get("response_cost") or 0.0)
-    except Exception:
-        cost_usd = 0.0
+    # Retry loop for JSON-mode truncation: when finish_reason == "length"
+    # OR the response fails to parse, double max_tokens and retry. Hard
+    # ceiling _MAX_OUTPUT_RETRY_CEILING covers every model in our fleet
+    # (Claude 4.x supports 32k; Azure GPT 5.4 supports 16k+; DeepSeek
+    # caps at 8k and will silently clip past that, which is fine because
+    # we'll surface the parse error rather than loop forever).
+    #
+    # Truncation is *visible* in two places: ``finish_reason="length"``
+    # from the provider, and a json.loads exception on the partial text.
+    # Either signal triggers the retry; we keep doubling up to the
+    # ceiling so a single 4096-cap mistake doesn't wedge the chain.
+    current_max = max_tokens if max_tokens is not None else _DEFAULT_MAX_OUTPUT_TOKENS
+    tokens_in = 0
+    tokens_out = 0
+    cost_usd = 0.0
+    text = ""
+    parsed: dict[str, Any] | None = None
+    last_finish_reason: str | None = None
+
+    for attempt in range(1, _MAX_OUTPUT_RETRIES + 1):
+        kwargs: dict[str, Any] = {
+            "model": model_id,
+            "messages": messages,
+            "api_key": resolved_key,
+        }
+        if effective_base_url:
+            kwargs["base_url"] = effective_base_url
+        if api_version:
+            kwargs["api_version"] = api_version
+        kwargs["max_tokens"] = current_max
+        if schema is not None:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        response = litellm.completion(**kwargs)
+        text = response["choices"][0]["message"]["content"]
+        usage = response.get("usage", {}) or {}
+        tokens_in += int(usage.get("prompt_tokens", 0) or 0)
+        tokens_out += int(usage.get("completion_tokens", 0) or 0)
+        try:
+            cost_usd += float(getattr(response, "_hidden_params", {}).get("response_cost") or 0.0)
+        except Exception:
+            pass
+        try:
+            last_finish_reason = response["choices"][0].get("finish_reason")
+        except Exception:
+            last_finish_reason = None
+
+        if schema is None:
+            # Plain text mode — only retry on explicit truncation.
+            if last_finish_reason != "length" or current_max >= _MAX_OUTPUT_RETRY_CEILING:
+                break
+        else:
+            try:
+                parsed = json.loads(text)
+                break
+            except Exception as parse_exc:
+                if current_max >= _MAX_OUTPUT_RETRY_CEILING or attempt == _MAX_OUTPUT_RETRIES:
+                    # No more headroom — record and raise with full diagnostics.
+                    _record_run(
+                        persona=persona,
+                        model=model_id,
+                        mode="text",
+                        tokens_in=tokens_in,
+                        tokens_out=tokens_out,
+                        cost_usd=cost_usd,
+                        success=False,
+                        story_path=None,
+                        repo_path=None,
+                        error=(
+                            f"json parse failed at max_tokens={current_max} "
+                            f"finish_reason={last_finish_reason}: {parse_exc}"
+                        ),
+                        db_path=db_path,
+                    )
+                    raise RuntimeError(
+                        f"JSON-mode response was not valid JSON after "
+                        f"{attempt} attempts (max_tokens up to {current_max}, "
+                        f"finish_reason={last_finish_reason}): {parse_exc}"
+                    ) from parse_exc
+
+        # Double for next attempt; clamp to ceiling.
+        current_max = min(current_max * 2, _MAX_OUTPUT_RETRY_CEILING)
 
     success = True
-    parsed: dict[str, Any] | None = None
-    if schema is not None:
-        try:
-            parsed = json.loads(text)
-        except Exception as exc:
-            success = False
-            _record_run(
-                persona=persona,
-                model=model_id,
-                mode="text",
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                cost_usd=cost_usd,
-                success=False,
-                story_path=None,
-                repo_path=None,
-                error=f"json parse failed: {exc}",
-                db_path=db_path,
-            )
-            raise RuntimeError(f"JSON-mode response was not valid JSON: {exc}") from exc
 
     _record_run(
         persona=persona,

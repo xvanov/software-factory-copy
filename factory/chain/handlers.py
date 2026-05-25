@@ -25,6 +25,7 @@ from typing import Any
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.app_config import AppConfig
+from factory.chain.event_log import log_story_event
 from factory.chain.state_machine import (
     EVENT_DEV_EXHAUSTED,
     EVENT_DEV_STARTED,
@@ -953,7 +954,12 @@ def handle_test_implementation(
 # --------------------------------------------------------------------------- #
 
 
-_MAX_DEV_RETRIES = 3
+# Dev retry budget at the chain level. Each retry re-invokes the dev
+# sandbox (which itself has ``max_iterations`` tool calls inside). 10
+# is generous on purpose — agentic coding is heavy on tool turns, and
+# "exhausted retries" should be a rare/load-bearing signal, not the
+# common case. Token cost is not the binding constraint here.
+_MAX_DEV_RETRIES = 10
 
 
 def _dry_run_dev(story: StoryRecord) -> tuple[bool, dict[str, Any]]:
@@ -1099,9 +1105,71 @@ def handle_dev(
     # Not green — bump retries.
     story.dev_retries += 1
     if story.dev_retries >= _MAX_DEV_RETRIES:
+        # Preserve whatever dev produced so the work doesn't evaporate
+        # into a stash when the next story takes the working tree. Commit
+        # any uncommitted changes, push the branch to origin, and surface
+        # the failure with enough detail for a human (or follow-up persona
+        # run) to pick it up without forensic stash-archaeology. The
+        # story still terminates in BLOCKED_TESTS_NEED_CLARIFICATION but
+        # the branch exists at origin and any partial code is committed.
+        from factory.chain.branch import _run_git as _git
+        from factory.app_config import resolve_app_repo_path
+
+        target_repo = resolve_app_repo_path(app_config, software_factory_root)
+        commit_pushed = False
+        commit_sha: str | None = None
+        try:
+            _git(target_repo, "add", "-A")
+            dirty = _git(target_repo, "status", "--porcelain").stdout.strip()
+            if dirty:
+                _git(
+                    target_repo,
+                    "commit",
+                    "-m",
+                    (
+                        f"wip(dev-exhausted): preserve partial work for story "
+                        f"{story.id} ({story.slug})\n\n"
+                        f"Dev exhausted {story.dev_retries} chain-level retries "
+                        f"without reaching green. The chain commits this WIP so "
+                        f"the work is recoverable from origin rather than living "
+                        f"in a local stash. See ``factory why {story.id}`` for "
+                        f"the per-attempt event log."
+                    ),
+                )
+            head_proc = _git(target_repo, "rev-parse", "HEAD")
+            commit_sha = head_proc.stdout.strip() or None
+            push_proc = _git(
+                target_repo,
+                "push",
+                "-u",
+                "origin",
+                story.github_branch or "HEAD",
+                check=False,
+            )
+            commit_pushed = push_proc.returncode == 0
+        except Exception as commit_exc:
+            payload["dev_exhausted_commit_error"] = repr(commit_exc)
+
         story.state = advance(story, EVENT_DEV_EXHAUSTED).value
-        story.error = f"dev exhausted retries ({story.dev_retries})"
+        story.error = (
+            f"dev exhausted retries ({story.dev_retries}); "
+            f"partial work {'pushed to origin' if commit_pushed else 'committed locally'}"
+            f"{f' as {commit_sha[:12]}' if commit_sha else ''}"
+        )
+        payload["dev_exhausted_commit_sha"] = commit_sha
+        payload["dev_exhausted_pushed"] = commit_pushed
         persist_story(story, db)
+        log_story_event(
+            story.id,
+            "dev_exhausted",
+            {
+                "retries": story.dev_retries,
+                "commit_sha": commit_sha,
+                "pushed": commit_pushed,
+                "files_changed": payload.get("files_changed", []),
+            },
+            software_factory_root=software_factory_root,
+        )
         return HandlerResult(next_state=StoryState(story.state), payload=payload, error=story.error)
 
     # Escalate model tier on retry (standard -> hard).
@@ -1109,6 +1177,17 @@ def handle_dev(
         story.current_model_tier = "hard"
     story.state = advance(story, EVENT_DEV_TESTS_RED).value
     persist_story(story, db)
+    log_story_event(
+        story.id,
+        "dev_retry",
+        {
+            "retries": story.dev_retries,
+            "model_tier": story.current_model_tier,
+            "files_changed": payload.get("files_changed", []),
+            "summary_tail": payload.get("summary", "")[-500:],
+        },
+        software_factory_root=software_factory_root,
+    )
     return HandlerResult(next_state=StoryState(story.state), payload=payload)
 
 

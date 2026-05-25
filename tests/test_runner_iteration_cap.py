@@ -107,29 +107,33 @@ def story_and_repo(tmp_path: Path) -> Iterator[tuple[Path, Path]]:
 
 
 def test_persona_caps_map_includes_onboarder() -> None:
-    """Source of truth: the persona cap map must define onboarder at 60."""
-    assert PERSONA_ITERATION_CAPS.get("onboarder") == 60
+    """Onboarder cap was bumped from 60 to 180: real-run showed 60 was
+    too tight when the agent had to read a substantial codebase before
+    writing context docs."""
+    assert PERSONA_ITERATION_CAPS.get("onboarder") == 180
 
 
 def test_persona_caps_map_includes_test_implementer() -> None:
-    """Test-Implementer is bounded by plan length; cap at 100."""
-    assert PERSONA_ITERATION_CAPS.get("test_implementer") == 100
+    """Test-Implementer cap was bumped from 100 to 300: D007 showed
+    that the persona benefits from extra room to rewrite brittle first
+    cuts of the test suite."""
+    assert PERSONA_ITERATION_CAPS.get("test_implementer") == 300
 
 
 def test_persona_caps_map_omits_dev() -> None:
-    """Dev keeps the default (200) because the red → green retry loop
-    legitimately needs many turns. Explicit absence from the map IS the
-    contract — guard against accidental future additions.
+    """Dev keeps the function default (now 600) because the red → green
+    retry loop legitimately needs many turns. Explicit absence from the
+    map IS the contract — guard against accidental future additions.
     """
     assert "dev" not in PERSONA_ITERATION_CAPS
 
 
-def test_onboarder_sandbox_run_uses_60_iteration_cap(
+def test_onboarder_sandbox_run_uses_persona_cap(
     story_and_repo: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When ``sandbox_run`` is called with the default ``max_iterations=200``
-    and persona=onboarder, the effective cap drops to 60 per
-    PERSONA_ITERATION_CAPS."""
+    """When ``sandbox_run`` is called with the default ``max_iterations``
+    and persona=onboarder, the effective cap drops to the value in
+    PERSONA_ITERATION_CAPS (currently 180)."""
     story, repo = story_and_repo
     captured = _capture_max_iteration(monkeypatch, repo)
     monkeypatch.setenv("AZURE_API_KEY", "test-key")  # so _resolve_api_key returns
@@ -144,10 +148,10 @@ def test_onboarder_sandbox_run_uses_60_iteration_cap(
         )
     )
 
-    assert captured["max_iteration_per_run"] == 60
+    assert captured["max_iteration_per_run"] == PERSONA_ITERATION_CAPS["onboarder"]
 
 
-def test_test_implementer_sandbox_run_uses_100_iteration_cap(
+def test_test_implementer_sandbox_run_uses_persona_cap(
     story_and_repo: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same default-detection logic for test_implementer."""
@@ -165,14 +169,22 @@ def test_test_implementer_sandbox_run_uses_100_iteration_cap(
         )
     )
 
-    assert captured["max_iteration_per_run"] == 100
+    assert captured["max_iteration_per_run"] == PERSONA_ITERATION_CAPS["test_implementer"]
 
 
-def test_dev_sandbox_run_uses_default_200(
+def test_dev_sandbox_run_uses_function_default(
     story_and_repo: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Dev is NOT in PERSONA_ITERATION_CAPS — the function default (200)
-    survives unchanged."""
+    """Dev is NOT in PERSONA_ITERATION_CAPS — the function default (600
+    after bumping from 200) survives unchanged. We import the live
+    signature default so this test tracks future bumps automatically."""
+    import inspect
+
+    from factory.runner import sandbox_run as _sandbox_run_fn
+
+    sig = inspect.signature(_sandbox_run_fn)
+    expected_default = sig.parameters["max_iterations"].default
+
     story, repo = story_and_repo
     captured = _capture_max_iteration(monkeypatch, repo)
     monkeypatch.setenv("AZURE_API_KEY", "test-key")
@@ -187,7 +199,7 @@ def test_dev_sandbox_run_uses_default_200(
         )
     )
 
-    assert captured["max_iteration_per_run"] == 200
+    assert captured["max_iteration_per_run"] == expected_default
 
 
 def test_explicit_max_iterations_overrides_persona_cap(

@@ -60,25 +60,26 @@ def test_first_failure_increments_retry_and_escalates_tier(
     assert s.current_model_tier == "hard"
 
 
-def test_three_failures_exhaust_to_blocked(temp_root: Path, app_config: AppConfig) -> None:
-    """After 3 failures, the chain BLOCKs the story for human review."""
+def test_retries_exhaust_to_blocked(temp_root: Path, app_config: AppConfig) -> None:
+    """After ``_MAX_DEV_RETRIES`` failures, the chain BLOCKs the story for
+    human review. Imports the live constant so test tracks bumps to the
+    retry budget automatically (was 3, now 10)."""
+    from factory.chain.handlers import _MAX_DEV_RETRIES
+
     s = _story_at_tests_red(temp_root)
     db = temp_root / "state" / "factory.db"
 
-    # Failure 1: TESTS_RED -> DEV_IN_PROGRESS -> DEV_RETRY (retries=1, tier=hard).
-    result1 = handle_dev(s, app_config, temp_root, dry_run=True, db_path=db, force_red=True)
-    assert result1.next_state == StoryState.DEV_RETRY
-    assert s.dev_retries == 1
+    # Drive the retry loop to one short of the cap; every iteration must
+    # return DEV_RETRY because we still have budget left.
+    for i in range(1, _MAX_DEV_RETRIES):
+        result = handle_dev(s, app_config, temp_root, dry_run=True, db_path=db, force_red=True)
+        assert result.next_state == StoryState.DEV_RETRY, f"iteration {i} should still retry"
+        assert s.dev_retries == i
 
-    # Failure 2: DEV_RETRY -> DEV_IN_PROGRESS -> DEV_RETRY (retries=2).
-    result2 = handle_dev(s, app_config, temp_root, dry_run=True, db_path=db, force_red=True)
-    assert result2.next_state == StoryState.DEV_RETRY
-    assert s.dev_retries == 2
-
-    # Failure 3: at retries=3 the handler emits EVENT_DEV_EXHAUSTED ->
-    # BLOCKED_TESTS_NEED_CLARIFICATION.
-    result3 = handle_dev(s, app_config, temp_root, dry_run=True, db_path=db, force_red=True)
-    assert result3.next_state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION
-    assert s.dev_retries == 3
+    # The exhausting failure: at retries==_MAX_DEV_RETRIES the handler
+    # emits EVENT_DEV_EXHAUSTED -> BLOCKED_TESTS_NEED_CLARIFICATION.
+    result_final = handle_dev(s, app_config, temp_root, dry_run=True, db_path=db, force_red=True)
+    assert result_final.next_state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION
+    assert s.dev_retries == _MAX_DEV_RETRIES
     assert s.error and "exhausted" in s.error
-    assert result3.error and "exhausted" in result3.error
+    assert result_final.error and "exhausted" in result_final.error

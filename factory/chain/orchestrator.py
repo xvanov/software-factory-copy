@@ -24,6 +24,7 @@ from sqlmodel import Session, create_engine, select
 from factory.app_config import AppConfig, load_app_config
 from factory.chain import handlers as H
 from factory.chain.auto_merge import MergeAction, auto_merge_tick
+from factory.chain.event_log import log_story_event
 from factory.chain.state_machine import StoryRecord, StoryState
 from factory.directions.parser import Direction
 from factory.settings.enforcer import can_dispatch
@@ -364,6 +365,21 @@ def tick(
                 H.persist_story(story, db)
                 summary.blocked_by_caps += 1
                 summary.rejected.append((story.slug, decision.rejected_reason or "unknown"))
+                log_story_event(
+                    story.id,
+                    "dispatch_rejected",
+                    {
+                        "handler": handler_name,
+                        "job_kind": job_kind,
+                        "reason": decision.rejected_reason,
+                        "global_in_flight": state_dict.get("global_in_flight"),
+                        "app_in_flight": state_dict.get("app_in_flight"),
+                        "today_spend_usd": state_dict.get("today_spend_usd"),
+                        "hour_spend_usd": state_dict.get("hour_spend_usd"),
+                    },
+                    software_factory_root=root,
+                    slug_hint=story.slug,
+                )
                 break
             # Job is allowed — clear any stale rejection reason.
             if story.last_rejection_reason is not None:
@@ -371,6 +387,18 @@ def tick(
                 H.persist_story(story, db)
 
             from_state = story.state
+            log_story_event(
+                story.id,
+                "handler_start",
+                {
+                    "handler": handler_name,
+                    "from_state": from_state,
+                    "model_tier": story.current_model_tier,
+                    "dev_retries_so_far": story.dev_retries,
+                },
+                software_factory_root=root,
+                slug_hint=story.slug,
+            )
             try:
                 result = _invoke_handler(
                     handler_name,
@@ -393,9 +421,33 @@ def tick(
                 story.error = repr(exc)
                 H.persist_story(story, db)
                 summary.errors.append((story.slug, repr(exc)))
+                log_story_event(
+                    story.id,
+                    "handler_exception",
+                    {
+                        "handler": handler_name,
+                        "rolled_back_to": from_state,
+                        "exception": repr(exc),
+                    },
+                    software_factory_root=root,
+                    slug_hint=story.slug,
+                )
                 break
             summary.handler_runs.append((story.slug, from_state, story.state))
             summary.stories_advanced += 1
+            log_story_event(
+                story.id,
+                "handler_end",
+                {
+                    "handler": handler_name,
+                    "from_state": from_state,
+                    "to_state": story.state,
+                    "had_error": bool(result.error),
+                    "error": result.error,
+                },
+                software_factory_root=root,
+                slug_hint=story.slug,
+            )
             if result.error or story.state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value:
                 summary.stories_blocked += 1
                 break

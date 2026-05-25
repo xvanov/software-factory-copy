@@ -1005,6 +1005,31 @@ def why_cmd(
                 f"[bold]{decision.rejected_reason}[/bold] (job_kind={job_kind})"
             )
 
+    # Tail the per-story event log so ``factory why`` shows the recent
+    # chain decisions inline. Operators usually want the last few events
+    # (retry counts, dispatch rejections, exceptions) without separately
+    # opening the log file. ``factory trace`` shows the full history.
+    from factory.chain.event_log import read_story_events
+
+    recent = read_story_events(
+        story.id,
+        software_factory_root=_FACTORY_ROOT,
+        slug_hint=story.slug,
+        limit=8,
+    )
+    event_lines: list[str] = []
+    for ev in recent:
+        ts = ev.get("ts", "?")[11:19] if ev.get("ts") else "?"
+        kind = ev.get("event", "?")
+        extras = {k: v for k, v in ev.items() if k not in {"ts", "story_id", "event"}}
+        extras_str = " ".join(f"{k}={v!r}" for k, v in extras.items())[:200]
+        event_lines.append(f"  {ts}  {kind}  {extras_str}")
+    events_block = (
+        "recent events (tail 8 — see ``factory trace`` for full log):\n" + "\n".join(event_lines)
+        if event_lines
+        else "recent events: (none recorded yet)"
+    )
+
     lines = [
         f"id=[bold]{story.id}[/bold]  slug=[bold]{story.slug}[/bold]",
         f"app=[bold]{story.app}[/bold]  state=[bold]{story.state}[/bold]",
@@ -1014,8 +1039,71 @@ def why_cmd(
         f"branch={story.github_branch}  pr=#{story.github_pr_number}",
         f"next legal transitions: {next_edges_str}",
         projection_line,
+        "",
+        events_block,
     ]
     console.print(Panel("\n".join(lines), title=f"why story {story.id}"))
+
+
+@app.command("trace")
+def trace_cmd(
+    target: str = typer.Argument(..., help="Story id"),
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        "-n",
+        help="Most-recent N events to show; 0 for full history",
+    ),
+) -> None:
+    """Dump the per-story event log — every handler run, retry, and decision.
+
+    The chain writes one JSONL record per significant event to
+    ``state/logs/<story-id>-<slug>.log``. Use this when ``factory why``'s
+    tail isn't enough — e.g. tracking down why dev exhausted retries,
+    inspecting JSON-mode truncation auto-retries, or auditing what the
+    enforcer rejected before dispatch.
+    """
+    from sqlmodel import Session, create_engine
+
+    from factory.chain.event_log import read_story_events
+    from factory.chain.state_machine import StoryRecord
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        try:
+            sid = int(target)
+        except ValueError:
+            console.print(f"[red]error:[/red] expected story id (int); got {target!r}")
+            raise typer.Exit(code=2)
+        story = session.get(StoryRecord, sid)
+
+    slug = story.slug if story is not None else ""
+    events = read_story_events(
+        sid,
+        software_factory_root=_FACTORY_ROOT,
+        slug_hint=slug,
+        limit=limit if limit > 0 else None,
+    )
+    if not events:
+        console.print(f"(no events logged for story {sid})")
+        return
+
+    table = Table(title=f"trace story {sid} ({slug or '?'}) — {len(events)} events")
+    table.add_column("ts")
+    table.add_column("event", style="bold")
+    table.add_column("detail")
+    for ev in events:
+        ts = ev.get("ts", "?")[11:23] if ev.get("ts") else "?"
+        kind = ev.get("event", "?")
+        extras = {k: v for k, v in ev.items() if k not in {"ts", "story_id", "event"}}
+        # Compact one-line detail; long values clipped.
+        parts = []
+        for k, v in extras.items():
+            s = repr(v) if not isinstance(v, str) else v
+            parts.append(f"{k}={s[:160]}")
+        table.add_row(ts, kind, " ".join(parts))
+    console.print(table)
 
 
 @app.command("settings")
