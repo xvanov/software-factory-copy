@@ -783,12 +783,31 @@ def handle_test_implementation(
         # Real-run: invoke sandbox_run with the test_implementer persona
         # against the app repo's feature branch. The sandbox actually
         # writes the test files; we then ask it to run the test_command.
+        from factory.app_config import resolve_app_repo_path
+        from factory.chain.branch import ensure_feature_branch
         from factory.runner import LLMConfig, sandbox_run
 
         # Locate the app repo. Phase-2 acceptance is dry-run only; real-run
         # path is plausible-on-inspection.
         repo_path = software_factory_root / "apps" / story.app
         story_file_path_obj = repo_path / story.story_file_path
+
+        # Switch the REAL app source tree onto the per-story feature branch
+        # BEFORE the sandbox starts editing/committing. Test-Implementer's
+        # commits would otherwise land on whatever was checked out (typically
+        # ``main``) — exactly the bug the first bootstrap-context run hit.
+        # ``resolve_app_repo_path`` returns the actual repo root (e.g.
+        # ``~/sacrifice/``); ``apps/<app>/`` only holds factory metadata.
+        target_repo = resolve_app_repo_path(app_config, software_factory_root)
+        branch = ensure_feature_branch(
+            target_repo,
+            story_id=story.github_issue_number,
+            slug=story.slug,
+            base_branch=app_config.default_branch or "main",
+        )
+        story.github_branch = branch
+        persist_story(story, db)
+
         llm = LLMConfig(model=route("test_implementer"))
         import asyncio
 
@@ -876,11 +895,27 @@ def handle_dev(
             payload["test_run_passed"] = False
             payload["summary"] = "Dry-run dev failure: tests still red."
     else:
+        from factory.app_config import resolve_app_repo_path
+        from factory.chain.branch import ensure_feature_branch
         from factory.runner import LLMConfig, sandbox_run
 
         repo_path = software_factory_root / "apps" / story.app
         story_file_path_obj = repo_path / story.story_file_path
         difficulty = story.current_model_tier
+
+        # Make sure dev runs on the feature branch (idempotent — test_impl
+        # already created it, but a retry / chain restart could have switched
+        # away). ``ensure_feature_branch`` raises if the tree is dirty.
+        target_repo = resolve_app_repo_path(app_config, software_factory_root)
+        branch = ensure_feature_branch(
+            target_repo,
+            story_id=story.github_issue_number,
+            slug=story.slug,
+            base_branch=app_config.default_branch or "main",
+        )
+        story.github_branch = branch
+        persist_story(story, db)
+
         llm = LLMConfig(model=route("dev", difficulty=difficulty))
         import asyncio
 
