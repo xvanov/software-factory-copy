@@ -633,8 +633,15 @@ def handle_sm(
 
 
 # Cap tokens per persona class — controls cost on real provider calls.
+# 8192 for "strong" personas (SM, Test-Designer, Test-Implementer, Dev,
+# Reviewer): a 4096 cap was truncating SM JSON output mid-string on
+# multi-story directions (D007/D008/D009/D010), surfacing as
+# ``Unterminated string starting at: line N`` JSON parse errors and
+# permanently blocking the chain. 8192 leaves comfortable headroom for
+# the structured outputs these personas emit without meaningfully
+# changing cost (provider charges by actual tokens used, not the cap).
 _CHEAP_MAX_TOKENS = 2048
-_STRONG_MAX_TOKENS = 4096
+_STRONG_MAX_TOKENS = 8192
 
 
 _TEST_DESIGN_SCHEMA: dict[str, Any] = {
