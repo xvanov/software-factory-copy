@@ -116,3 +116,40 @@ def all_known_personas(*, routes_path: Path | None = None) -> list[str]:
 def active_provider(*, routes_path: Path | None = None) -> str:
     """Public accessor — returns the provider the router is currently using."""
     return _active_provider(_load_routes(routes_path))
+
+
+# Built-in fallback if neither ``model_limits`` nor
+# ``defaults_extra.max_output_tokens_default`` are defined in routes.yaml.
+# Picked to cover the smallest current-fleet cap (DeepSeek-V4 native 8k).
+_HARD_FALLBACK_MAX_OUTPUT_TOKENS = 8192
+
+
+def max_output_tokens_for(model_id: str, *, routes_path: Path | None = None) -> int:
+    """Return the per-call ``max_tokens`` (= max completion / output) cap
+    for ``model_id``.
+
+    Looked up by the LiteLLM model id returned by ``route()``. The value
+    is the model's stated output ceiling — distinct from its context
+    window (which governs input size).
+
+    Resolution order:
+      1. ``model_limits.<model_id>.max_output_tokens`` in routes.yaml.
+      2. ``defaults_extra.max_output_tokens_default`` in routes.yaml.
+      3. Hard-coded fallback (8192) — covers the smallest current-fleet cap.
+
+    Providers bill by actual tokens used, not by the cap, so generous
+    values cost nothing on outputs that fit comfortably. Too-low caps
+    cause truncation mid-JSON and downstream JSONDecodeError.
+    """
+    data = _load_routes(routes_path)
+    limits = data.get("model_limits", {}) or {}
+    entry = limits.get(model_id)
+    if isinstance(entry, dict):
+        val = entry.get("max_output_tokens")
+        if isinstance(val, int) and val > 0:
+            return val
+    defaults_extra = data.get("defaults_extra", {}) or {}
+    default_val = defaults_extra.get("max_output_tokens_default")
+    if isinstance(default_val, int) and default_val > 0:
+        return default_val
+    return _HARD_FALLBACK_MAX_OUTPUT_TOKENS

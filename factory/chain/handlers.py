@@ -57,7 +57,7 @@ from factory.chain.state_machine import (
 from factory.context.enforcer import format_violation_comment, scan_pr_diff
 from factory.context.updater import ContextUpdate, apply_context_updates
 from factory.directions.parser import Direction, list_direction_dirs, parse_direction_dir
-from factory.model_router import route
+from factory.model_router import max_output_tokens_for, route
 
 # --------------------------------------------------------------------------- #
 # Result type
@@ -575,7 +575,7 @@ def handle_sm(
             prompt=full_prompt,
             model_id=model_id,
             schema=_SM_SCHEMA,
-            max_tokens=_STRONG_MAX_TOKENS,
+            max_tokens=max_output_tokens_for(model_id),
         )
         if not isinstance(result_any, dict):
             return HandlerResult(
@@ -632,16 +632,15 @@ def handle_sm(
 # --------------------------------------------------------------------------- #
 
 
-# Cap tokens per persona class — controls cost on real provider calls.
-# 8192 for "strong" personas (SM, Test-Designer, Test-Implementer, Dev,
-# Reviewer): a 4096 cap was truncating SM JSON output mid-string on
-# multi-story directions (D007/D008/D009/D010), surfacing as
-# ``Unterminated string starting at: line N`` JSON parse errors and
-# permanently blocking the chain. 8192 leaves comfortable headroom for
-# the structured outputs these personas emit without meaningfully
-# changing cost (provider charges by actual tokens used, not the cap).
+# Cheap cap for personas that emit small structured updates (docs_sm,
+# tech_writer). "Strong" personas (SM, Test-Designer, Test-Implementer,
+# Dev, Reviewer) now resolve their cap per-model via
+# ``max_output_tokens_for(model_id)``, which reads ``model_limits`` in
+# routes.yaml — Claude 4.x gets 32k, GPT-5.4 gets 16k, DeepSeek-V4 gets
+# 8k, etc. The previous single 8192 constant under-utilized every model
+# except DeepSeek and the legacy 4096 truncated SM JSON mid-string on
+# multi-story directions.
 _CHEAP_MAX_TOKENS = 2048
-_STRONG_MAX_TOKENS = 8192
 
 
 _TEST_DESIGN_SCHEMA: dict[str, Any] = {
@@ -763,7 +762,7 @@ def handle_test_design(
             prompt=full_prompt,
             model_id=model_id,
             schema=_TEST_DESIGN_SCHEMA,
-            max_tokens=_STRONG_MAX_TOKENS,
+            max_tokens=max_output_tokens_for(model_id),
         )
         if not isinstance(result, dict):
             return HandlerResult(
@@ -1194,7 +1193,7 @@ def handle_review(
             prompt=full_prompt,
             model_id=model_id,
             schema=None,  # reviewer output is JSON but we don't enforce schema here
-            max_tokens=_STRONG_MAX_TOKENS,
+            max_tokens=max_output_tokens_for(model_id),
         )
         try:
             result = json.loads(result_any) if isinstance(result_any, str) else result_any

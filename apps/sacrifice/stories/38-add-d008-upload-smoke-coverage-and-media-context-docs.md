@@ -3,35 +3,38 @@
 ## Title
 Add D008 upload smoke coverage and media context docs
 
-## Description
-Add the verification and documentation slice for D008: an E2E `@smoke` Playwright API upload test covering the new upload contract, a new `context/modules/media.md` module documenting capture and upload/storage conventions, and a rewrite of `context/architecture-diagrams.md` to include the media upload path in the primary system flow.
+## Summary
+Add verification and documentation for the new media subsystem: a pure-HTTP Playwright `@smoke` API upload test, a new `context/modules/media.md` module, and an updated `context/architecture-diagrams.md` that shows the media upload path. This story validates and documents the reusable capture/upload contract for future goal flows.
 
-## Acceptance Criteria
+## Scope
+test
+
+# Acceptance Criteria
+
 - AC1: An E2E `@smoke` Playwright test uploads a fixture video via the API and asserts a 201 with the expected response shape. (Pure HTTP test — does not exercise the Expo capture component.)
 - AC2: A new context module `context/modules/media.md` documents the capture component, the upload endpoint, and the storage convention.
 - AC3: `context/architecture-diagrams.md` is rewritten to show the media upload path in the primary system flow.
-- AC4: Do not add server-side media processing/transcoding/CV analysis.
-- AC5: Do not implement streaming uploads.
+- AC4: Do not exercise the Expo capture component in the smoke test.
 
-## Tasks / Subtasks
-- [ ] Add Playwright smoke coverage for uploads.
-  - [ ] Add fixture video suitable for API upload smoke coverage.
-  - [ ] Create a pure HTTP Playwright test tagged `@smoke`.
-  - [ ] Call `POST /api/uploads/video` with multipart form data.
-  - [ ] Assert `201` status.
-  - [ ] Assert response shape contains `upload_id`, `sha256`, `size_bytes`, `duration_seconds`, and `mime_type`.
-  - [ ] Keep this test API-only; do not exercise Expo camera UI.
-- [ ] Add media context documentation.
-  - [ ] Create `context/modules/media.md` documenting the capture component, upload endpoint, and storage convention.
-  - [ ] Ensure wording aligns to direction and API spec without inventing behavior.
-- [ ] Update architecture diagrams.
-  - [ ] Rewrite `context/architecture-diagrams.md` to show the media upload path in the primary system flow.
-  - [ ] Reflect frontend capture -> backend upload route -> storage path at the right level of abstraction.
-- [ ] Preserve out-of-scope boundaries.
-  - [ ] Do not document or imply transcoding, frame extraction, CV analysis, or streaming uploads as implemented by this direction.
+# Tasks / Subtasks
 
-## Dev Notes
-### Verbatim `flow.md`
+- [ ] Add Playwright smoke coverage for `POST /api/uploads/video`.
+  - [ ] Use fixture video upload via pure HTTP.
+  - [ ] Mark test `@smoke`.
+  - [ ] Assert `201` response.
+  - [ ] Assert expected response shape from `api_spec.md`: `upload_id`, `sha256`, `size_bytes`, `duration_seconds`, `mime_type`.
+  - [ ] Keep test independent from Expo UI/camera flows.
+- [ ] Add `context/modules/media.md`.
+  - [ ] Document frontend capture component contract.
+  - [ ] Document backend upload endpoint contract.
+  - [ ] Document storage convention rooted at `SACRIFICE_MEDIA_DIR`.
+- [ ] Rewrite `context/architecture-diagrams.md` to include media upload path in the primary system flow.
+- [ ] Ensure docs reflect current implemented contract from backend/frontend stories, not future pushup-specific wiring.
+
+# Dev Notes
+
+## Verbatim flow.md
+
 ```md
 # User flow
 
@@ -51,7 +54,8 @@ Add the verification and documentation slice for D008: an E2E `@smoke` Playwrigh
    - Server returns 415 (unsupported media type) — app shows "Unsupported video format" with a "Retake" button.
 ```
 
-### Verbatim `api_spec.md`
+## Verbatim api_spec.md
+
 ```md
 # API spec
 
@@ -107,13 +111,15 @@ Add the verification and documentation slice for D008: an E2E `@smoke` Playwrigh
   - `404` — upload not found
 ```
 
-### Context pointers to load
-- [Source: context/project.md#Top-level layout]
+## Context pointers
+
+- [Source: context/project.md#Sacrifice]
 - [Source: context/navigation.md#When working on overall repository shape]
 - [Source: context/navigation.md#When working on the backend API]
-- [Source: context/navigation.md#Task scope: test]
+- [Source: context/navigation.md#When working on the Expo client]
 
-### Verbatim direction acceptance criteria
+## Verbatim direction acceptance criteria
+
 ```md
 - A reusable `<CameraCapture>` component lives at `frontend/components/CameraCapture.tsx`. It:
   - Requests Expo camera and microphone permissions on mount if not already granted.
@@ -134,28 +140,42 @@ Add the verification and documentation slice for D008: an E2E `@smoke` Playwrigh
 - `context/architecture-diagrams.md` is rewritten to show the media upload path in the primary system flow.
 ```
 
-### Out-of-scope reminders from direction
-- Wiring the camera component into any specific goal-type's proof submission flow — that happens in D010 (pushup) or in future per-goal-type directions.
-- Server-side processing of the video (transcoding, frame extraction, CV analysis). Storage and metadata only.
-- Streaming uploads. Whole-file multipart upload is enough for the videos this direction needs to support.
+## Scope notes
 
-## References
+- This story owns smoke verification and context documentation only.
+- Do not expand scope into Expo component implementation or backend route/service implementation beyond what is needed to document and validate the contract.
+- Respect canonical doc locations: `context/modules/media.md` and `context/architecture-diagrams.md` only.
+
+# References
+
+- `context/project.md`
+- `context/navigation.md`
 - `context/architecture-diagrams.md`
 - `context/modules/`
 - `backend/app/routes/`
 - `backend/app/services/`
 - `frontend/components/CameraCapture.tsx`
-- `frontend/services/api.ts`
-- `backend/tests/`
-- `playwright/`
 
-## Dev Agent Record
-- Status: Not started
-- Notes: 
+# Dev Agent Record
 
-## Senior Developer Review
-- Status: Pending
-- Notes: 
+## Agent Model Used
 
-## Review Follow-ups
-- None yet.
+## Debug Log References
+
+## Completion Notes List
+
+## File List
+
+# Senior Developer Review
+
+## Reviewer
+
+## Review Date
+
+## Outcome
+
+## Notes
+
+# Review Follow-ups
+
+- [ ] None recorded yet.

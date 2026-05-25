@@ -84,3 +84,36 @@ azure_routes:
 defaults:
   fallback: deepseek/deepseek-chat
   azure_fallback: azure/gpt-5.4
+
+# Per-model output-token caps. Looked up by the LiteLLM model id ``route()``
+# returns. The cap is the ``max_tokens`` (== max completion / output) value
+# the provider will honor in one call — distinct from the context window
+# (which governs input size, typically 100k–1M for current models).
+#
+# Picking values: pin to the model's stated output max; the provider bills
+# only what's used, not the cap, so generous caps cost nothing on outputs
+# that fit comfortably. Too low → truncation mid-JSON → JSONDecodeError.
+#
+# Fallback is ``defaults.max_output_tokens_default`` when a model is unlisted.
+model_limits:
+  # Anthropic — Claude 4.x family supports 32k output across Opus/Sonnet/Haiku.
+  anthropic/claude-opus-4-7: { max_output_tokens: 32768 }
+  anthropic/claude-sonnet-4-6: { max_output_tokens: 32768 }
+  anthropic/claude-haiku-4-5-20251001: { max_output_tokens: 16384 }
+
+  # DeepSeek — chat/coder native cap is 8k output (May 2026).
+  deepseek/deepseek-chat: { max_output_tokens: 8192 }
+  deepseek/deepseek-coder: { max_output_tokens: 8192 }
+
+  # Azure deployments
+  # gpt-5.4 supports 16k output reliably (RFC 2026-02 lifted from 8k).
+  azure/gpt-5.4: { max_output_tokens: 16384 }
+  # azure/deepseek-v4-pro — same 8k native ceiling as direct DeepSeek.
+  azure/deepseek-v4-pro: { max_output_tokens: 8192 }
+  # gpt-5.3-codex (Responses-API-only — currently unrouted, see header).
+  azure/gpt-5.3-codex: { max_output_tokens: 16384 }
+
+# Conservative default if a model isn't in the table above.
+# Set under ``defaults`` so existing readers keep working.
+defaults_extra:
+  max_output_tokens_default: 8192
