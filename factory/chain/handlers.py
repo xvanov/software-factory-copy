@@ -854,6 +854,10 @@ def handle_test_implementation(
             story_id=story.github_issue_number,
             slug=story.slug,
             base_branch=app_config.default_branch or "main",
+            # Stash any leftover dirty tree from a previous story's
+            # crashed/exhausted sandbox so the test_impl handover doesn't
+            # block. Stashed work stays recoverable via ``git stash list``.
+            stash_dirty=True,
         )
         story.github_branch = branch
         persist_story(story, db)
@@ -1010,12 +1014,16 @@ def handle_dev(
 
         # Make sure dev runs on the feature branch (idempotent — test_impl
         # already created it, but a retry / chain restart could have switched
-        # away). ``ensure_feature_branch`` raises if the tree is dirty.
+        # away). Stash any leftover dirty tree (e.g. from a prior dev
+        # iteration that exhausted iterations without committing) so the
+        # switch succeeds; stashed work stays recoverable via
+        # ``git stash list``.
         branch = ensure_feature_branch(
             target_repo,
             story_id=story.github_issue_number,
             slug=story.slug,
             base_branch=app_config.default_branch or "main",
+            stash_dirty=True,
         )
         story.github_branch = branch
         persist_story(story, db)
@@ -1552,6 +1560,7 @@ def handle_docs_onboarder(
         story_id=story.github_issue_number,
         slug=story.slug,
         base_branch=app_config.default_branch or "main",
+        stash_dirty=True,
     )
     story.github_branch = branch
     persist_story(story, db)

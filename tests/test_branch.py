@@ -146,6 +146,41 @@ def test_ensure_refuses_dirty_tree(tmp_path: Path) -> None:
         ensure_feature_branch(repo, story_id=3, slug="c")
 
 
+def test_ensure_stashes_dirty_tree_when_opted_in(tmp_path: Path) -> None:
+    """``stash_dirty=True`` lets the chain hand the tree over between stories
+    after a sandbox left uncommitted noise. The stash entry must be labeled
+    so the operator can recover it."""
+    repo = tmp_path / "r"
+    _init_repo(repo)
+    (repo / "leftover.txt").write_text("from previous sandbox", encoding="utf-8")
+    subprocess.run(["git", "add", "leftover.txt"], cwd=str(repo), check=True)
+    (repo / "untracked.txt").write_text("from previous sandbox", encoding="utf-8")
+
+    branch = ensure_feature_branch(repo, story_id=7, slug="next", stash_dirty=True)
+    assert branch == "factory/story-7-next"
+    assert _current_branch(repo) == branch
+
+    # Working tree is now clean.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert status == ""
+
+    # Stash entry exists with the expected label.
+    stash_list = subprocess.run(
+        ["git", "stash", "list"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "factory: leftover for story-7-next" in stash_list
+
+
 def test_ensure_rejects_non_git_directory(tmp_path: Path) -> None:
     """A bare directory (no .git) is a clear configuration error."""
     repo = tmp_path / "not-a-repo"

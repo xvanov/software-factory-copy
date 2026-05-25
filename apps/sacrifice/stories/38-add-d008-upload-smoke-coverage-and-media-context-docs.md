@@ -1,55 +1,38 @@
 # Story
+
+## Title
 Add D008 upload smoke coverage and media context docs
 
+## Description
+Add the verification and documentation slice for D008: an E2E `@smoke` Playwright API upload test covering the new upload contract, a new `context/modules/media.md` module documenting capture and upload/storage conventions, and a rewrite of `context/architecture-diagrams.md` to include the media upload path in the primary system flow.
+
 ## Acceptance Criteria
-AC1. An E2E `@smoke` Playwright test uploads a fixture video via the API and asserts a 201 with the expected response shape. (Pure HTTP test — does not exercise the Expo capture component.)
-
-AC2. A new context module `context/modules/media.md` documents the capture component, the upload endpoint, and the storage convention.
-
-AC3. `context/architecture-diagrams.md` is rewritten to show the media upload path in the primary system flow.
-
-AC4. Preserve direction boundaries in test/docs artifacts:
-- Do not wire the component into a specific goal-type submission flow here.
-- Do not add server-side media processing/transcoding/CV analysis.
-- Do not implement streaming uploads.
-- Ensure ownership enforcement on metadata reads and goal association checks on upload are represented in smoke coverage or clearly called out for follow-on coverage if smoke scope cannot include them.
+- AC1: An E2E `@smoke` Playwright test uploads a fixture video via the API and asserts a 201 with the expected response shape. (Pure HTTP test — does not exercise the Expo capture component.)
+- AC2: A new context module `context/modules/media.md` documents the capture component, the upload endpoint, and the storage convention.
+- AC3: `context/architecture-diagrams.md` is rewritten to show the media upload path in the primary system flow.
+- AC4: Do not add server-side media processing/transcoding/CV analysis.
+- AC5: Do not implement streaming uploads.
 
 ## Tasks / Subtasks
-- [ ] Add Playwright smoke coverage for upload API.
-  - [ ] Add/locate fixture video suitable for multipart API upload.
-  - [ ] Exercise `POST /api/uploads/video` as pure HTTP test.
+- [ ] Add Playwright smoke coverage for uploads.
+  - [ ] Add fixture video suitable for API upload smoke coverage.
+  - [ ] Create a pure HTTP Playwright test tagged `@smoke`.
+  - [ ] Call `POST /api/uploads/video` with multipart form data.
   - [ ] Assert `201` status.
-  - [ ] Assert response shape includes `upload_id`, `sha256`, `size_bytes`, `duration_seconds`, `mime_type`.
-  - [ ] Tag test as `@smoke`.
-- [ ] Update context docs.
-  - [ ] Create `context/modules/media.md` describing capture component, upload endpoint, and storage convention.
-  - [ ] Rewrite `context/architecture-diagrams.md` to show media upload path in the primary system flow.
-- [ ] Keep docs aligned to direction wording and API contract.
-  - [ ] Reflect ownership-scoped metadata reads.
-  - [ ] Reflect orphan-vs-goal-associated storage convention.
-  - [ ] Do not document unsupported capabilities as implemented.
+  - [ ] Assert response shape contains `upload_id`, `sha256`, `size_bytes`, `duration_seconds`, and `mime_type`.
+  - [ ] Keep this test API-only; do not exercise Expo camera UI.
+- [ ] Add media context documentation.
+  - [ ] Create `context/modules/media.md` documenting the capture component, upload endpoint, and storage convention.
+  - [ ] Ensure wording aligns to direction and API spec without inventing behavior.
+- [ ] Update architecture diagrams.
+  - [ ] Rewrite `context/architecture-diagrams.md` to show the media upload path in the primary system flow.
+  - [ ] Reflect frontend capture -> backend upload route -> storage path at the right level of abstraction.
+- [ ] Preserve out-of-scope boundaries.
+  - [ ] Do not document or imply transcoding, frame extraction, CV analysis, or streaming uploads as implemented by this direction.
 
 ## Dev Notes
-### Direction acceptance criteria (verbatim embed)
-- A reusable `<CameraCapture>` component lives at `frontend/components/CameraCapture.tsx`. It:
-  - Requests Expo camera and microphone permissions on mount if not already granted.
-  - Renders a camera preview with a single "Start recording" button when ready.
-  - Toggles to "Stop recording" + elapsed-time indicator while recording.
-  - Auto-stops when an optional `maxDurationSeconds` prop is reached.
-  - Shows a "Retake" / "Use this video" choice after a recording is captured.
-  - Calls an `onCaptured(asset)` prop when the user confirms.
-- Denied permissions surface a clear in-screen message ("Camera access is required to submit this proof") with a "Open settings" link and a "Cancel" link that returns the user to the prior screen. The component does not crash on permission denial.
-- A new backend route `POST /api/uploads/video` accepts multipart uploads. See `api_spec.md`.
-- A new table `media_uploads` persists per-upload metadata: `id`, `user_id`, `goal_id` (nullable), `sha256`, `size_bytes`, `duration_seconds`, `mime_type`, `storage_path`, `created_at`. Migration generated via Alembic autogenerate.
-- Recorded videos are stored under a configurable path keyed by `(user_id, goal_id_or_unassigned, upload_id)`. Default: `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}/<user_id>/<goal_or_orphan>/<upload_id>.mp4`. The setting lives in `backend/app/config.py`.
-- A new endpoint `GET /api/uploads/{upload_id}` returns upload metadata for the owning user only. 403 for non-owners; 404 for unknown ids.
-- `backend/app/services/uploads.py` encapsulates path resolution, write, hash computation, and metadata persistence. The route is thin; the service is unit-testable.
-- An E2E `@smoke` Playwright test uploads a fixture video via the API and asserts a 201 with the expected response shape. (Pure HTTP test — does not exercise the Expo capture component.)
-- A unit test verifies the `<CameraCapture>` component renders the denied-permission state when Expo's permission mock returns denied; does not crash.
-- A new context module `context/modules/media.md` documents the capture component, the upload endpoint, and the storage convention.
-- `context/architecture-diagrams.md` is rewritten to show the media upload path in the primary system flow.
-
-### flow.md (verbatim embed)
+### Verbatim `flow.md`
+```md
 # User flow
 
 1. From a goal that requires camera capture, the app shows a "Record proof" button on the goal detail screen.
@@ -66,8 +49,10 @@ AC4. Preserve direction boundaries in test/docs artifacts:
    - Network error during upload — app shows "Upload failed — retry?" with a "Retry" button and a "Save and try later" button. Save-and-try-later persists the file locally for the next app launch.
    - Server returns 413 (file too large) — app shows "Video is too large — try a shorter recording" with a "Retake" button.
    - Server returns 415 (unsupported media type) — app shows "Unsupported video format" with a "Retake" button.
+```
 
-### api_spec.md (verbatim embed)
+### Verbatim `api_spec.md`
+```md
 # API spec
 
 ## Endpoints
@@ -120,31 +105,57 @@ AC4. Preserve direction boundaries in test/docs artifacts:
   - `401` — unauthenticated
   - `403` — upload not owned by authenticated user
   - `404` — upload not found
+```
 
-### Context pointers
-- [Source: context/project.md#Sacrifice]
+### Context pointers to load
+- [Source: context/project.md#Top-level layout]
 - [Source: context/navigation.md#When working on overall repository shape]
 - [Source: context/navigation.md#When working on the backend API]
-- [Source: context/navigation.md#When working on the Expo client]
-- [Source: context/current-state.md#testing]
-- [Source: context/current-state.md#documentation]
+- [Source: context/navigation.md#Task scope: test]
+
+### Verbatim direction acceptance criteria
+```md
+- A reusable `<CameraCapture>` component lives at `frontend/components/CameraCapture.tsx`. It:
+  - Requests Expo camera and microphone permissions on mount if not already granted.
+  - Renders a camera preview with a single "Start recording" button when ready.
+  - Toggles to "Stop recording" + elapsed-time indicator while recording.
+  - Auto-stops when an optional `maxDurationSeconds` prop is reached.
+  - Shows a "Retake" / "Use this video" choice after a recording is captured.
+  - Calls an `onCaptured(asset)` prop when the user confirms.
+- Denied permissions surface a clear in-screen message ("Camera access is required to submit this proof") with a "Open settings" link and a "Cancel" link that returns the user to the prior screen. The component does not crash on permission denial.
+- A new backend route `POST /api/uploads/video` accepts multipart uploads. See `api_spec.md`.
+- A new table `media_uploads` persists per-upload metadata: `id`, `user_id`, `goal_id` (nullable), `sha256`, `size_bytes`, `duration_seconds`, `mime_type`, `storage_path`, `created_at`. Migration generated via Alembic autogenerate.
+- Recorded videos are stored under a configurable path keyed by `(user_id, goal_id_or_unassigned, upload_id)`. Default: `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}/<user_id>/<goal_or_orphan>/<upload_id>.mp4`. The setting lives in `backend/app/config.py`.
+- A new endpoint `GET /api/uploads/{upload_id}` returns upload metadata for the owning user only. 403 for non-owners; 404 for unknown ids.
+- `backend/app/services/uploads.py` encapsulates path resolution, write, hash computation, and metadata persistence. The route is thin; the service is unit-testable.
+- An E2E `@smoke` Playwright test uploads a fixture video via the API and asserts a 201 with the expected response shape. (Pure HTTP test — does not exercise the Expo capture component.)
+- A unit test verifies the `<CameraCapture>` component renders the denied-permission state when Expo's permission mock returns denied; does not crash.
+- A new context module `context/modules/media.md` documents the capture component, the upload endpoint, and the storage convention.
+- `context/architecture-diagrams.md` is rewritten to show the media upload path in the primary system flow.
+```
+
+### Out-of-scope reminders from direction
+- Wiring the camera component into any specific goal-type's proof submission flow — that happens in D010 (pushup) or in future per-goal-type directions.
+- Server-side processing of the video (transcoding, frame extraction, CV analysis). Storage and metadata only.
+- Streaming uploads. Whole-file multipart upload is enough for the videos this direction needs to support.
 
 ## References
 - `context/architecture-diagrams.md`
-- `context/project.md`
-- `context/navigation.md`
-- `backend/app/main.py`
-- `backend/app/config.py`
+- `context/modules/`
+- `backend/app/routes/`
 - `backend/app/services/`
 - `frontend/components/CameraCapture.tsx`
-- `factory/artifacts/story_template.md`
+- `frontend/services/api.ts`
+- `backend/tests/`
+- `playwright/`
 
 ## Dev Agent Record
 - Status: Not started
-- Notes: Awaiting implementation.
+- Notes: 
 
 ## Senior Developer Review
-- Pending
+- Status: Pending
+- Notes: 
 
 ## Review Follow-ups
-- None yet
+- None yet.

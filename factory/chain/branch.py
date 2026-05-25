@@ -103,6 +103,7 @@ def ensure_feature_branch(
     story_id: int | None,
     slug: str,
     base_branch: str = "main",
+    stash_dirty: bool = False,
 ) -> str:
     """Idempotently put ``repo_path`` on the per-story feature branch.
 
@@ -111,6 +112,12 @@ def ensure_feature_branch(
       * Otherwise refuses to act if the working tree is dirty — the operator
         must commit / discard their edits first. Silently stashing here would
         eat work; raising is the kinder failure mode.
+      * Pass ``stash_dirty=True`` to override that default: dirty changes get
+        stashed under a labeled entry (``factory: leftover for story-<id>-<slug>``)
+        before the checkout. The chain uses this when handing the working
+        tree off between stories — sandbox crashes / dev-exhausted runs can
+        leave uncommitted noise behind, and stashing keeps the work
+        recoverable while unblocking the next handler.
       * Checks out the branch if it already exists locally; creates from
         the remote ``origin/<base_branch>`` when ``origin`` is configured
         (so a divergent local ``base_branch`` doesn't leak unrelated WIP
@@ -120,7 +127,8 @@ def ensure_feature_branch(
     dry-run. ``base_branch`` is the app's default branch from ``config.yaml``;
     defaults to ``main`` for hosts that follow GitHub's convention.
 
-    Raises ``RuntimeError`` on any git command failure or a dirty tree.
+    Raises ``RuntimeError`` on any git command failure or a dirty tree
+    (when ``stash_dirty`` is False).
     """
     repo = Path(repo_path)
     if not (repo / ".git").exists():
@@ -133,10 +141,14 @@ def ensure_feature_branch(
         return branch
 
     if not _is_clean_working_tree(repo):
-        raise RuntimeError(
-            f"Refusing to switch branches in {repo}: working tree is dirty. "
-            f"Commit or discard the changes first."
-        )
+        if stash_dirty:
+            stash_label = f"factory: leftover for story-{story_id or 0}-{slug}"
+            _run_git(repo, "stash", "push", "--include-untracked", "-m", stash_label)
+        else:
+            raise RuntimeError(
+                f"Refusing to switch branches in {repo}: working tree is dirty. "
+                f"Commit or discard the changes first."
+            )
 
     if _branch_exists(repo, branch):
         _run_git(repo, "checkout", branch)

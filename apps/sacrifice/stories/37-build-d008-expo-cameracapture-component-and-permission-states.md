@@ -3,53 +3,41 @@
 ## Title
 Build D008 Expo CameraCapture component and permission states
 
-## Description
-As a Sacrifice user submitting camera-based proof,
-I want a reusable Expo camera capture component with safe permission handling and recording controls,
-so that I can record proof videos without app crashes and hand a confirmed asset to later upload flows.
+## Scope
+frontend
 
-## Acceptance Criteria
-- [AC-1] A reusable `<CameraCapture>` component lives at `frontend/components/CameraCapture.tsx`. It:
+## Summary
+Implement a reusable `frontend/components/CameraCapture.tsx` component with camera/microphone permission handling, recording lifecycle UX, elapsed timer, optional auto-stop, retake/confirm flow, and denied-permission handling that does not crash the app.
+
+# Acceptance Criteria
+
+- AC1: A reusable `<CameraCapture>` component lives at `frontend/components/CameraCapture.tsx`. It:
   - Requests Expo camera and microphone permissions on mount if not already granted.
   - Renders a camera preview with a single "Start recording" button when ready.
   - Toggles to "Stop recording" + elapsed-time indicator while recording.
   - Auto-stops when an optional `maxDurationSeconds` prop is reached.
   - Shows a "Retake" / "Use this video" choice after a recording is captured.
   - Calls an `onCaptured(asset)` prop when the user confirms.
-- [AC-2] Denied permissions surface a clear in-screen message ("Camera access is required to submit this proof") with a "Open settings" link and a "Cancel" link that returns the user to the prior screen. The component does not crash on permission denial.
-- [AC-3] A unit test verifies the `<CameraCapture>` component renders the denied-permission state when Expo's permission mock returns denied; does not crash.
-- [AC-4] Out of scope for this direction
-  - Wiring the camera component into any specific goal-type's proof submission flow — that happens in D010 (pushup) or in future per-goal-type directions.
-  - Server-side processing of the video (transcoding, frame extraction, CV analysis). Storage and metadata only.
-  - Streaming uploads. Whole-file multipart upload is enough for the videos this direction needs to support.
+- AC2: Denied permissions surface a clear in-screen message ("Camera access is required to submit this proof") with a "Open settings" link and a "Cancel" link that returns the user to the prior screen. The component does not crash on permission denial.
+- AC3: A unit test verifies the `<CameraCapture>` component renders the denied-permission state when Expo's permission mock returns denied; does not crash.
 
-## Tasks / Subtasks
-- [ ] Create `frontend/components/CameraCapture.tsx` as a reusable component.
-  - [ ] Request camera permission on mount if not already granted.
-  - [ ] Request microphone permission on mount if not already granted.
-  - [ ] Render denied-permission state with exact copy required by AC-2.
-  - [ ] Expose cancel behavior that returns control to the prior screen via component callback/consumer contract.
-- [ ] Implement recording-ready state.
-  - [ ] Render camera preview.
-  - [ ] Render single "Start recording" action when ready and not recording.
-- [ ] Implement recording lifecycle UX.
-  - [ ] Toggle to "Stop recording" while recording.
-  - [ ] Render elapsed-time indicator while recording.
-  - [ ] Support optional `maxDurationSeconds` prop and auto-stop behavior.
-- [ ] Implement post-capture confirmation state.
-  - [ ] Show captured-video preview.
-  - [ ] Render "Retake" action.
-  - [ ] Render "Use this video" action.
-  - [ ] Call `onCaptured(asset)` only when the user confirms.
-- [ ] Add unit coverage for denied-permission behavior.
-  - [ ] Mock Expo permissions denied.
-  - [ ] Assert exact denied-permission message renders.
-  - [ ] Assert app/component does not crash.
-- [ ] Keep this story isolated from upload wiring.
-  - [ ] Do not connect component to any specific goal submission flow in this story.
+# Tasks / Subtasks
 
-## Dev Notes
-### Direction acceptance criteria (verbatim embed)
+- [ ] Create `frontend/components/CameraCapture.tsx` as a reusable component boundary.
+- [ ] Implement camera and microphone permission requests on mount.
+- [ ] Implement denied-permission state with exact message text, `Open settings`, and `Cancel` actions.
+- [ ] Implement ready state with camera preview and `Start recording` button.
+- [ ] Implement recording state with `Stop recording` button and elapsed-time indicator.
+- [ ] Implement optional `maxDurationSeconds` auto-stop behavior.
+- [ ] Implement captured state with `Retake` and `Use this video` actions.
+- [ ] Invoke `onCaptured(asset)` only when the user confirms via `Use this video`.
+- [ ] Add frontend unit test for denied-permission render path and no-crash behavior.
+- [ ] Verify this story does not wire the component into any goal-type proof submission flow.
+
+# Dev Notes
+
+## Direction acceptance criteria (verbatim)
+
 - A reusable `<CameraCapture>` component lives at `frontend/components/CameraCapture.tsx`. It:
   - Requests Expo camera and microphone permissions on mount if not already granted.
   - Renders a camera preview with a single "Start recording" button when ready.
@@ -68,7 +56,8 @@ so that I can record proof videos without app crashes and hand a confirmed asset
 - A new context module `context/modules/media.md` documents the capture component, the upload endpoint, and the storage convention.
 - `context/architecture-diagrams.md` is rewritten to show the media upload path in the primary system flow.
 
-### flow.md (verbatim embed)
+## flow.md (verbatim)
+
 # User flow
 
 1. From a goal that requires camera capture, the app shows a "Record proof" button on the goal detail screen.
@@ -86,7 +75,8 @@ so that I can record proof videos without app crashes and hand a confirmed asset
    - Server returns 413 (file too large) — app shows "Video is too large — try a shorter recording" with a "Retake" button.
    - Server returns 415 (unsupported media type) — app shows "Unsupported video format" with a "Retake" button.
 
-### api_spec.md (verbatim embed)
+## api_spec.md (verbatim)
+
 # API spec
 
 ## Endpoints
@@ -140,36 +130,45 @@ so that I can record proof videos without app crashes and hand a confirmed asset
   - `403` — upload not owned by authenticated user
   - `404` — upload not found
 
-### Context pointers to load
-- [Source: context/project.md#Identity]
+## Context pointers to load
+
 - [Source: context/project.md#Stack]
 - [Source: context/project.md#Active constraints]
 - [Source: context/navigation.md#When working on the Expo client]
 
-### Implementation notes
-- This story is intentionally limited to reusable capture UX and permission states.
-- Do not wire upload/network behavior into a goal flow here.
-- Flow steps 6-8 are downstream context only; they inform future integration and test design, not required implementation in this story.
+## Out-of-scope guardrails
 
-## References
+- Do not wire the component into a specific goal-type submission flow here.
+- Do not add server-side media processing/transcoding/CV analysis.
+- Do not implement streaming uploads.
+- Ensure denied permissions do not crash the app.
+
+# References
+
 - `frontend/components/CameraCapture.tsx`
 - `frontend/App.tsx`
 - `frontend/hooks/useNavigation.tsx`
-- `frontend/screens/GoalDetailScreen.tsx`
-- `frontend/services/api.ts`
+- `frontend/screens/`
 - `frontend/AGENTS.md`
-- `factory/artifacts/story_template.md`
+- `frontend/package.json`
 
-## Dev Agent Record
-- Status: Not started
-- Agent: TBD
-- Branch: TBD
-- Notes: TBD
+# Dev Agent Record
 
-## Senior Developer Review
-- Status: Pending
-- Reviewer: TBD
-- Notes: TBD
+## Status
+Not started
 
-## Review Follow-ups
+## Notes
+- Reserved for implementation agent.
+
+# Senior Developer Review
+
+## Status
+Pending
+
+## Notes
+- Verify component API remains reusable and not coupled to a single goal flow.
+- Verify denied-permission UX uses exact required copy.
+
+# Review Follow-ups
+
 - None yet.
