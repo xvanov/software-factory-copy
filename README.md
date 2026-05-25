@@ -7,11 +7,14 @@ This is the orchestrator. The OpenHands SDK is the execution substrate (consumed
 ## Quickstart
 
 ```bash
-uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
+# Sync runtime + dev deps (pytest, ruff, mypy live under the `dev` extra —
+# a bare `uv sync` will leave them out and `uv run pytest` will fail with
+# `ModuleNotFoundError: No module named 'pytest'`).
+uv sync --all-extras
 
-# Run tests
-make test
+# Run tests (uv auto-activates .venv; manual `source .venv/bin/activate`
+# is not required when you go through `uv run`).
+uv run pytest -q
 
 # Run the Phase 0 acceptance target
 factory test-persona dev \
