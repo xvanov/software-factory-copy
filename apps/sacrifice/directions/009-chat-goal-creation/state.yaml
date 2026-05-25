@@ -1,0 +1,94 @@
+pm_result:
+  type: feature
+  priority: p1
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D009 chat-goal-creation replaces typed goal form
+  tracker_body: "## Summary\nShip D009 `chat-goal-creation`: replace the typed goal\
+    \ creation surface with a chat-driven flow that matches a natural-language prompt\
+    \ to an existing goal type using D007's registry and one LLM call per turn.\n\n\
+    ## WHY this matters\n- WHY are users blocked today? Because `GoalCreateScreen`\
+    \ makes them pick a goal type before they know the system's verification model.\n\
+    - WHY this change? To make creation AI-first: user states intent, system infers\
+    \ goal type, then gathers missing criteria conversationally.\n- WHY now? D007's\
+    \ plugin registry enables catalog-based matching; D010 will later handle the no-match\
+    \ factory path, so this direction should land the chat surface plus a stubbed\
+    \ escalation endpoint.\n\n## Direction-confirmed scope\n- Frontend primary create\
+    \ entry routes to `ChatGoalCreateScreen.tsx`.\n- Remove `frontend/screens/GoalCreateScreen.tsx`\
+    \ and update all references.\n- Chat UI supports message list, text input, typing/loading\
+    \ state, and structured assistant cards for:\n  - `match_proposed` / \"Use this\
+    \ goal type\"\n  - `no_match` / \"Build a new goal type\"\n  - `awaiting_input`\n\
+    \  - `ready_to_create` / final review\n- Backend adds `backend/app/routes/chat.py`\
+    \ and registers it in `backend/app/main.py`.\n- Backend persists `chat_sessions`\
+    \ with session messages, partial draft goal, and status.\n- Matching service lives\
+    \ in `backend/app/services/chat_match.py`, uses one LLM call per turn, and is\
+    \ configurable for model id + confidence threshold in `backend/app/config.py`.\n\
+    - Above-threshold match continues conversationally until required criteria are\
+    \ filled, then creates via existing `POST /api/goals`.\n- Below-threshold or `none`\
+    \ returns a no-match affordance; `request-new-goal-type` remains a stub returning\
+    \ `501` with explicit D010 message.\n- E2E coverage required for both matched\
+    \ path and no-match stub path.\n- Context docs must be rewritten to reflect the\
+    \ new creation flow and backend route.\n\n## Product questions answered by the\
+    \ direction\n- WHY preserve proof screens? Because this batch changes goal creation\
+    \ only; proof submission is explicitly out of scope.\n- WHY keep a stubbed no-match\
+    \ endpoint? To preserve the user-visible branch and API contract now, while deferring\
+    \ real generation wiring to D010.\n- WHY server-side session persistence? To resume\
+    \ interrupted flows and maintain conversational state.\n\n## Delivery notes\n\
+    This is multi-scope and touches frontend, backend, tests, and docs. More than\
+    \ 3 child stories means the chain should treat this as epic-shaped and route to\
+    \ Analyst for refinement before spawning if needed.\n\n## Acceptance anchors from\
+    \ direction\n- Home screen create affordance opens chat create screen.\n- Typed\
+    \ creation screen removed entirely.\n- Structured assistant actions rendered as\
+    \ cards.\n- Chat route module and endpoints implemented per `api_spec.md`.\n-\
+    \ `chat_sessions` table added via Alembic autogenerate.\n- LLM match path configurable\
+    \ and unit-testable.\n- Goal creation delegates to existing goal API after conversational\
+    \ completion.\n- No-match path returns honest surfaced 501 stub response.\n- Playwright\
+    \ `@smoke` coverage for match path and no-match path.\n- `context/modules/frontend.md`\
+    \ and `context/modules/backend-app.md` updated.\n\n## Routing note\nEpic-shaped:\
+    \ frontend + backend + test + docs. Analyst refinement is recommended before issue\
+    \ fan-out if downstream capacity is constrained."
+  child_stories:
+  - title: D009 frontend chat goal creation screen and routing
+    scope: frontend
+    chain_kind: tdd
+    rationale: Replace the home-screen create flow with `ChatGoalCreateScreen`, remove
+      `GoalCreateScreen`, render structured assistant cards, handle resume-from-session
+      behavior, and surface stubbed no-match responses without affecting proof submission
+      screens.
+  - title: D009 backend chat sessions, match service, and goal creation
+    scope: backend
+    chain_kind: tdd
+    rationale: Add `chat.py` routes, register router, persist `chat_sessions`, implement
+      one-call-per-turn matching via `chat_match.py`, expose configurable model id
+      and confidence threshold, delegate final creation to existing `POST /api/goals`,
+      and stub the new-goal-type endpoint with 501.
+  - title: D009 e2e and unit coverage for chat goal creation
+    scope: test
+    chain_kind: tdd
+    rationale: Validate the matched YouTube flow and no-match stub path with Playwright
+      `@smoke`, plus backend unit coverage for the mocked LLM matching service and
+      session-driven state transitions.
+  - title: D009 rewrite context docs for chat-first goal creation
+    scope: docs
+    chain_kind: docs
+    rationale: Update `context/modules/frontend.md` and `context/modules/backend-app.md`
+      so canonical documentation reflects the new chat-first creation flow and backend
+      chat route, while typed creation sub-forms are retained only as historical story
+      context.
+  labels:
+  - feature
+  - priority/p1
+  - frontend
+  - backend
+  - test
+  - docs
+  - epic-shaped
+  confidence: 0.97
+tracker_issue: 39
+status: pm-validated
+audit:
+- ts: '2026-05-25T18:23:32.662432+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.97

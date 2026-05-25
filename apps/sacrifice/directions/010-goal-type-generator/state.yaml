@@ -1,0 +1,157 @@
+pm_result:
+  type: feature
+  priority: p1
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: 'D010 goal-type-generator: synthesize and ship new goal types'
+  tracker_body: '## Summary
+
+    Implement D010 `goal-type-generator` to close the no-match chat loop: when chat
+    cannot match an existing goal type, Sacrifice synthesizes a factory direction,
+    writes it into the mounted directions volume, tracks factory progress via `state.yaml`,
+    notifies the user on merge, and supports accept-or-iterate follow-up behavior.
+
+
+    ## Why
+
+    - WHY does this matter? Because D007 made goal types pluggable, D008 added camera
+    capture, and D009 added chat + the stubbed generation trigger. Without D010, the
+    product still stops at "I can''t do that yet." With D010, natural-language demand
+    turns into shipped verification modules.
+
+    - WHY now? This is the keystone dependency that validates the product can expand
+    verification coverage without manual code authoring in the critical path.
+
+
+    ## Backpressure check
+
+    Backpressure is sufficient because both `flow.md` and `api_spec.md` are present,
+    and acceptance criteria are explicit.
+
+
+    ## Scope called out by direction
+
+    - Implement `POST /api/chat/sessions/{session_id}/request-new-goal-type`
+
+    - Add direction synthesis service (`backend/app/services/direction_synth.py`)
+    with mocked-LLM unit coverage
+
+    - Write synthesized direction directories to configurable mounted path
+
+    - Add `awaiting_goal_type` lifecycle state and `awaiting_direction_id` on goals
+
+    - Update deadline worker to skip awaiting-generation goals
+
+    - Implement generation-status, accept-generated-type, and iterate-generated-type
+    endpoints
+
+    - Add `goal_type_ready` notifications
+
+    - Add spend ledger + daily cap enforcement
+
+    - Add deterministic CI orchestration with `fake_factory_chain`
+
+    - Validate regen case against existing YouTube fixtures
+
+    - Validate novel pushup case against provided video fixtures
+
+    - Update canonical context docs and architecture diagram
+
+
+    ## PM read: where the risk actually is
+
+    1. The backend/factory boundary is the product. If direction writing, state polling,
+    or direction-id tracking is shaky, the feature is fake.
+
+    2. The spend cap is not optional. WHY? Because this path introduces LLM synthesis
+    at request time; uncontrolled cost becomes an operational bug fast.
+
+    3. The pushup validation is the proof-point, but the deterministic fake-chain
+    CI path is what prevents this from becoming untestable theater.
+
+    4. Iteration semantics are additive and forward-compatible with `parent_direction`;
+    D010 must write the linkage correctly even though factory consumption is out of
+    scope.
+
+
+    ## Epic-shaped warning
+
+    This direction spans backend API, persistence, worker behavior, notifications,
+    docker/runtime wiring, deterministic test orchestration, and documentation. It
+    is larger than a single-scope story. The chain should consider Analyst refinement
+    before spawning if downstream capacity is constrained.
+
+
+    ## Acceptance anchors from the direction
+
+    - Request endpoint returns `direction_id`, `goal_id`, and queued status
+
+    - Goal enters `awaiting_goal_type` and is not charged by deadline worker
+
+    - Status endpoint maps `state.yaml` to coarse lifecycle values
+
+    - Merge triggers `goal_type_ready` notification
+
+    - Accept endpoint activates only after merge; otherwise 409
+
+    - Iterate endpoint creates a NEW direction with `parent_direction` frontmatter
+    and keeps goal pending
+
+    - Daily AI spend cap enforced via `chat_spend_ledger`
+
+    - Forced-generation regen case reproduces a new module that passes existing YouTube
+    fixtures
+
+    - Pushup case produces `backend/app/goal_types/pushup_counter/` and passes fixture
+    assertions
+
+    - CI uses `fake_factory_chain`, not the real chain
+
+    - Context docs are rewritten to reflect new reality
+
+
+    ## Spawn recommendation
+
+    Spawn by scope so the implementation can move in parallel, but keep ownership
+    tight around the backend integration because that is the critical path.'
+  child_stories:
+  - title: D010 backend generation pipeline and goal lifecycle
+    scope: backend
+    chain_kind: tdd
+    rationale: 'Implements the core user value: synthesize directions from chat, persist
+      pending-goal lifecycle state, expose request/status/accept/iterate endpoints,
+      enforce spend caps, and fire notifications. WHY first? Because without this,
+      there is no working loop to test.'
+  - title: D010 runtime mount and deterministic fake factory test harness
+    scope: infra
+    chain_kind: tdd
+    rationale: Covers docker bind-mount configuration plus the fake factory chain
+      needed for deterministic CI validation. WHY separate? Because the backend feature
+      depends on filesystem/runtime integration and test orchestration that cross
+      codebase boundaries.
+  - title: D010 docs for goal-type generator architecture and current state
+    scope: docs
+    chain_kind: docs
+    rationale: "Rewrites canonical context and adds the architecture sequence for\
+      \ chat \u2192 direction synthesis \u2192 factory chain \u2192 merge \u2192 notify\
+      \ \u2192 accept. WHY separate docs chain? Because these deliverables are canonical\
+      \ documentation only and should not wait on code pipeline mechanics once behavior\
+      \ is settled."
+  labels:
+  - feature
+  - priority/p1
+  - backend
+  - infra
+  - docs
+  - chat
+  - goal-types
+  - ai-generation
+  confidence: 0.97
+tracker_issue: 44
+status: pm-validated
+audit:
+- ts: '2026-05-25T18:23:56.473985+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.97

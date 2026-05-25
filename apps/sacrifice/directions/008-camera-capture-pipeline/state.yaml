@@ -1,0 +1,119 @@
+pm_result:
+  type: feature
+  priority: p1
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D008 camera-capture-pipeline
+  tracker_body: '## Summary
+
+    Build the shared camera capture and video upload pipeline for Sacrifice. WHY now?
+    Because pushup-counter and future physical-world goal types need a reusable capture
+    primitive and a reusable backend media ingestion path. This direction intentionally
+    separates infrastructure risk from per-goal proof-flow wiring.
+
+
+    ## What the direction explicitly includes
+
+    - Reusable Expo `CameraCapture` component at `frontend/components/CameraCapture.tsx`
+
+    - Permission handling for camera + microphone, including denied-permission UX
+    with settings and cancel actions
+
+    - Recording lifecycle UX: start, stop, elapsed timer, optional max duration, retake,
+    confirm
+
+    - Backend `POST /api/uploads/video` multipart upload endpoint per `api_spec.md`
+
+    - Backend `GET /api/uploads/{upload_id}` ownership-scoped metadata endpoint
+
+    - `media_uploads` table plus Alembic migration
+
+    - Configurable filesystem storage path rooted at `SACRIFICE_MEDIA_DIR`
+
+    - Upload service abstraction at `backend/app/services/uploads.py`
+
+    - Smoke Playwright API upload test
+
+    - Frontend unit test for denied-permission state
+
+    - Context docs for media module and updated architecture diagram
+
+
+    ## Why this matters
+
+    - WHY build shared infra instead of embedding in pushup flow? Reuse and isolation
+    of risk.
+
+    - WHY now? The first phone-camera proof type depends on it.
+
+    - WHY separate route/service/storage concerns? To keep routes thin and upload
+    behavior unit-testable.
+
+    - WHY docs in the same direction? This creates new cross-cutting system behavior
+    and storage conventions that future stories will depend on.
+
+
+    ## Scope assessment
+
+    This is multi-scope and epic-shaped: frontend capture UX, backend storage/API,
+    tests, and docs. Route to Analyst persona for scope refinement before spawning
+    issues if the chain requires stricter decomposition, because this direction naturally
+    spans more than 3 scope units.
+
+
+    ## Acceptance anchors to preserve
+
+    - Do not wire the component into a specific goal-type submission flow here
+
+    - Do not add server-side media processing/transcoding/CV analysis
+
+    - Do not implement streaming uploads
+
+    - Ensure ownership enforcement on metadata reads and goal association checks on
+    upload
+
+    - Ensure denied permissions do not crash the app
+
+
+    ## PM backpressure check
+
+    Backpressure is sufficient because both `flow.md` and `api_spec.md` are present
+    and specific.
+
+    '
+  child_stories:
+  - title: Build D008 Expo CameraCapture component and permission states
+    scope: frontend
+    chain_kind: tdd
+    rationale: WHY start here? User value begins at capture. This story covers the
+      reusable component, permission handling, recording controls, elapsed timer,
+      auto-stop, retake/confirm UX, and the denied-permission unit test.
+  - title: Build D008 backend video upload API and media storage service
+    scope: backend
+    chain_kind: tdd
+    rationale: WHY isolate backend work? The upload endpoint, ownership checks, persistence
+      model, config, storage pathing, and metadata fetch endpoint form a coherent
+      backend slice with clear API acceptance criteria.
+  - title: Add D008 upload smoke coverage and media context docs
+    scope: test
+    chain_kind: tdd
+    rationale: WHY separate verification/documentation? The direction explicitly requires
+      an API smoke test plus new media context and architecture updates; these validate
+      the contract and make the new subsystem legible to future work.
+  labels:
+  - feature
+  - priority/p1
+  - frontend
+  - backend
+  - test
+  - docs
+  - epic-shaped
+  confidence: 0.95
+tracker_issue: 35
+status: pm-validated
+audit:
+- ts: '2026-05-25T18:23:12.150937+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.95

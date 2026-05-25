@@ -1,0 +1,110 @@
+pm_result:
+  type: refactor
+  priority: p1
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D007 pluggable-goal-types registry and GoalType interface
+  tracker_body: '## Summary
+
+    Implement D007 `pluggable-goal-types`: replace hard-coded `goal.goal_type` branching
+    and static Celery includes with a pluggable GoalType contract and registry.
+
+
+    ## Why
+
+    - WHY does this matter? New goal types are currently expensive and scattered across
+    routes, workers, schemas, and frontend wiring.
+
+    - WHY now? D010 depends on dynamic goal-type generation, and the current `if/elif`
+    route shape blocks clean extension by an agent.
+
+    - WHY this shape? The direction explicitly wants each goal type to live in a single
+    self-contained package discovered through a registry.
+
+
+    ## Direction anchors
+
+    - Add `backend/app/goal_types/` with one sub-package per goal type.
+
+    - Add abstract base in `backend/app/goal_types/base.py`.
+
+    - Add registry in `backend/app/goal_types/registry.py` with `list_types()` and
+    `get_type(name)`.
+
+    - Port existing types with no observable behavior change: `youtube_video`, `api_endpoint`,
+    `dev_sandbox`, `github_repo`.
+
+    - Update `backend/app/routes/goals.py` to dispatch via registry instead of branching
+    on `goal_type`.
+
+    - Generate Celery include list from registry.
+
+    - Add `GET /api/goal-types` per `api_spec.md`.
+
+    - Add `listGoalTypes()` to `frontend/services/api.ts` only.
+
+    - Add registry discovery smoke coverage for temporary stub package discovery.
+
+    - Rewrite `context/modules/backend-app.md` and `context/modules/backend-workers.md`
+    to current truth.
+
+
+    ## Acceptance criteria to preserve exactly
+
+    - The Architect persona designs the exact abstract interface; this direction does
+    not pre-design method signatures.
+
+    - Existing backend tests must continue to pass after the port.
+
+    - No broader frontend UX changes in this direction beyond the API client method.
+
+
+    ## PM triage
+
+    This is multi-scope: backend runtime architecture, frontend API client surface,
+    and docs/context updates. It is not epic-shaped; 3 child stories is appropriate.
+
+
+    ## Risks / questions to keep visible
+
+    - WHY is behavior preservation critical? Because this is a refactor enabling later
+    extensibility, not a user-facing feature rewrite.
+
+    - WHY is smoke discovery called out? To prove the registry truly discovers packages
+    without additional manual wiring.
+
+    - WHY mention Architect? Because interface design is intentionally deferred and
+    should not be guessed beyond the contract in the direction.
+
+    '
+  child_stories:
+  - title: D007 Backend GoalType plugin contract and registry refactor
+    scope: backend
+    chain_kind: tdd
+    rationale: Core value is replacing route branching and hard-coded worker wiring
+      with a discovered GoalType package model, porting all four existing goal types,
+      and adding the registry-backed `/api/goal-types` endpoint.
+  - title: D007 Frontend API client support for goal type registry
+    scope: frontend
+    chain_kind: tdd
+    rationale: Direction explicitly requires `frontend/services/api.ts` to gain `listGoalTypes()`
+      and no other frontend changes. This is a distinct, contained client-surface
+      update.
+  - title: D007 Rewrite backend context docs for GoalType architecture
+    scope: docs
+    chain_kind: docs
+    rationale: Direction explicitly requires `context/modules/backend-app.md` and
+      `context/modules/backend-workers.md` to be rewritten to current truth only,
+      with no historical notes.
+  labels:
+  - refactor
+  - priority/p1
+  confidence: 0.97
+tracker_issue: 31
+status: pm-validated
+audit:
+- ts: '2026-05-25T18:22:54.746836+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.97
