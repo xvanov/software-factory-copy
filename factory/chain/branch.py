@@ -91,6 +91,12 @@ def _branch_exists(repo_path: Path, branch: str) -> bool:
     return proc.returncode == 0
 
 
+def _has_remote(repo_path: Path, remote: str = "origin") -> bool:
+    """True iff ``remote`` is configured for ``repo_path``."""
+    proc = _run_git(repo_path, "remote", check=False)
+    return remote in proc.stdout.split()
+
+
 def ensure_feature_branch(
     repo_path: Path,
     *,
@@ -106,7 +112,9 @@ def ensure_feature_branch(
         must commit / discard their edits first. Silently stashing here would
         eat work; raising is the kinder failure mode.
       * Checks out the branch if it already exists locally; creates from
-        ``base_branch`` otherwise.
+        the remote ``origin/<base_branch>`` when ``origin`` is configured
+        (so a divergent local ``base_branch`` doesn't leak unrelated WIP
+        commits into the PR); falls back to local ``base_branch`` otherwise.
 
     ``story_id`` is the GitHub issue number when in real-run; 0 / None for
     dry-run. ``base_branch`` is the app's default branch from ``config.yaml``;
@@ -133,9 +141,22 @@ def ensure_feature_branch(
     if _branch_exists(repo, branch):
         _run_git(repo, "checkout", branch)
     else:
-        # Create from base_branch. ``git checkout -b X base`` does both
-        # operations atomically and fails if the base ref doesn't exist.
-        _run_git(repo, "checkout", "-b", branch, base_branch)
+        # Prefer ``origin/<base_branch>`` as the source of truth: that's what
+        # the GitHub PR will be diffed against. A divergent local
+        # ``base_branch`` (e.g. operator WIP not yet pushed) would otherwise
+        # bleed unrelated commits into every feature branch we create.
+        if _has_remote(repo):
+            # Best-effort fetch; if it fails (offline, auth), fall through
+            # to the local base. Short timeout so chains don't hang.
+            _run_git(repo, "fetch", "origin", base_branch, check=False)
+            remote_ref = f"origin/{base_branch}"
+            ref_check = _run_git(repo, "rev-parse", "--verify", "--quiet", remote_ref, check=False)
+            base_ref = remote_ref if ref_check.returncode == 0 else base_branch
+        else:
+            base_ref = base_branch
+        # ``git checkout -b X <base_ref>`` creates the new branch at
+        # ``<base_ref>``'s tip and switches to it atomically.
+        _run_git(repo, "checkout", "-b", branch, base_ref)
 
     return branch
 
