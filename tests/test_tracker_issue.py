@@ -5,10 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from factory.app_config import AppConfig, DeployConfig
 from factory.directions.creator import create_direction
-from factory.directions.parser import parse_direction_dir
+from factory.directions.parser import (
+    MissingDirection,
+    parse_direction_dir,
+    resolve_direction_chain,
+)
 from factory.directions.tracker_issue import (
+    _format_tracker_body,
     open_or_update_tracker_issue,
     record_needs_direction,
 )
@@ -189,3 +196,104 @@ def test_record_needs_direction_labels_and_comments(tmp_path: Path) -> None:
     issue = gh.repo.issues[number]
     assert "needs-direction" in [lbl.name for lbl in issue.labels]
     assert any("user_flow" in c for c in issue.comments)
+
+
+# ─── tracker body chain rendering tests ───────────────────────────────
+
+
+def _make_direction(
+    root: Path,
+    id_slug: str,
+    *,
+    parent_direction: str | None = None,
+    tracker_issue_num: int | None = None,
+) -> Any:
+    import yaml as _yaml
+
+    base = root / "apps" / "sacrifice" / "directions" / id_slug
+    base.mkdir(parents=True)
+    fm = {
+        "title": id_slug.replace("-", " ").title(),
+        "type": "feature",
+        "priority": "p2",
+        "explore": False,
+        "created_at": "2025-01-01T00:00:00+00:00",
+    }
+    if parent_direction:
+        fm["parent_direction"] = parent_direction
+    md = (
+        f"---\n{_yaml.safe_dump(fm, sort_keys=False).strip()}\n---\n\n"
+        f"# {fm['title']}\n\n## Why\n\nReason.\n\n## Acceptance Criteria\n\n- AC1\n"
+    )
+    (base / "direction.md").write_text(md, encoding="utf-8")
+    if tracker_issue_num is not None:
+        (base / "state.yaml").write_text(
+            _yaml.safe_dump({"status": "pm-validated", "tracker_issue": tracker_issue_num}),
+            encoding="utf-8",
+        )
+    return parse_direction_dir("sacrifice", base)
+
+
+def test_tracker_body_renders_chain_line(tmp_path: Path) -> None:
+    parent = _make_direction(
+        tmp_path, "060-parent", tracker_issue_num=42
+    )
+    child = _make_direction(tmp_path, "061-child", parent_direction="060-parent")
+    chain = resolve_direction_chain(child, tmp_path)
+
+    body = _format_tracker_body(
+        child,
+        pm_summary="summary text",
+        child_issue_numbers=[100],
+        direction_chain=chain,
+    )
+    assert "**Chain:**" in body
+    # Parent renders as `id-slug` #42 (bare hash, no markdown-link parens)
+    assert "`060-parent` #42" in body
+    # Current direction renders as **THIS**
+    assert "**THIS**" in body
+    # The chain arrow between parent and child
+    assert " ← " in body
+
+
+def test_tracker_body_no_chain_when_parent_not_set(tmp_path: Path) -> None:
+    direction = _make_direction(tmp_path, "062-standalone")
+    body = _format_tracker_body(
+        direction,
+        pm_summary="summary text",
+        child_issue_numbers=[],
+    )
+    assert "**Chain:**" not in body
+
+
+def test_tracker_body_parent_without_tracker_issue_no_hash(tmp_path: Path) -> None:
+    # Parent has no tracker_issue in state.yaml
+    parent = _make_direction(tmp_path, "063-parent", tracker_issue_num=None)
+    child = _make_direction(tmp_path, "064-child", parent_direction="063-parent")
+    chain = resolve_direction_chain(child, tmp_path)
+
+    body = _format_tracker_body(
+        child,
+        pm_summary="summary text",
+        child_issue_numbers=[],
+        direction_chain=chain,
+    )
+    assert "**Chain:**" in body
+    # Parent id-slug present but NO #N following it
+    assert "`063-parent`" in body
+    assert "`063-parent` #" not in body
+
+
+def test_tracker_body_missing_parent_sentinel_in_chain(tmp_path: Path) -> None:
+    child = _make_direction(tmp_path, "065-child", parent_direction="999-missing")
+    chain = resolve_direction_chain(child, tmp_path)
+    assert isinstance(chain[0], MissingDirection)
+
+    body = _format_tracker_body(
+        child,
+        pm_summary="summary text",
+        child_issue_numbers=[],
+        direction_chain=chain,
+    )
+    assert "**Chain:**" in body
+    assert "999-missing" in body

@@ -13,6 +13,8 @@ Phase-0 contract:
   * If project.md or navigation.md is missing (e.g. Onboarder runs before
     context exists), return a single ``NO CONTEXT AVAILABLE`` notice — the
     caller's persona prompt should already know what to do in that mode.
+  * If ``direction_chain`` is provided, append each ancestor direction's
+    ``direction.md`` body and merged story file (oldest first).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from factory.context.navigator import parse_navigation
+from factory.directions.parser import Direction, MissingDirection
 
 _NO_CONTEXT_NOTICE = (
     "# Context\n"
@@ -45,6 +48,8 @@ def compose_context_prelude(
     persona: str,
     app_repo_path: Path,
     task_scope: str | None = None,
+    direction_chain: list[Direction | MissingDirection] | None = None,
+    software_factory_root: Path | None = None,
 ) -> str:
     """Compose the markdown context prelude for ``persona`` against ``app_repo_path``.
 
@@ -68,6 +73,41 @@ def compose_context_prelude(
     parts.append(project_md.rstrip() + "\n")
     parts.append("\n## context/navigation.md\n")
     parts.append(navigation_md.rstrip() + "\n")
+
+    if direction_chain and len(direction_chain) > 1:
+        ancestors = direction_chain[:-1]
+        if ancestors:
+            parts.append("\n## Direction chain context\n")
+            parts.append(
+                "_This direction is an iteration. The sections below are the parent "
+                "direction(s) that came before it (oldest first). Their acceptance "
+                "criteria and deliverables are prior art — NOT optional._\n"
+            )
+            for ancestor in ancestors:
+                if isinstance(ancestor, MissingDirection):
+                    parts.append(f"\n### Parent direction: {ancestor.id_slug}\n")
+                    parts.append(
+                        f"_(parent direction not found: {ancestor.id_slug})_\n"
+                    )
+                else:
+                    parts.append(f"\n### Parent direction: {ancestor.id_slug}\n")
+                    parts.append(ancestor.raw_body.rstrip() + "\n")
+                    if software_factory_root is not None and ancestor.state:
+                        tracker_num = ancestor.state.get("tracker_issue")
+                        if isinstance(tracker_num, int) and tracker_num > 0:
+                            story_path = (
+                                software_factory_root
+                                / "state"
+                                / "stories"
+                                / f"{tracker_num}-{ancestor.slug}.md"
+                            )
+                            story_content = _read_text(story_path)
+                            if story_content is not None:
+                                parts.append(
+                                    f"\n#### Merged Story / Dev Agent Record: "
+                                    f"`{ancestor.id_slug}`\n"
+                                )
+                                parts.append(story_content.rstrip() + "\n")
 
     if task_scope:
         sections = parse_navigation(navigation_md)

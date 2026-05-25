@@ -512,14 +512,22 @@ def handle_sm(
     else:
         from factory.app_config import resolve_app_repo_path
         from factory.context.loader import compose_context_prelude
+        from factory.directions.parser import get_direction_chain
         from factory.runner import text_run
 
         persona = "sm"
         persona_prompt = _read_persona_prompt(persona)
+        chain = (
+            get_direction_chain(direction, software_factory_root)
+            if direction is not None
+            else None
+        )
         prelude = compose_context_prelude(
             persona=persona,
             app_repo_path=resolve_app_repo_path(app_config, software_factory_root),
             task_scope=story.scope,
+            direction_chain=chain,
+            software_factory_root=software_factory_root,
         )
         flow_text = ""
         api_text = ""
@@ -710,14 +718,23 @@ def handle_test_design(
     else:
         from factory.app_config import resolve_app_repo_path
         from factory.context.loader import compose_context_prelude
+        from factory.directions.parser import get_direction_chain
         from factory.runner import text_run
 
         persona = "test_designer"
         persona_prompt = _read_persona_prompt(persona)
+        direction = find_direction_for_story(story, software_factory_root)
+        chain = (
+            get_direction_chain(direction, software_factory_root)
+            if direction is not None
+            else None
+        )
         prelude = compose_context_prelude(
             persona=persona,
             app_repo_path=resolve_app_repo_path(app_config, software_factory_root),
             task_scope=story.scope,
+            direction_chain=chain,
+            software_factory_root=software_factory_root,
         )
         story_file_content = ""
         story_file_real = software_factory_root / "apps" / story.app / story.story_file_path
@@ -834,6 +851,14 @@ def handle_test_implementation(
         story.github_branch = branch
         persist_story(story, db)
 
+        ti_direction = find_direction_for_story(story, software_factory_root)
+        from factory.directions.parser import get_direction_chain
+        ti_chain = (
+            get_direction_chain(ti_direction, software_factory_root)
+            if ti_direction is not None
+            else None
+        )
+
         llm = LLMConfig(model=route("test_implementer"))
         import asyncio
 
@@ -844,6 +869,8 @@ def handle_test_implementation(
                 repo_path=repo_path,
                 llm_config=llm,
                 dry_run=False,
+                direction_chain=ti_chain,
+                software_factory_root=software_factory_root,
             )
         )
         # The sandbox returned ok if tests are red (which is the desired outcome).
@@ -956,6 +983,14 @@ def handle_dev(
         # decided to do.
         pre_dev_sha = _run_git(target_repo, "rev-parse", "HEAD").stdout.strip()
 
+        dev_direction = find_direction_for_story(story, software_factory_root)
+        from factory.directions.parser import get_direction_chain
+        dev_chain = (
+            get_direction_chain(dev_direction, software_factory_root)
+            if dev_direction is not None
+            else None
+        )
+
         llm = LLMConfig(model=route("dev", difficulty=difficulty))
         import asyncio
 
@@ -967,6 +1002,8 @@ def handle_dev(
                 llm_config=llm,
                 difficulty=difficulty,
                 dry_run=False,
+                direction_chain=dev_chain,
+                software_factory_root=software_factory_root,
             )
         )
 
@@ -1065,14 +1102,23 @@ def handle_review(
     else:
         from factory.app_config import resolve_app_repo_path
         from factory.context.loader import compose_context_prelude
+        from factory.directions.parser import get_direction_chain
         from factory.runner import text_run
 
         persona = "reviewer"
         persona_prompt = _read_persona_prompt(persona)
+        direction = find_direction_for_story(story, software_factory_root)
+        chain = (
+            get_direction_chain(direction, software_factory_root)
+            if direction is not None
+            else None
+        )
         prelude = compose_context_prelude(
             persona=persona,
             app_repo_path=resolve_app_repo_path(app_config, software_factory_root),
             task_scope=story.scope,
+            direction_chain=chain,
+            software_factory_root=software_factory_root,
         )
         full_prompt = (
             f"{persona_prompt.rstrip()}\n\n"
@@ -1182,14 +1228,23 @@ def handle_tech_writer(
     else:
         from factory.app_config import resolve_app_repo_path
         from factory.context.loader import compose_context_prelude
+        from factory.directions.parser import get_direction_chain
         from factory.runner import text_run
 
         persona = "tech_writer"
         persona_prompt = _read_persona_prompt(persona)
+        direction = find_direction_for_story(story, software_factory_root)
+        chain = (
+            get_direction_chain(direction, software_factory_root)
+            if direction is not None
+            else None
+        )
         prelude = compose_context_prelude(
             persona=persona,
             app_repo_path=resolve_app_repo_path(app_config, software_factory_root),
             task_scope=story.scope,
+            direction_chain=chain,
+            software_factory_root=software_factory_root,
         )
         full_prompt = (
             f"{persona_prompt.rstrip()}\n\n"
@@ -1696,7 +1751,9 @@ def find_direction_for_story(story: StoryRecord, software_factory_root: Path) ->
     """Look up the parsed Direction record for a story (by direction_id)."""
     for dpath in list_direction_dirs(story.app, software_factory_root):
         if dpath.name.startswith(f"{story.direction_id}-"):
-            return parse_direction_dir(story.app, dpath)
+            return parse_direction_dir(
+                story.app, dpath, software_factory_root=software_factory_root
+            )
     return None
 
 

@@ -289,6 +289,8 @@ async def sandbox_run(
     db_path: Path | None = None,
     task_scope: str | None = None,
     max_iterations: int = 200,
+    direction_chain: list[Any] | None = None,
+    software_factory_root: Path | None = None,
 ) -> RunResult:
     """Run a persona inside an OpenHands SDK sandbox against ``repo_path``.
 
@@ -308,7 +310,11 @@ async def sandbox_run(
     story_text = Path(story_path).read_text(encoding="utf-8")
     persona_prompt = _read_persona_prompt(persona)
     context_prelude = compose_context_prelude(
-        persona=persona, app_repo_path=repo_path, task_scope=task_scope
+        persona=persona,
+        app_repo_path=repo_path,
+        task_scope=task_scope,
+        direction_chain=direction_chain,
+        software_factory_root=software_factory_root,
     )
     initial_user_text = _build_initial_message(
         persona=persona,

@@ -71,6 +71,13 @@ AC IDs satisfied) is a courtesy. The deliverable is the commits.
   write to.)
 * Cite all decisions with file paths.
 
+## Chain-aware implementation
+
+If `parent_direction` is set on the direction this story derives from, the
+module(s) modified by the parent are your target. Edit in place; do not create
+parallel modules unless the iteration's acceptance criteria explicitly require
+it. The parent's tests are still in the suite — make them keep passing.
+
 ## Canonical doc paths (forbidden for Dev)
 
 You MUST NOT create or modify any of these paths. Doc updates are the

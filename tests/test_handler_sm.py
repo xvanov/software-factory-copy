@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from factory.app_config import AppConfig
 from factory.chain.handlers import handle_sm, persist_story
 from factory.chain.state_machine import StoryRecord, StoryState
+from factory.context.loader import compose_context_prelude as _real_compose_context_prelude
 
 
 @pytest.fixture
@@ -227,3 +229,78 @@ def test_fixture_overrides_dry_run(temp_root: Path, app_config: AppConfig) -> No
     assert parsed["summary"] == "fixture story"
     target = temp_root / "apps" / "sacrifice" / "stories" / "0-add-healthz-endpoint.md"
     assert target.read_text(encoding="utf-8") == "# Custom story content from fixture\n"
+
+
+def test_sm_prelude_receives_parent_direction_chain(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    """When a story's direction has ``parent_direction`` set, the SM handler
+    must pass the resolved chain to ``compose_context_prelude``."""
+    # Parent direction on disk
+    parent_dir = temp_root / "apps" / "sacrifice" / "directions" / "050-parent"
+    parent_dir.mkdir(parents=True)
+    (parent_dir / "direction.md").write_text(
+        "---\ntitle: Parent\n---\n\n# Parent\n\n## Why\n\nPARENT_BODY_SENTINEL_TOKEN\n\n## Acceptance Criteria\n\n- AC1\n",
+        encoding="utf-8",
+    )
+    # Child direction with parent_direction pointing at the parent
+    child_dir = temp_root / "apps" / "sacrifice" / "directions" / "051-child-iter"
+    child_dir.mkdir(parents=True)
+    (child_dir / "direction.md").write_text(
+        "---\ntitle: Child\nparent_direction: 050-parent\n---\n\n# Child\n\n## Why\n\niteration.\n\n## Acceptance Criteria\n\n- AC2\n",
+        encoding="utf-8",
+    )
+    # App repo context so the loader doesn't fall into NO_CONTEXT_AVAILABLE
+    context_dir = temp_root / "context"
+    context_dir.mkdir(parents=True)
+    (context_dir / "project.md").write_text("# proj\n", encoding="utf-8")
+    (context_dir / "navigation.md").write_text("# nav\n", encoding="utf-8")
+    # Point app_repo_path at temp_root so the context loader finds our files.
+    test_app_config = AppConfig(
+        name=app_config.name,
+        repo=app_config.repo,
+        default_branch=app_config.default_branch,
+        context_dir=app_config.context_dir,
+        app_repo_path=".",
+    )
+
+    db = temp_root / "state" / "factory.db"
+    s = StoryRecord(
+        direction_id="051",
+        app="sacrifice",
+        title="Iteration",
+        slug="child-iter",
+        scope="backend",
+        state=StoryState.STORY_CREATED.value,
+        story_file_path="stories/0-child-iter.md",
+    )
+    persist_story(s, db)
+
+    dummy_text_run = {"stories": [], "summary": "ok"}
+    captured_prelude: list[str] = []
+
+    def _capturing_compose_prelude(*args: object, **kwargs: object) -> str:
+        result = _real_compose_context_prelude(*args, **kwargs)  # type: ignore[arg-type]
+        captured_prelude.append(result)
+        return result
+
+    with (
+        patch("factory.runner.text_run", return_value=dummy_text_run),
+        patch(
+            "factory.context.loader.compose_context_prelude",
+            side_effect=_capturing_compose_prelude,
+        ) as mock_prelude,
+    ):
+        handle_sm(s, test_app_config, temp_root, dry_run=False, db_path=db)
+
+    assert mock_prelude.called, "compose_context_prelude was not called"
+    _, kwargs = mock_prelude.call_args
+    chain = kwargs.get("direction_chain")
+    assert chain is not None, "direction_chain was not passed to compose_context_prelude"
+    assert len(chain) == 2
+    assert chain[0].id_slug == "050-parent"
+    assert chain[1].id_slug == "051-child-iter"
+
+    # The prelude output must contain the parent's direction.md body text.
+    assert len(captured_prelude) == 1
+    assert "PARENT_BODY_SENTINEL_TOKEN" in captured_prelude[0]

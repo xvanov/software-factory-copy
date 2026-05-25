@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from factory.directions.parser import (
+    DirectionChainCycleError,
+    MissingDirection,
     Direction,
     next_direction_id,
     parse_direction_dir,
+    resolve_direction_chain,
 )
 
 
@@ -21,14 +25,20 @@ def _write_direction_md(
     explore: bool = False,
     body_extra: str = "",
     acceptance: list[str] | None = None,
+    parent_direction: str | None = None,
+    related_directions: list[str] | None = None,
 ) -> None:
-    fm = {
+    fm: dict[str, Any] = {
         "title": title,
         "type": type_tag or "",
         "priority": "p2",
         "explore": explore,
         "created_at": "2025-01-01T00:00:00+00:00",
     }
+    if parent_direction:
+        fm["parent_direction"] = parent_direction
+    if related_directions:
+        fm["related_directions"] = related_directions
     ac_lines = ""
     if acceptance is not None:
         ac_lines = "\n".join(f"- [ ] {item}" for item in acceptance)
@@ -139,3 +149,164 @@ def test_next_direction_id_increments(tmp_path: Path) -> None:
     (base / "010-tenth").mkdir()
     (base / "not-a-direction").mkdir()
     assert next_direction_id("sacrifice", root) == "011"
+
+
+# ─── chain resolution tests ─────────────────────────────────────────────
+
+
+def _make_parent_on_disk(
+    root: Path,
+    id_slug: str,
+    *,
+    title: str | None = None,
+    acceptance: list[str] | None = None,
+    parent_direction: str | None = None,
+) -> Path:
+    """Create a minimal direction directory on disk under
+    ``<root>/apps/sacrifice/directions/<id_slug>/``."""
+    base = root / "apps" / "sacrifice" / "directions" / id_slug
+    base.mkdir(parents=True)
+    parts = id_slug.rsplit("-", 1) if "-" in id_slug else [id_slug, id_slug]
+    h1 = title or parts[1].replace("-", " ").title()
+    _write_direction_md(
+        base,
+        title=h1,
+        acceptance=acceptance or ["AC1"],
+        parent_direction=parent_direction,
+    )
+    return base
+
+
+def test_parse_direction_with_parent_direction(tmp_path: Path) -> None:
+    d = tmp_path / "012-iter-on-011"
+    d.mkdir()
+    _write_direction_md(d, title="Iter on parent", parent_direction="011-parent")
+    direction = parse_direction_dir("sacrifice", d)
+    assert direction.parent_direction == "011-parent"
+    assert direction.related_directions == []
+
+
+def test_parse_direction_with_related_directions(tmp_path: Path) -> None:
+    d = tmp_path / "013-with-related"
+    d.mkdir()
+    _write_direction_md(
+        d,
+        title="Has related",
+        related_directions=["005-foo", "008-bar"],
+    )
+    direction = parse_direction_dir("sacrifice", d)
+    assert direction.parent_direction is None
+    assert direction.related_directions == ["005-foo", "008-bar"]
+
+
+def test_chain_resolves_single_parent(tmp_path: Path) -> None:
+    _make_parent_on_disk(tmp_path, "011-parent", title="Parent")
+    d = tmp_path / "012-iter-on-011"
+    d.mkdir()
+    _write_direction_md(d, title="Iter", parent_direction="011-parent")
+    direction = parse_direction_dir("sacrifice", d)
+    chain = resolve_direction_chain(direction, tmp_path)
+    assert len(chain) == 2
+    assert isinstance(chain[0], Direction)
+    assert chain[0].id_slug == "011-parent"
+    assert isinstance(chain[1], Direction)
+    assert chain[1].id_slug == "012-iter-on-011"
+
+
+def test_chain_missing_parent_returns_sentinel(tmp_path: Path) -> None:
+    d = tmp_path / "012-iter-on-missing"
+    d.mkdir()
+    _write_direction_md(d, title="Iter", parent_direction="999-noexist")
+    direction = parse_direction_dir("sacrifice", d)
+    chain = resolve_direction_chain(direction, tmp_path)
+    assert len(chain) == 2
+    assert isinstance(chain[0], MissingDirection)
+    assert chain[0].id_slug == "999-noexist"
+    assert isinstance(chain[1], Direction)
+    assert chain[1].id_slug == "012-iter-on-missing"
+
+
+def test_self_reference_rejected(tmp_path: Path) -> None:
+    d = tmp_path / "014-self-ref"
+    d.mkdir()
+    _write_direction_md(d, title="Self", parent_direction="014-self-ref")
+    with pytest.raises(ValueError, match="Self-referential"):
+        parse_direction_dir("sacrifice", d)
+
+
+def test_related_directions_not_in_chain(tmp_path: Path) -> None:
+    _make_parent_on_disk(tmp_path, "005-foo", title="Foo")
+    _make_parent_on_disk(tmp_path, "006-bar", title="Bar")
+    d = tmp_path / "013-with-related-only"
+    d.mkdir()
+    _write_direction_md(
+        d,
+        title="Related only, no parent",
+        related_directions=["005-foo", "006-bar"],
+    )
+    direction = parse_direction_dir("sacrifice", d)
+    assert direction.parent_direction is None
+    chain = resolve_direction_chain(direction, tmp_path)
+    assert len(chain) == 1  # just the current direction, no ancestors
+    assert isinstance(chain[0], Direction)
+    assert chain[0].id_slug == "013-with-related-only"
+
+
+def test_id_slug_derived_from_dir_name(tmp_path: Path) -> None:
+    """id_slug must match the directory name's <id>-<slug> form, not just
+    echo back constructor inputs. Parse a real directory and verify."""
+    d = tmp_path / "017-real-slug"
+    d.mkdir()
+    _write_direction_md(d, title="Irrelevant Title")
+    direction = parse_direction_dir("sacrifice", d)
+    assert direction.title == "Irrelevant Title"
+    assert direction.id_slug == "017-real-slug"
+    # id and slug parsed independently from directory name
+    assert direction.id == "017"
+    assert direction.slug == "real-slug"
+
+
+def test_two_node_cycle_rejected(tmp_path: Path) -> None:
+    _make_parent_on_disk(tmp_path, "018-node-b", title="B", parent_direction="019-node-a")
+    d = tmp_path / "019-node-a"
+    d.mkdir()
+    _write_direction_md(d, title="A", parent_direction="018-node-b")
+    with pytest.raises(
+        DirectionChainCycleError, match="parent_direction chain that cycles"
+    ) as exc_info:
+        parse_direction_dir("sacrifice", d, software_factory_root=tmp_path)
+    assert "018-node-b" in str(exc_info.value)
+    assert "019-node-a" in str(exc_info.value)
+
+
+def test_three_node_cycle_rejected(tmp_path: Path) -> None:
+    _make_parent_on_disk(tmp_path, "020-node-b", title="B", parent_direction="021-node-c")
+    _make_parent_on_disk(tmp_path, "021-node-c", title="C", parent_direction="022-node-a")
+    d = tmp_path / "022-node-a"
+    d.mkdir()
+    _write_direction_md(d, title="A", parent_direction="020-node-b")
+    with pytest.raises(
+        DirectionChainCycleError, match="parent_direction chain that cycles"
+    ):
+        parse_direction_dir("sacrifice", d, software_factory_root=tmp_path)
+
+
+def test_chain_depth_capped(tmp_path: Path) -> None:
+    # Construct a 12-deep linear chain (001→002→...→012). Cap at 8 ancestors.
+    for i in range(1, 13):
+        id_slug = f"{i:03d}-deep"
+        pd = f"{i-1:03d}-deep" if i > 1 else None
+        _make_parent_on_disk(tmp_path, id_slug, parent_direction=pd)
+    d = tmp_path / "013-deepest"
+    d.mkdir()
+    _write_direction_md(d, title="Deepest", parent_direction="012-deep")
+    direction = parse_direction_dir("sacrifice", d)
+    chain = resolve_direction_chain(direction, tmp_path)
+    # 8 ancestors + current = 9
+    assert len(chain) == 9
+    # Oldest ancestor is 8 steps back from 012 → 005-deep
+    assert isinstance(chain[0], Direction)
+    assert chain[0].id_slug == "005-deep"
+    # Last entry is always the current direction
+    assert isinstance(chain[-1], Direction)
+    assert chain[-1].id_slug == "013-deepest"

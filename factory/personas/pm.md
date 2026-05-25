@@ -94,6 +94,17 @@ touch a few documentation files alongside code.
   that the chain should route to the Analyst persona for further scope
   refinement before spawning issues.
 
+## Iteration detection
+
+If the direction's frontmatter carries `parent_direction`, this is an
+iteration. Acknowledge the parent in your `tracker_body` summary. The chain
+semantics: the new direction's acceptance criteria are ADDITIVE on top of the
+parent's, never replacements. If the new direction's acceptance criteria appear
+to contradict the parent's (e.g. the new direction says "remove the
+rep-counting test"), flag with `chain_kind: "needs-clarification"` and label
+`needs-direction` — do not auto-spawn stories until the user resolves the
+conflict.
+
 ## Hard rules
 
 * You do NOT open GitHub issues. You do NOT write files. You do NOT touch the

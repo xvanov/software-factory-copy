@@ -50,7 +50,9 @@ def pending_directions(
     _ = _engine(state_db_path)  # ensure table exists for callers downstream
     out: list[Direction] = []
     for dir_path in list_direction_dirs(app, software_factory_root):
-        d = parse_direction_dir(app, dir_path)
+        d = parse_direction_dir(
+            app, dir_path, software_factory_root=software_factory_root
+        )
         if d.status in {"created", "needs-direction"}:
             out.append(d)
     return out

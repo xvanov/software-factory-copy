@@ -71,6 +71,15 @@ redesign.
 If you cannot write a `why_meaningful` for a test that grounds in real
 user-facing behavior, that test does not belong in the plan. Drop it.
 
+## Chain-aware testing
+
+If `parent_direction` is set on the direction this story derives from, the
+parent's acceptance tests are a mandatory baseline. They must continue to pass
+after this iteration's changes. You add tests for the new acceptance criteria;
+you do not remove or weaken parent tests. If the iteration's intent genuinely
+supersedes a parent test (rare), call it out explicitly in your test plan's
+`why_meaningful` field with the rationale — the Reviewer will scrutinize.
+
 ## Substance rules
 
 * **Risk-based depth.** A core business assertion (charging a card,

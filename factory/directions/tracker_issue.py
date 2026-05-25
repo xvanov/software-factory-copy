@@ -12,10 +12,11 @@ authentication so the same client can be reused across calls.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from factory.app_config import AppConfig
-from factory.directions.parser import Direction
+from factory.directions.parser import Direction, MissingDirection, resolve_direction_chain
 from factory.directions.watcher import merge_state
 
 _TRACKER_LABEL = "direction-tracker"
@@ -28,8 +29,26 @@ def _format_tracker_body(
     pm_summary: str | None,
     child_issue_numbers: list[int],
     extra_sections: list[str] | None = None,
+    direction_chain: list[Direction | MissingDirection] | None = None,
 ) -> str:
     parts: list[str] = []
+
+    if direction_chain and len(direction_chain) > 1:
+        chain_parts: list[str] = []
+        for item in direction_chain:
+            if isinstance(item, MissingDirection):
+                chain_parts.append(f"`{item.id_slug}`")
+            elif item.id_slug == direction.id_slug:
+                chain_parts.append("**THIS**")
+            else:
+                tracker_num = item.state.get("tracker_issue") if item.state else None
+                if isinstance(tracker_num, int) and tracker_num > 0:
+                    chain_parts.append(f"`{item.id_slug}` #{tracker_num}")
+                else:
+                    chain_parts.append(f"`{item.id_slug}`")
+        parts.append(f"**Chain:** {' ← '.join(chain_parts)}")
+        parts.append("")
+
     parts.append(f"**Direction:** `{direction.id}-{direction.slug}`")
     parts.append(f"**App:** `{direction.app}`")
     if direction.type_tag:
@@ -73,6 +92,7 @@ def open_or_update_tracker_issue(
     *,
     pm_result: dict[str, Any] | None = None,
     child_issue_numbers: list[int] | None = None,
+    software_factory_root: Path | None = None,
 ) -> int:
     """Idempotently open or update the Direction Tracker issue.
 
@@ -95,10 +115,15 @@ def open_or_update_tracker_issue(
     if priority and not any(lbl.startswith("priority/") for lbl in pm_labels):
         pm_labels.append(f"priority/{priority}")
 
+    chain: list[Direction | MissingDirection] | None = None
+    if software_factory_root is not None and direction.parent_direction:
+        chain = resolve_direction_chain(direction, software_factory_root)
+
     body = _format_tracker_body(
         direction,
         pm_summary=pm_body,
         child_issue_numbers=child_issue_numbers,
+        direction_chain=chain,
     )
     labels = _build_labels(direction, pm_labels)
 

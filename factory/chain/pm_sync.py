@@ -28,7 +28,7 @@ from typing import Any
 from factory.app_config import AppConfig, load_app_config, resolve_app_repo_path
 from factory.backpressure.validator import ValidationResult, validate_direction
 from factory.context.loader import compose_context_prelude
-from factory.directions.parser import Direction
+from factory.directions.parser import Direction, MissingDirection, resolve_direction_chain
 from factory.directions.tracker_issue import (
     open_or_update_tracker_issue,
     record_needs_direction,
@@ -231,14 +231,25 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
     }
 
 
-def _call_pm_persona(direction: Direction, app_repo_path: Path) -> dict[str, Any]:
+def _call_pm_persona(
+    direction: Direction,
+    app_repo_path: Path,
+    software_factory_root: Path,
+) -> dict[str, Any]:
     """Real LLM call. Returns the parsed PM JSON result."""
     # Import lazily so dry-run paths don't pull litellm.
     from factory.runner import text_run
 
     persona = "pm"
     persona_prompt = _read_persona_prompt(persona)
-    context_prelude = compose_context_prelude(persona=persona, app_repo_path=app_repo_path)
+
+    chain = _resolve_chain_for_direction(direction, software_factory_root)
+    context_prelude = compose_context_prelude(
+        persona=persona,
+        app_repo_path=app_repo_path,
+        direction_chain=chain,
+        software_factory_root=software_factory_root,
+    )
     direction_block = _build_pm_prompt(direction, context_prelude)
 
     full_prompt = (
@@ -263,6 +274,17 @@ def _call_pm_persona(direction: Direction, app_repo_path: Path) -> dict[str, Any
         return result
     # text_run only returns str when schema is None; treat anything else as failure.
     raise RuntimeError("PM text_run returned a non-dict for schema-mode call")
+
+
+def _resolve_chain_for_direction(
+    direction: Direction,
+    software_factory_root: Path,
+) -> list[Direction | MissingDirection] | None:
+    """Resolve the direction chain for ``direction``, returning ``None`` if no
+    ``parent_direction`` is set (avoids a useless single-element list)."""
+    if not direction.parent_direction:
+        return None
+    return resolve_direction_chain(direction, software_factory_root)
 
 
 def _read_persona_prompt(persona: str) -> str:
@@ -387,7 +409,7 @@ def pm_sync(
                     db_path=db_path,
                 )
             else:
-                pm_result = _call_pm_persona(direction, app_repo_path)
+                pm_result = _call_pm_persona(direction, app_repo_path, root)
 
             merge_state(direction, {"pm_result": pm_result})
 
@@ -398,6 +420,7 @@ def pm_sync(
                     app_config,
                     github_client,
                     pm_result=pm_result,
+                    software_factory_root=root,
                 )
 
             mark_direction_status(

@@ -47,6 +47,39 @@ class Direction:
     raw_body: str
     dir_path: Path = field(default_factory=lambda: Path("."))
     state: dict[str, Any] = field(default_factory=dict)
+    parent_direction: str | None = None
+    related_directions: list[str] = field(default_factory=list)
+
+    @property
+    def id_slug(self) -> str:
+        """Return the canonical id-slug string (e.g. ``011-pushup-counter``)."""
+        if self.id and self.slug:
+            return f"{self.id}-{self.slug}"
+        return self.slug or self.id or ""
+
+
+@dataclass
+class MissingDirection:
+    """Sentinel returned by ``resolve_direction_chain`` when an ancestor id-slug
+    directory doesn't exist on disk."""
+
+    id_slug: str
+
+
+class DirectionChainCycleError(ValueError):
+    """Raised when a direction's ``parent_direction`` chain forms a cycle.
+
+    The ``cycle_path`` attribute lists the id-slugs in the cycle (starting from
+    the culprit direction), with the repeated node at the end to show the loop.
+    """
+
+    def __init__(self, direction_id_slug: str, cycle_path: list[str]) -> None:
+        joined = " → ".join(cycle_path)
+        super().__init__(
+            f"Direction {direction_id_slug} has a parent_direction chain that "
+            f"cycles: {joined}"
+        )
+        self.cycle_path = cycle_path
 
 
 def _parse_acceptance(body: str) -> list[str]:
@@ -97,11 +130,17 @@ def _parse_why(body: str) -> str | None:
     return text or None
 
 
-def parse_direction_dir(app: str, dir_path: Path) -> Direction:
+def parse_direction_dir(
+    app: str,
+    dir_path: Path,
+    *,
+    software_factory_root: Path | None = None,
+) -> Direction:
     """Read a direction directory from disk and return a ``Direction`` record.
 
     Robust to missing optional files. Raises ``FileNotFoundError`` if
-    ``direction.md`` itself is missing.
+    ``direction.md`` itself is missing. If ``software_factory_root`` is
+    provided, performs a chain-cycle check on ``parent_direction`` links.
     """
     dir_path = Path(dir_path)
     direction_md = dir_path / "direction.md"
@@ -163,7 +202,17 @@ def parse_direction_dir(app: str, dir_path: Path) -> Direction:
             # Corrupt state.yaml: keep defaults so the watcher can re-process
             state = {}
 
-    return Direction(
+    parent_direction_raw = raw_frontmatter.get("parent_direction")
+    parent_direction: str | None = None
+    if isinstance(parent_direction_raw, str) and parent_direction_raw.strip():
+        parent_direction = parent_direction_raw.strip()
+
+    related_directions_raw = raw_frontmatter.get("related_directions", [])
+    related_directions: list[str] = []
+    if isinstance(related_directions_raw, list):
+        related_directions = [str(r).strip() for r in related_directions_raw if str(r).strip()]
+
+    direction = Direction(
         id=id_,
         slug=slug,
         title=title,
@@ -180,7 +229,16 @@ def parse_direction_dir(app: str, dir_path: Path) -> Direction:
         raw_body=raw_body,
         dir_path=dir_path,
         state=state,
+        parent_direction=parent_direction,
+        related_directions=related_directions,
     )
+
+    if parent_direction is not None:
+        _validate_chain_self_reference(direction)
+        if software_factory_root is not None:
+            _check_chain_cycle(direction, software_factory_root)
+
+    return direction
 
 
 def next_direction_id(app: str, software_factory_root: Path) -> str:
@@ -237,3 +295,111 @@ def slugify(text: str) -> str:
 def validate_slug(slug: str) -> bool:
     """Slug must match ``[A-Za-z0-9_\\-]+``."""
     return bool(_SLUG_RE.match(slug))
+
+
+def get_direction_chain(
+    direction: Direction,
+    software_factory_root: Path,
+) -> list[Direction | MissingDirection] | None:
+    """Resolve the direction chain for ``direction``, returning ``None`` when
+    no ``parent_direction`` is set (avoids a useless single-element list)."""
+    if not direction.parent_direction:
+        return None
+    return resolve_direction_chain(direction, software_factory_root)
+
+
+def _validate_chain_self_reference(direction: Direction) -> None:
+    """Reject a direction whose ``parent_direction`` points at itself."""
+    if direction.parent_direction == direction.id_slug:
+        raise ValueError(
+            f"Direction {direction.id_slug} has parent_direction pointing to itself. "
+            f"Self-referential chains are not allowed."
+        )
+
+
+def _check_chain_cycle(direction: Direction, software_factory_root: Path) -> None:
+    """Raise ``DirectionChainCycleError`` if the direction's parent chain forms a cycle."""
+    path: list[str] = [direction.id_slug]
+    seen: set[str] = {direction.id_slug}
+    current_id_slug = direction.parent_direction
+    while current_id_slug is not None:
+        if current_id_slug in seen:
+            path.append(current_id_slug)
+            raise DirectionChainCycleError(direction.id_slug, path)
+        seen.add(current_id_slug)
+        path.append(current_id_slug)
+        parent_dir = _find_direction_dir(current_id_slug, software_factory_root)
+        if parent_dir is None:
+            break
+        parent_direction = _read_parent_from_dir(parent_dir)
+        current_id_slug = parent_direction
+
+
+def _find_direction_dir(id_slug: str, software_factory_root: Path) -> Path | None:
+    """Find a direction directory by id-slug anywhere under
+    ``<root>/apps/*/directions/``. Returns the first match or ``None``."""
+    apps_dir = software_factory_root / "apps"
+    if not apps_dir.exists():
+        return None
+    for app_dir in apps_dir.iterdir():
+        if not app_dir.is_dir():
+            continue
+        candidate = app_dir / "directions" / id_slug
+        if candidate.is_dir() and (candidate / "direction.md").exists():
+            return candidate
+    return None
+
+
+def _read_parent_from_dir(dir_path: Path) -> str | None:
+    """Read the ``parent_direction`` frontmatter field from a direction directory
+    without constructing a full ``Direction`` record."""
+    direction_md = dir_path / "direction.md"
+    if not direction_md.exists():
+        return None
+    post = frontmatter.load(str(direction_md))
+    raw_frontmatter: dict[str, Any] = dict(post.metadata or {})
+    raw = raw_frontmatter.get("parent_direction")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def resolve_direction_chain(
+    direction: Direction,
+    software_factory_root: Path,
+) -> list[Direction | MissingDirection]:
+    """Walk ``parent_direction`` links recursively and return the chain from
+    oldest ancestor to ``direction`` (inclusive), capped at depth 8.
+
+    Returns a list of ``Direction`` records (ancestors + current) and/or
+    ``MissingDirection`` sentinels for unparseable or missing directories.
+    """
+    chain: list[Direction | MissingDirection] = []
+    visited: set[str] = set()
+    current_ref = direction.parent_direction
+
+    while current_ref is not None:
+        if current_ref in visited:
+            break
+        visited.add(current_ref)
+
+        if len(chain) >= 8:
+            break
+
+        parent_dir = _find_direction_dir(current_ref, software_factory_root)
+        if parent_dir is None:
+            chain.append(MissingDirection(id_slug=current_ref))
+            break
+
+        try:
+            parent = parse_direction_dir(direction.app, parent_dir)
+        except (FileNotFoundError, ValueError):
+            chain.append(MissingDirection(id_slug=current_ref))
+            break
+
+        chain.append(parent)
+        current_ref = parent.parent_direction
+
+    chain.reverse()
+    chain.append(direction)
+    return chain
