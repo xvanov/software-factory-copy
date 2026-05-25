@@ -127,7 +127,7 @@ def _build_pm_prompt(direction: Direction, context_prelude: str) -> str:
     parts.append(context_prelude.rstrip())
     parts.append("\n---\n# Direction\n")
     parts.append(f"id: {direction.id}\nslug: {direction.slug}\napp: {direction.app}\n")
-    parts.append(f"frontmatter: {json.dumps(direction.raw_frontmatter)}\n")
+    parts.append(f"frontmatter: {json.dumps(direction.raw_frontmatter, default=str)}\n")
     parts.append("\n## direction.md\n")
     parts.append(direction.raw_body.rstrip())
     if flow_text:
