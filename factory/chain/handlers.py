@@ -787,18 +787,25 @@ def handle_test_implementation(
         from factory.chain.branch import ensure_feature_branch
         from factory.runner import LLMConfig, sandbox_run
 
-        # Locate the app repo. Phase-2 acceptance is dry-run only; real-run
-        # path is plausible-on-inspection.
-        repo_path = software_factory_root / "apps" / story.app
-        story_file_path_obj = repo_path / story.story_file_path
-
-        # Switch the REAL app source tree onto the per-story feature branch
-        # BEFORE the sandbox starts editing/committing. Test-Implementer's
-        # commits would otherwise land on whatever was checked out (typically
-        # ``main``) — exactly the bug the first bootstrap-context run hit.
-        # ``resolve_app_repo_path`` returns the actual repo root (e.g.
-        # ``~/sacrifice/``); ``apps/<app>/`` only holds factory metadata.
+        # Locate the actual app source tree. ``software_factory_root/apps/<app>``
+        # is the factory's per-app metadata directory (config + directions +
+        # stories), NOT the app source. The sandbox MUST run inside the real
+        # repo (e.g. ``~/sacrifice/``) so its tool calls, ``git status``, and
+        # any pytest invocation operate against actual code. The previous
+        # mismatch caused the sandbox to commit ``apps/<app>/stories/`` files
+        # to factory main and made the pytest gate run against an empty
+        # directory.
         target_repo = resolve_app_repo_path(app_config, software_factory_root)
+        repo_path = target_repo
+        # Story file lives under the FACTORY tree (it's chain metadata), not in
+        # the app repo. Compose its absolute path from the factory root.
+        story_file_path_obj = software_factory_root / "apps" / story.app / story.story_file_path
+
+        # Switch the real app source tree onto the per-story feature branch
+        # BEFORE the sandbox starts editing/committing. Without this the SDK's
+        # ``git commit`` calls would land on whatever was checked out
+        # (typically ``main``) — exactly the bug the first bootstrap-context
+        # run hit.
         branch = ensure_feature_branch(
             target_repo,
             story_id=story.github_issue_number,
@@ -903,14 +910,17 @@ def handle_dev(
         )
         from factory.runner import LLMConfig, sandbox_run
 
-        repo_path = software_factory_root / "apps" / story.app
-        story_file_path_obj = repo_path / story.story_file_path
+        # See ``handle_test_implementation`` for the repo-path rationale: the
+        # sandbox MUST operate inside the real app source tree, not the
+        # factory's per-app metadata directory.
+        target_repo = resolve_app_repo_path(app_config, software_factory_root)
+        repo_path = target_repo
+        story_file_path_obj = software_factory_root / "apps" / story.app / story.story_file_path
         difficulty = story.current_model_tier
 
         # Make sure dev runs on the feature branch (idempotent — test_impl
         # already created it, but a retry / chain restart could have switched
         # away). ``ensure_feature_branch`` raises if the tree is dirty.
-        target_repo = resolve_app_repo_path(app_config, software_factory_root)
         branch = ensure_feature_branch(
             target_repo,
             story_id=story.github_issue_number,
@@ -1200,6 +1210,8 @@ def handle_tech_writer(
     # REVIEWER_REQUESTED_CHANGES so the chain routes back through the dev loop
     # instead of pretending docs are current.
     if not dry_run:
+        from factory.app_config import resolve_app_repo_path
+
         updates_raw = result.get("context_updates") or []
         updates = [
             ContextUpdate(
@@ -1207,7 +1219,10 @@ def handle_tech_writer(
             )
             for u in updates_raw
         ]
-        repo_path = software_factory_root / "apps" / story.app
+        # Context lives in the real app repo (e.g. ``~/sacrifice/context/``),
+        # not the factory's per-app metadata directory. Same root cause as
+        # the test_impl / dev repo_path fix.
+        repo_path = resolve_app_repo_path(app_config, software_factory_root)
         try:
             apply_context_updates(updates, repo_path)
         except Exception as exc:

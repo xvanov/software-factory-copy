@@ -16,12 +16,22 @@ from factory.chain.state_machine import StoryRecord, StoryState
 def temp_root(tmp_path: Path) -> Path:
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
     (tmp_path / "apps" / "sacrifice").mkdir(parents=True, exist_ok=True)
+    # The handler resolves the app repo via ``resolve_app_repo_path``; the
+    # default ``../<name>`` would resolve outside the tmp tree. Create an
+    # in-tree sacrifice repo dir the fixture can point at.
+    (tmp_path / "sacrifice").mkdir(parents=True, exist_ok=True)
     return tmp_path
 
 
 @pytest.fixture
-def app_config() -> AppConfig:
-    return AppConfig(name="sacrifice", repo="x/y")
+def app_config(temp_root: Path) -> AppConfig:
+    # Point ``app_repo_path`` at the in-tree sacrifice/ dir so context updates
+    # land inside the tmp tree rather than chasing a ``../sacrifice`` sibling.
+    return AppConfig(
+        name="sacrifice",
+        repo="x/y",
+        app_repo_path=str(temp_root / "sacrifice"),
+    )
 
 
 def _story_at_reviewer_done(root: Path) -> StoryRecord:
@@ -76,7 +86,9 @@ def test_real_run_writes_to_canonical_path(temp_root: Path, app_config: AppConfi
         s, app_config, temp_root, dry_run=False, db_path=db, fixture=fixture
     )
     assert result.next_state == StoryState.TECH_WRITER_DONE
-    target = temp_root / "apps" / "sacrifice" / "context" / "current-state.md"
+    # Context update lands in the REAL app repo (resolved via app_repo_path),
+    # not the factory's apps/<app>/ metadata dir.
+    target = temp_root / "sacrifice" / "context" / "current-state.md"
     assert target.exists()
     written = target.read_text(encoding="utf-8")
     assert "SQLite" in written
@@ -108,6 +120,6 @@ def test_forbidden_path_raises_error_and_does_not_write(
     assert s.state == StoryState.REVIEWER_REQUESTED_CHANGES.value
     assert result.error and "context update failed" in result.error
     assert s.error and "context update failed" in s.error
-    # The forbidden file was NOT written.
-    forbidden = temp_root / "apps" / "sacrifice" / "context" / "decisions" / "0001-foo.md"
+    # The forbidden file was NOT written (in either path — assert both).
+    forbidden = temp_root / "sacrifice" / "context" / "decisions" / "0001-foo.md"
     assert not forbidden.exists()
