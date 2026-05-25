@@ -381,6 +381,17 @@ def tick(
                     db_path=db,
                 )
             except Exception as exc:
+                # Roll the story back to its pre-handler state and stash the
+                # error on the StoryRecord. Handlers typically advance the
+                # story into a foo_in_progress state and persist it BEFORE
+                # invoking the LLM, so an exception leaves the row stuck —
+                # ``_dispatch_for_story`` returns None for *_in_progress
+                # states (those are webhook-driven), and the next tick can't
+                # retry. Rolling back makes handler crashes recoverable: the
+                # next tick will dispatch the same handler again.
+                story.state = from_state
+                story.error = repr(exc)
+                H.persist_story(story, db)
                 summary.errors.append((story.slug, repr(exc)))
                 break
             summary.handler_runs.append((story.slug, from_state, story.state))
