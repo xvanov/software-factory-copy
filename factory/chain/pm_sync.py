@@ -174,24 +174,25 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
                     "rationale": "Documentation-only direction; routed through the docs chain.",
                 }
             )
-        if direction.has_api_spec:
-            child_stories.append(
-                {
-                    "title": f"Implement API: {title_short}",
-                    "scope": "backend",
-                    "chain_kind": "tdd",
-                    "rationale": "Direction declares an API contract; one backend story to implement it.",
-                }
-            )
-        if direction.has_flow:
-            child_stories.append(
-                {
-                    "title": f"Implement UI flow: {title_short}",
-                    "scope": "frontend",
-                    "chain_kind": "tdd",
-                    "rationale": "Direction declares a user flow; one frontend story to implement it.",
-                }
-            )
+        else:
+            if direction.has_api_spec:
+                child_stories.append(
+                    {
+                        "title": f"Implement API: {title_short}",
+                        "scope": "backend",
+                        "chain_kind": "tdd",
+                        "rationale": "Direction declares an API contract; one backend story to implement it.",
+                    }
+                )
+            if direction.has_flow:
+                child_stories.append(
+                    {
+                        "title": f"Implement UI flow: {title_short}",
+                        "scope": "frontend",
+                        "chain_kind": "tdd",
+                        "rationale": "Direction declares a user flow; one frontend story to implement it.",
+                    }
+                )
         if not child_stories:
             child_stories.append(
                 {
