@@ -19,8 +19,8 @@ needed — `uv run` handles activation):
 ```bash
 uv run pytest -q
 uv run factory --help
-uv run factory pm-sync --app sacrifice
-uv run factory tick --app sacrifice
+uv run factory pm-sync --app <app>
+uv run factory tick --app <app>
 ```
 
 If you see `ModuleNotFoundError` for `frontmatter`, `sqlmodel`, or `pytest`,
