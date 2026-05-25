@@ -37,7 +37,11 @@ gates:
   lint_command: "ruff check . && cd frontend && npm run lint"
   format_check_command: "ruff format --check ."
   type_check_command: "mypy backend"
-  test_command: "pytest"
+  # Run from backend/ — sacrifice's pyproject.toml + pytest config live
+  # there, not at the repo root. ``pytest`` from the root yields
+  # "no tests directory" and the chain's red/green gate misreads as
+  # always-red.
+  test_command: "cd backend && python -m pytest -q"
   coverage_command: "pytest --cov=backend --cov-report=json --cov-fail-under=70"
   e2e_command: "npx playwright test"
   mutation_testing: false

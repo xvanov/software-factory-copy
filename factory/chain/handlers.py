@@ -878,12 +878,49 @@ def handle_test_implementation(
                 dry_run=False,
                 direction_chain=ti_chain,
                 software_factory_root=software_factory_root,
+                test_command=app_config.gates.test_command,
             )
         )
+
+        # Commit whatever the sandbox left uncommitted. The
+        # ``test_implementer.md`` persona prompt promises "the chain does the
+        # actual git commit" — without this step the test files stay in the
+        # working tree and the next handler (Dev) inherits them. ``git diff
+        # HEAD~..HEAD`` then attributes the test files to Dev's commit, and
+        # the "Dev modified test files" guard in ``handle_dev`` blocks the
+        # story to BLOCKED_TESTS_NEED_CLARIFICATION. Onboarder uses the same
+        # pattern — see ``handle_docs_onboarder``.
+        from factory.chain.branch import _run_git
+
+        try:
+            _run_git(target_repo, "add", "-A")
+            status_after_add = _run_git(
+                target_repo, "status", "--porcelain"
+            ).stdout.strip()
+            if status_after_add:
+                _run_git(
+                    target_repo,
+                    "commit",
+                    "-m",
+                    f"test: red tests for story {story.id} ({story.slug})\n\n"
+                    f"Produced by Test-Implementer for direction "
+                    f"{story.direction_id}.",
+                )
+        except Exception as exc:
+            # A commit failure here is a chain bug, not a persona failure —
+            # surface it as an error on the story so it shows up in
+            # ``factory why`` instead of silently letting Dev inherit a
+            # dirty tree.
+            story.error = f"test_implementer commit failed: {exc}"
+            persist_story(story, db)
+            raise
+
         # The sandbox returned ok if tests are red (which is the desired outcome).
         result = {
             "files_written": run_res.files_changed,
-            "test_command_run": app_config.deploy.health_check_command or "(test_command)",
+            "test_command_run": app_config.gates.test_command
+            or app_config.deploy.health_check_command
+            or "(test_command)",
             "exit_code": 0 if run_res.test_run_passed else 1,
             "slop_detected": bool(run_res.test_run_passed),
             "output_excerpt": run_res.summary[-2000:],
@@ -1011,6 +1048,7 @@ def handle_dev(
                 dry_run=False,
                 direction_chain=dev_chain,
                 software_factory_root=software_factory_root,
+                test_command=app_config.gates.test_command,
             )
         )
 

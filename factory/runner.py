@@ -220,9 +220,35 @@ def _scan_repo_for_changed_files(repo_path: Path) -> list[str]:
     return files
 
 
-def _run_pytest(repo_path: Path) -> tuple[bool, str]:
-    """Return (passed, captured_output). Pytest is invoked if a tests/ dir exists."""
+def _run_pytest(repo_path: Path, test_command: str | None = None) -> tuple[bool, str]:
+    """Return (passed, captured_output) for the chain's post-sandbox test gate.
+
+    Resolution order:
+      1. If ``test_command`` is provided (typically from
+         ``app_config.gates.test_command``), run it verbatim via shell. This
+         lets monorepo apps like sacrifice — where pytest must run from
+         ``backend/`` not the repo root — declare the exact invocation.
+      2. Otherwise look for ``tests/`` or root-level ``test_*.py`` and run
+         ``python -m pytest -q`` from the repo root.
+      3. If neither path is viable, return ``(False, "no tests directory")``
+         so the caller can record a meaningful signal.
+    """
     import subprocess
+
+    if test_command:
+        try:
+            result = subprocess.run(
+                test_command,
+                shell=True,
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=600,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            return (False, f"test_command invocation failed: {exc}")
+        return (result.returncode == 0, result.stdout + "\n" + result.stderr)
 
     if not (repo_path / "tests").exists() and not list(repo_path.glob("test_*.py")):
         return (False, "no tests directory")
@@ -291,6 +317,7 @@ async def sandbox_run(
     max_iterations: int = 200,
     direction_chain: list[Any] | None = None,
     software_factory_root: Path | None = None,
+    test_command: str | None = None,
 ) -> RunResult:
     """Run a persona inside an OpenHands SDK sandbox against ``repo_path``.
 
@@ -512,7 +539,7 @@ async def sandbox_run(
         return RunResult(success=False, error=err, summary=err)
 
     files_changed = _scan_repo_for_changed_files(Path(repo_path))
-    test_passed, test_out = _run_pytest(Path(repo_path))
+    test_passed, test_out = _run_pytest(Path(repo_path), test_command=test_command)
 
     _record_run(
         persona=persona,
