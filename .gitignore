@@ -12,3 +12,4 @@ build/
 *.egg-info/
 state/*.db
 state/*.db-journal
+state/dry_run_scratch/

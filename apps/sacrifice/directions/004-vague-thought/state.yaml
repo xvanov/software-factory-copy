@@ -70,6 +70,24 @@ audit:
     - api_spec
     - explore_tag_or_artifacts
     - acceptance_criteria
+- ts: '2026-05-25T03:33:47.346984+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+    - acceptance_criteria
+- ts: '2026-05-25T03:34:36.015684+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+    - acceptance_criteria
 pm_result:
   type: feature
   priority: p2

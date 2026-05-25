@@ -1,5 +1,54 @@
-status: created
+status: pm-validated
 audit:
 - ts: '2026-05-25T03:18:00.000000+00:00'
   by: factory.directions.creator
   event: status -> created
+- ts: '2026-05-25T03:34:45.889584+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.97
+pm_result:
+  type: docs
+  priority: p3
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: 006 enrich-navigation-with-code-paths
+  tracker_body: "## Summary\nRewrite `context/navigation.md` so every existing `##\
+    \ When working on X` section includes both context-file references and repo-relative\
+    \ code-file references.\n\n## Why\nCurrent navigation only points to context docs.\
+    \ The direction states that listing actual code paths alongside those docs is\
+    \ much more useful as an \"open these first\" map for future agents and humans.\n\
+    \n## Backpressure check\nWHY is this ready to spawn? Because backpressure exists\
+    \ via a non-empty `api_spec.md`, and the direction includes explicit acceptance\
+    \ criteria.\n\n## Direction constraints\n- Only `context/navigation.md` may be\
+    \ modified.\n- Rewrite the file canonically; do not append artifacts.\n- Preserve\
+    \ the existing task scopes exactly as-is.\n- For each existing `## When working\
+    \ on <X>` section, include these subsections in this exact order:\n  1. `### Context\
+    \ files`\n  2. `### Code files`\n- Code references must be repo-relative.\n- Code\
+    \ references must exist and be relevant to the named task scope.\n- Canonical-paths\
+    \ enforcer must pass.\n\n## Acceptance criteria from direction\n- Every `## When\
+    \ working on X` section in `~/sacrifice/context/navigation.md` lists BOTH context\
+    \ files AND code files relevant to that task scope.\n- Code references use repo-relative\
+    \ paths (e.g. `backend/app/routes/goals.py`, not absolute paths).\n- Code references\
+    \ are accurate (the files exist and are relevant to the named task scope).\n-\
+    \ The list of task scopes is unchanged (no new sections; no sections removed).\n\
+    - File is rewritten as one canonical edit (no append-only artifacts).\n- Existing\
+    \ canonical-paths enforcer must pass: only `context/navigation.md` touched.\n\
+    - No code outside `context/` is modified.\n\n## PM notes\nWHY only one child story?\
+    \ Because this is single-scope: one canonical documentation file, one content\
+    \ rewrite, no code changes.\n\nWHY docs chain? Because the deliverable is only\
+    \ documentation under a canonical path, and executable verification would be secondary\
+    \ to the doc rewrite itself.\n"
+  child_stories:
+  - title: Rewrite context/navigation.md with code paths per task scope
+    scope: docs
+    chain_kind: docs
+    rationale: Single-file canonical documentation edit. The work is to enrich each
+      existing task-scope section with accurate repo-relative code paths while preserving
+      existing scope structure and touching no non-context files.
+  labels:
+  - docs
+  - priority/p3
+  confidence: 0.97
+tracker_issue: 27
