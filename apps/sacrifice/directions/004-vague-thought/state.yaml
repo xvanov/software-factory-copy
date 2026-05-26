@@ -97,6 +97,15 @@ audit:
     - api_spec
     - explore_tag_or_artifacts
     - acceptance_criteria
+- ts: '2026-05-26T00:23:21.744436+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+    - acceptance_criteria
 pm_result:
   type: feature
   priority: p2

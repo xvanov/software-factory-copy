@@ -1,114 +1,3 @@
-pm_result:
-  type: feature
-  priority: p1
-  has_sufficient_backpressure: true
-  missing: []
-  tracker_title: D008 camera-capture-pipeline
-  tracker_body: '## Summary
-
-    Build the shared camera capture and video upload pipeline for Sacrifice. WHY now?
-    Because pushup-counter and future physical-world goal types need a reusable capture
-    primitive and a reusable backend media ingestion path. This direction intentionally
-    separates infrastructure risk from per-goal proof-flow wiring.
-
-
-    ## What the direction explicitly includes
-
-    - Reusable Expo `CameraCapture` component at `frontend/components/CameraCapture.tsx`
-
-    - Permission handling for camera + microphone, including denied-permission UX
-    with settings and cancel actions
-
-    - Recording lifecycle UX: start, stop, elapsed timer, optional max duration, retake,
-    confirm
-
-    - Backend `POST /api/uploads/video` multipart upload endpoint per `api_spec.md`
-
-    - Backend `GET /api/uploads/{upload_id}` ownership-scoped metadata endpoint
-
-    - `media_uploads` table plus Alembic migration
-
-    - Configurable filesystem storage path rooted at `SACRIFICE_MEDIA_DIR`
-
-    - Upload service abstraction at `backend/app/services/uploads.py`
-
-    - Smoke Playwright API upload test
-
-    - Frontend unit test for denied-permission state
-
-    - Context docs for media module and updated architecture diagram
-
-
-    ## Why this matters
-
-    - WHY build shared infra instead of embedding in pushup flow? Reuse and isolation
-    of risk.
-
-    - WHY now? The first phone-camera proof type depends on it.
-
-    - WHY separate route/service/storage concerns? To keep routes thin and upload
-    behavior unit-testable.
-
-    - WHY docs in the same direction? This creates new cross-cutting system behavior
-    and storage conventions that future stories will depend on.
-
-
-    ## Scope assessment
-
-    This is multi-scope and epic-shaped: frontend capture UX, backend storage/API,
-    tests, and docs. Route to Analyst persona for scope refinement before spawning
-    issues if the chain requires stricter decomposition, because this direction naturally
-    spans more than 3 scope units.
-
-
-    ## Acceptance anchors to preserve
-
-    - Do not wire the component into a specific goal-type submission flow here
-
-    - Do not add server-side media processing/transcoding/CV analysis
-
-    - Do not implement streaming uploads
-
-    - Ensure ownership enforcement on metadata reads and goal association checks on
-    upload
-
-    - Ensure denied permissions do not crash the app
-
-
-    ## PM backpressure check
-
-    Backpressure is sufficient because both `flow.md` and `api_spec.md` are present
-    and specific.
-
-    '
-  child_stories:
-  - title: Build D008 Expo CameraCapture component and permission states
-    scope: frontend
-    chain_kind: tdd
-    rationale: WHY start here? User value begins at capture. This story covers the
-      reusable component, permission handling, recording controls, elapsed timer,
-      auto-stop, retake/confirm UX, and the denied-permission unit test.
-  - title: Build D008 backend video upload API and media storage service
-    scope: backend
-    chain_kind: tdd
-    rationale: WHY isolate backend work? The upload endpoint, ownership checks, persistence
-      model, config, storage pathing, and metadata fetch endpoint form a coherent
-      backend slice with clear API acceptance criteria.
-  - title: Add D008 upload smoke coverage and media context docs
-    scope: test
-    chain_kind: tdd
-    rationale: WHY separate verification/documentation? The direction explicitly requires
-      an API smoke test plus new media context and architecture updates; these validate
-      the contract and make the new subsystem legible to future work.
-  labels:
-  - feature
-  - priority/p1
-  - frontend
-  - backend
-  - test
-  - docs
-  - epic-shaped
-  confidence: 0.95
 tracker_issue: 35
 status: pm-validated
 audit:
@@ -117,3 +6,182 @@ audit:
   event: status -> pm-validated
   details:
     confidence: 0.95
+- ts: '2026-05-26T00:00:00+00:00'
+  by: manual
+  event: reset for re-PM with size-bounded decomposition
+- ts: '2026-05-26T00:23:44.080529+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.95
+pm_result:
+  type: feature
+  priority: p1
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D008 camera-capture-pipeline upload + Expo capture
+  tracker_body: '## Summary
+
+    D008 adds the shared camera-capture and video-upload infrastructure needed before
+    physical-world proof flows can work end to end. WHY now: pushup-counter and later
+    sensor-backed goal types need one reusable capture component and one backend upload
+    path instead of bespoke media plumbing per goal type.
+
+
+    ## What the direction explicitly requires
+
+    - Reusable `frontend/components/CameraCapture.tsx`
+
+    - Permission handling for camera + microphone, including denied state with open-settings
+    and cancel actions
+
+    - Recording UX: start/stop, elapsed timer, optional max duration, retake/confirm
+
+    - Backend `POST /api/uploads/video` multipart endpoint per `api_spec.md`
+
+    - Backend `GET /api/uploads/{upload_id}` ownership-scoped metadata endpoint
+
+    - `media_uploads` table with upload metadata persisted via Alembic migration
+
+    - Configurable storage root in `backend/app/config.py`
+
+    - `backend/app/services/uploads.py` service encapsulating write/path/hash/persistence
+
+    - E2E smoke test for API upload
+
+    - Frontend unit test for denied-permission rendering
+
+    - Docs updates in `context/modules/media.md` and `context/architecture-diagrams.md`
+
+
+    ## WHY this splits into multiple stories
+
+    Because bundling camera UI, migration, storage service, API routes, smoke coverage,
+    and docs into one backend/frontend lump would exceed the chain''s single-sandbox
+    limits. The safest path is thin vertical slices where each PR adds usable value
+    or de-risks the next PR.
+
+
+    ## Proposed sequence
+
+    1. Land storage config + persistence model + migration first so uploads have somewhere
+    canonical to persist.
+
+    2. Land upload service next so route logic stays thin and testable.
+
+    3. Land POST upload endpoint on top of the service.
+
+    4. Land GET metadata endpoint once records exist.
+
+    5. Land backend smoke coverage for POST upload behavior.
+
+    6. Land frontend denied-permission slice first because permission failure is the
+    sharpest UX edge.
+
+    7. Land reusable recording component behavior once permission shell exists.
+
+    8. Land docs after the code paths are real.
+
+
+    ## Key product questions already answered by the direction
+
+    - WHY shared infra instead of goal-specific wiring? Reuse across future sensor/media
+    proof types.
+
+    - WHY now? D010 validation should not be blocked on proving camera plumbing at
+    the same time.
+
+    - WHY whole-file multipart only? Streaming and server-side media processing are
+    explicitly out of scope.
+
+
+    ## Non-goals to preserve
+
+    - Do not wire this into a specific goal-type proof flow in this direction.
+
+    - Do not add transcoding, frame extraction, or CV analysis.
+
+    - Do not treat local-save/retry UX from `flow.md` as required acceptance unless
+    separately directed in code scope; the hard acceptance here is the reusable capture
+    component and backend upload pipeline.'
+  child_stories:
+  - title: D008 media_uploads model + config + Alembic migration
+    scope: backend
+    chain_kind: tdd
+    rationale: 'WHY first? Every upload route depends on a canonical persistence shape
+      and storage root setting. This is a small vertical foundation slice: schema,
+      model, and config only, with no route complexity yet.'
+    estimated_new_files: 2
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 140
+  - title: D008 uploads service for pathing, hashing, write, persistence
+    scope: backend
+    chain_kind: tdd
+    rationale: WHY separate the service? The direction explicitly wants a thin route
+      and a unit-testable service. Landing this before the endpoints reduces route
+      risk and keeps business logic isolated.
+    estimated_new_files: 2
+    estimated_modified_files: 1
+    estimated_sandbox_iterations: 170
+  - title: D008 POST /api/uploads/video multipart upload endpoint
+    scope: backend
+    chain_kind: tdd
+    rationale: 'WHY its own slice? This is the first user-visible backend value: authenticated
+      upload with validation, ownership checks for optional goal_id, and 201 response
+      shape. It depends on the model/service story landing first.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 180
+  - title: D008 GET /api/uploads/{upload_id} owner metadata endpoint
+    scope: backend
+    chain_kind: tdd
+    rationale: WHY split from POST? Read access control and response serialization
+      are a separate risk surface from write/upload handling. Keeping them separate
+      avoids one oversized routes PR.
+    estimated_new_files: 0
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 120
+  - title: D008 smoke test for video upload API success path
+    scope: test
+    chain_kind: tdd
+    rationale: WHY separate test slice? The acceptance asks for an E2E `@smoke` HTTP
+      upload test. Isolating it lets the chain validate the upload contract after
+      POST exists without coupling more backend logic into the same PR.
+    estimated_new_files: 1
+    estimated_modified_files: 1
+    estimated_sandbox_iterations: 110
+  - title: D008 CameraCapture denied-permission state + unit test
+    scope: frontend
+    chain_kind: tdd
+    rationale: WHY start frontend here? Permission denial is the highest-risk crash/UX
+      edge and has explicit acceptance criteria plus a required unit test. This lands
+      a safe shell before recording-state complexity.
+    estimated_new_files: 2
+    estimated_modified_files: 1
+    estimated_sandbox_iterations: 170
+  - title: D008 CameraCapture recording, timer, retake, confirm flow
+    scope: frontend
+    chain_kind: tdd
+    rationale: WHY a second frontend slice? Recording lifecycle, elapsed timer, max-duration
+      auto-stop, and confirm callback are enough behavior for their own PR. Splitting
+      from permission handling keeps the component story within one dev pass.
+    estimated_new_files: 0
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 190
+  - title: D008 media context + architecture diagram rewrite
+    scope: docs
+    chain_kind: docs
+    rationale: WHY docs-only? The direction explicitly asks for `context/modules/media.md`
+      and a rewrite of `context/architecture-diagrams.md`. These are canonical docs
+      outputs and should not be bundled with code.
+    estimated_new_files: 1
+    estimated_modified_files: 1
+    estimated_sandbox_iterations: 70
+  labels:
+  - feature
+  - priority/p1
+  - backend
+  - frontend
+  - media
+  - uploads
+  confidence: 0.95
