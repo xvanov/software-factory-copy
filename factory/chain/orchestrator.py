@@ -265,6 +265,128 @@ def _count_app_in_flight(db: Path, app: str, exclude_story_id: int | None = None
     )
 
 
+# Mapping from a stranded ``*_in_progress`` state back to its
+# dispatch-eligible predecessor. Used by ``_prune_stale_in_progress`` to
+# recover rows that didn't reach the handler's normal exit (process kill,
+# uncaught exception, dirty-tree race, retry-cap change mid-attempt).
+_STALE_RECOVERY_MAP: dict[str, str] = {
+    "sm_in_progress": "story_created",
+    "test_design_in_progress": "sm_done",
+    "test_implementation_in_progress": "test_design_done",
+    "harness_precheck_in_progress": "tests_red",
+    "dev_in_progress": "dev_retry",
+    "reviewer_in_progress": "tests_green",
+    "tech_writer_in_progress": "reviewer_done",
+    "docs_sm_in_progress": "story_created",
+    "docs_onboarder_in_progress": "docs_sm_done",
+}
+
+
+# How long an ``*_in_progress`` row can sit without a row-level update
+# before the cleanup pass considers it stranded. Real handler invocations
+# can take 10+ minutes (long dev sandboxes); 30 minutes leaves comfortable
+# headroom for the tail of any single run while still catching genuine
+# stalls within a useful operator-attention window.
+_STALE_THRESHOLD_SECONDS = 30 * 60
+
+
+def _prune_stale_in_progress(
+    db: Path,
+    app: str,
+    *,
+    settings: Any,
+    root: Path,
+    now: "datetime | None" = None,
+) -> list[tuple[str, str, str]]:
+    """Recover stories stranded in ``*_in_progress`` from a crashed tick.
+
+    A ``StoryRecord`` rolls into an ``_in_progress`` state when a handler
+    starts; the handler exits normally by transitioning OUT of that state.
+    Several failure modes can break that contract:
+
+      * The tick process is killed mid-sandbox (SIGTERM, OOM).
+      * A subtle inner-loop bug calls a handler twice and the second call
+        raises ``IllegalTransitionError`` before the first has transitioned
+        out.
+      * ``_MAX_DEV_RETRIES`` (or another guarded threshold) is lowered
+        between ticks while a row is mid-attempt — the in-flight handler
+        completes under the old regime but the row's state is invalidated
+        for the new regime.
+
+    Once stranded, ``_dispatch_for_story`` returns ``None`` for
+    ``*_in_progress`` (those slots are webhook-driven), so the chain has
+    no way to nudge the row forward without operator intervention.
+
+    This pass detects rows older than ``_STALE_THRESHOLD_SECONDS`` and
+    rolls them back to the most-recent dispatch-eligible state per
+    ``_STALE_RECOVERY_MAP``. For ``dev_in_progress`` we ALSO clamp
+    ``dev_retries`` to ``MAX_DEV_RETRIES - 1`` so the next dispatch gives
+    the story exactly one fresh attempt and then exhausts naturally —
+    without that clamp, a row stranded under the old cap=10 regime would
+    immediately exhaust on its first new dispatch under cap=3, which is
+    surprising and wastes the diagnostic the operator might want from a
+    single observed-under-new-cap run.
+
+    Emits one ``stale_recovery`` event per recovered story to the
+    per-story log so operators can see what was nudged and why. Returns
+    the list of (slug, from_state, to_state) tuples; the orchestrator
+    surfaces these in ``TickSummary.handler_runs`` as
+    ``"<from_state>(stale)"``.
+    """
+    from datetime import UTC, datetime as _dt
+
+    from factory.chain.event_log import log_story_event
+    from factory.chain.handlers import _MAX_DEV_RETRIES, persist_story
+
+    now_ts = (now or _dt.now(UTC)).timestamp()
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        candidates = session.exec(
+            select(StoryRecord).where(StoryRecord.app == app)
+        ).all()
+
+    recovered: list[tuple[str, str, str]] = []
+    for story in candidates:
+        target = _STALE_RECOVERY_MAP.get(story.state)
+        if target is None:
+            continue
+        try:
+            updated_iso = story.updated_at or story.created_at
+            updated_ts = _dt.fromisoformat(updated_iso).timestamp()
+        except (TypeError, ValueError):
+            updated_ts = 0  # treat unparseable timestamps as ancient
+        if (now_ts - updated_ts) < _STALE_THRESHOLD_SECONDS:
+            continue
+
+        from_state = story.state
+        story.state = target
+        # Clamp dev_retries so the recovered row gets one fresh shot
+        # under whatever the current cap is, instead of insta-exhausting
+        # on a stale count from a previous cap regime.
+        if from_state == "dev_in_progress" and story.dev_retries >= _MAX_DEV_RETRIES:
+            story.dev_retries = max(0, _MAX_DEV_RETRIES - 1)
+        story.error = (
+            f"stale-state recovery: rolled back from {from_state!r} "
+            f"(no row update for >{_STALE_THRESHOLD_SECONDS // 60} min)"
+        )
+        persist_story(story, db)
+        recovered.append((story.slug, from_state, target))
+        log_story_event(
+            story.id,
+            "stale_recovery",
+            {
+                "from_state": from_state,
+                "to_state": target,
+                "dev_retries_after_clamp": story.dev_retries,
+                "age_seconds": int(now_ts - updated_ts),
+            },
+            software_factory_root=root,
+            slug_hint=story.slug,
+        )
+
+    return recovered
+
+
 def _build_current_state(
     *,
     root: Path,
@@ -343,6 +465,19 @@ def tick(
 
     settings = load_settings(root)
     summary = TickSummary(app=app, dry_run=dry_run)
+
+    # Recover stories stranded in ``*_in_progress`` from a crashed tick or
+    # a prior config-change regime (e.g. retry-cap lowered while a row was
+    # mid-attempt). Pure DB rewrite — no LLM / git work. See the function
+    # docstring for the recovery mapping.
+    if not dry_run:
+        try:
+            recovered = _prune_stale_in_progress(db, app, settings=settings, root=root)
+            for slug, from_state, to_state in recovered:
+                summary.handler_runs.append((slug, f"{from_state}(stale)", to_state))
+        except Exception as exc:
+            summary.errors.append((app, f"stale-state recovery failed (non-fatal): {exc!r}"))
+
     stories = H.stories_in_flight(app, db)
 
     # Prune worktrees for stories that no longer need them (terminal
