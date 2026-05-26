@@ -14,12 +14,23 @@ from factory.chain.state_machine import StoryRecord, StoryState
 
 @pytest.fixture
 def temp_root(tmp_path: Path) -> Path:
+    import subprocess
+
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
     (tmp_path / "apps" / "sacrifice").mkdir(parents=True, exist_ok=True)
-    # The handler resolves the app repo via ``resolve_app_repo_path``; the
-    # default ``../<name>`` would resolve outside the tmp tree. Create an
-    # in-tree sacrifice repo dir the fixture can point at.
-    (tmp_path / "sacrifice").mkdir(parents=True, exist_ok=True)
+    # The handler resolves the app repo via ``resolve_app_repo_path`` and
+    # then creates a per-story git worktree under ``state/worktrees/``.
+    # The source repo MUST be a real git repo (``git worktree add`` needs
+    # ``.git``) — initialise one with a single commit so worktree creation
+    # succeeds.
+    src = tmp_path / "sacrifice"
+    src.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=str(src), check=True)
+    subprocess.run(["git", "config", "user.email", "t@e.x"], cwd=str(src), check=True)
+    subprocess.run(["git", "config", "user.name", "T E"], cwd=str(src), check=True)
+    (src / "README.md").write_text("# test\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(src), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(src), check=True)
     return tmp_path
 
 
@@ -86,11 +97,18 @@ def test_real_run_writes_to_canonical_path(temp_root: Path, app_config: AppConfi
         s, app_config, temp_root, dry_run=False, db_path=db, fixture=fixture
     )
     assert result.next_state == StoryState.TECH_WRITER_DONE
-    # Context update lands in the REAL app repo (resolved via app_repo_path),
-    # not the factory's apps/<app>/ metadata dir.
-    target = temp_root / "sacrifice" / "context" / "current-state.md"
-    assert target.exists()
-    written = target.read_text(encoding="utf-8")
+    # Post-worktree refactor: the file lands in the per-story worktree,
+    # not the source repo's working tree. The worktree shares ``.git``
+    # with the source repo so the commit will appear there once we merge;
+    # for this test we just confirm the file exists under the worktree.
+    worktree_root = temp_root / "state" / "worktrees"
+    written_files = list(worktree_root.glob("**/context/current-state.md"))
+    assert written_files, (
+        f"context/current-state.md should have been written under "
+        f"{worktree_root}; tree:\n"
+        + "\n".join(str(p) for p in worktree_root.glob("**/*") if p.is_file())
+    )
+    written = written_files[0].read_text(encoding="utf-8")
     assert "SQLite" in written
 
 

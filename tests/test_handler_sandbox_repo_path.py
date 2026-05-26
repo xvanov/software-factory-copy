@@ -138,11 +138,22 @@ def test_handle_test_implementation_uses_real_app_repo(
     )
 
     assert captured["persona"] == "test_implementer"
-    assert captured["repo_path"] == target, (
-        f"repo_path should be the real app source tree {target}, "
-        f"got {captured['repo_path']!r}. This is Bug A: the sandbox was "
-        f"pointed at the factory's metadata dir."
+    # Post-worktree refactor: ``repo_path`` is the per-story worktree under
+    # ``state/worktrees/``, NOT the source app repo. The worktree is a real
+    # git working tree sharing ``.git`` with the source repo, so commits made
+    # there land on the per-story feature branch — Bug A's symptom (commits
+    # leaking onto factory main) is still impossible. The original-intent
+    # check ("don't point sandbox at the factory metadata dir") is satisfied:
+    # the worktree path lives under ``factory_root/state/worktrees/...``.
+    repo_path = captured["repo_path"]
+    assert repo_path is not None
+    expected_prefix = factory_root / "state" / "worktrees"
+    assert str(repo_path).startswith(str(expected_prefix)), (
+        f"repo_path should be a per-story worktree under {expected_prefix}, "
+        f"got {repo_path!r}. (Bug A check: must not be the app metadata dir.)"
     )
+    # The worktree is alive on disk and shares git with the source repo.
+    assert (Path(repo_path) / ".git").exists()
     # The story file lives under the factory tree, not the app repo.
     assert str(captured["story_path"]).startswith(str(factory_root)), (
         "story_path should live under the factory metadata tree"
@@ -187,7 +198,14 @@ def test_handle_dev_uses_real_app_repo(
     )
 
     assert captured["persona"] == "dev"
-    assert captured["repo_path"] == target, (
-        f"repo_path should be the real app source tree {target}, "
-        f"got {captured['repo_path']!r}. Bug A regression."
+    # Same worktree shape as the test_implementation test above. The sandbox
+    # runs in a per-story worktree under ``state/worktrees/`` that shares
+    # ``.git`` with the source repo, so Bug A (commits leaking onto factory
+    # main) remains impossible while parallel stories now have isolated trees.
+    repo_path = captured["repo_path"]
+    expected_prefix = factory_root / "state" / "worktrees"
+    assert str(repo_path).startswith(str(expected_prefix)), (
+        f"repo_path should be a per-story worktree under {expected_prefix}, "
+        f"got {repo_path!r}. Bug A regression."
     )
+    assert (Path(repo_path) / ".git").exists()

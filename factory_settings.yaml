@@ -1,10 +1,14 @@
 caps:
-  global_concurrent_agents: 2
-  # 1 per repo: stories share a single working-tree checkout
-  # (``app_repo_path``), so two stories running concurrently race on
-  # ``ensure_feature_branch`` and one hits "working tree is dirty". A
-  # worktree-per-story design would let this go back to 2.
-  per_repo_concurrent_agents: 1
+  # Multi-app parallelism cap. 10 is generous — each agent runs in its
+  # own git worktree under ``state/worktrees/`` so there's no shared
+  # working-tree contention. Higher caps work fine if hardware + hourly
+  # spend allow.
+  global_concurrent_agents: 10
+  # Per-repo cap — now decoupled from working-tree contention thanks to
+  # ``factory.chain.worktree``. Each in-flight story gets its own
+  # private worktree on disk so 5 stories can run in parallel against a
+  # single app without racing on ``ensure_feature_branch``.
+  per_repo_concurrent_agents: 5
   daily_spend_usd: 100
   hourly_spend_usd: 15
 queues:

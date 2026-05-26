@@ -26,6 +26,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.app_config import AppConfig
 from factory.chain.event_log import log_story_event
+from factory.chain.worktree import ensure_worktree_for_story
 from factory.chain.state_machine import (
     EVENT_DEV_EXHAUSTED,
     EVENT_DEV_STARTED,
@@ -72,6 +73,42 @@ class HandlerResult:
     next_state: StoryState
     payload: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Per-story worktree helper
+# --------------------------------------------------------------------------- #
+
+
+def _writing_worktree(
+    app_config: AppConfig,
+    software_factory_root: Path,
+    story: StoryRecord,
+) -> Path:
+    """Resolve (and lazily create) the per-story worktree the chain writes
+    into.
+
+    All "writing" handlers — those that run a sandbox, commit, or push —
+    must use this instead of ``resolve_app_repo_path``. The source repo
+    at ``app_repo_path`` is the operator's checkout and is treated as
+    read-only by the chain; each in-flight story gets its own private
+    worktree under ``state/worktrees/`` so multiple sandboxes can run
+    in parallel without racing on a shared working tree.
+
+    Read-only callsites (context-prelude scans) keep using
+    ``resolve_app_repo_path`` because they don't mutate state.
+    """
+    from factory.app_config import resolve_app_repo_path
+
+    source_repo = resolve_app_repo_path(app_config, software_factory_root)
+    return ensure_worktree_for_story(
+        source_repo,
+        software_factory_root=software_factory_root,
+        app=story.app,
+        story_id=story.github_issue_number,
+        slug=story.slug,
+        base_branch=app_config.default_branch or "main",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -830,36 +867,20 @@ def handle_test_implementation(
         from factory.chain.branch import ensure_feature_branch
         from factory.runner import LLMConfig, sandbox_run
 
-        # Locate the actual app source tree. ``software_factory_root/apps/<app>``
-        # is the factory's per-app metadata directory (config + directions +
-        # stories), NOT the app source. The sandbox MUST run inside the real
-        # repo (the path declared in apps/<app>/config.yaml::app_repo_path,
-        # typically a sibling of the factory root) so tool calls, ``git status``, and
-        # any pytest invocation operate against actual code. The previous
-        # mismatch caused the sandbox to commit ``apps/<app>/stories/`` files
-        # to factory main and made the pytest gate run against an empty
-        # directory.
-        target_repo = resolve_app_repo_path(app_config, software_factory_root)
+        # Each in-flight story gets its own private git worktree under
+        # ``state/worktrees/<app>-<id>-<slug>/`` so multiple sandboxes
+        # can run in parallel without racing on a shared working tree.
+        # The worktree is checked out on the per-story feature branch
+        # automatically — no separate ``ensure_feature_branch`` call.
+        target_repo = _writing_worktree(app_config, software_factory_root, story)
         repo_path = target_repo
         # Story file lives under the FACTORY tree (it's chain metadata), not in
         # the app repo. Compose its absolute path from the factory root.
         story_file_path_obj = software_factory_root / "apps" / story.app / story.story_file_path
 
-        # Switch the real app source tree onto the per-story feature branch
-        # BEFORE the sandbox starts editing/committing. Without this the SDK's
-        # ``git commit`` calls would land on whatever was checked out
-        # (typically ``main``) — exactly the bug the first bootstrap-context
-        # run hit.
-        branch = ensure_feature_branch(
-            target_repo,
-            story_id=story.github_issue_number,
-            slug=story.slug,
-            base_branch=app_config.default_branch or "main",
-            # Stash any leftover dirty tree from a previous story's
-            # crashed/exhausted sandbox so the test_impl handover doesn't
-            # block. Stashed work stays recoverable via ``git stash list``.
-            stash_dirty=True,
-        )
+        from factory.chain.branch import feature_branch_name
+
+        branch = feature_branch_name(story.github_issue_number, story.slug)
         story.github_branch = branch
         persist_story(story, db)
 
@@ -1002,35 +1023,22 @@ def handle_dev(
             payload["test_run_passed"] = False
             payload["summary"] = "Dry-run dev failure: tests still red."
     else:
-        from factory.app_config import resolve_app_repo_path
         from factory.chain.branch import (
             _run_git,
-            ensure_feature_branch,
+            feature_branch_name,
             find_test_files_in_diff,
         )
         from factory.runner import LLMConfig, sandbox_run
 
-        # See ``handle_test_implementation`` for the repo-path rationale: the
-        # sandbox MUST operate inside the real app source tree, not the
-        # factory's per-app metadata directory.
-        target_repo = resolve_app_repo_path(app_config, software_factory_root)
+        # Dev runs in the same per-story worktree test_impl already created.
+        # If test_impl wasn't run yet (e.g. retry path entered directly),
+        # ``_writing_worktree`` will create it on demand.
+        target_repo = _writing_worktree(app_config, software_factory_root, story)
         repo_path = target_repo
         story_file_path_obj = software_factory_root / "apps" / story.app / story.story_file_path
         difficulty = story.current_model_tier
 
-        # Make sure dev runs on the feature branch (idempotent — test_impl
-        # already created it, but a retry / chain restart could have switched
-        # away). Stash any leftover dirty tree (e.g. from a prior dev
-        # iteration that exhausted iterations without committing) so the
-        # switch succeeds; stashed work stays recoverable via
-        # ``git stash list``.
-        branch = ensure_feature_branch(
-            target_repo,
-            story_id=story.github_issue_number,
-            slug=story.slug,
-            base_branch=app_config.default_branch or "main",
-            stash_dirty=True,
-        )
+        branch = feature_branch_name(story.github_issue_number, story.slug)
         story.github_branch = branch
         persist_story(story, db)
 
@@ -1113,43 +1121,47 @@ def handle_dev(
         # run) to pick it up without forensic stash-archaeology. The
         # story still terminates in BLOCKED_TESTS_NEED_CLARIFICATION but
         # the branch exists at origin and any partial code is committed.
-        from factory.chain.branch import _run_git as _git
-        from factory.app_config import resolve_app_repo_path
-
-        target_repo = resolve_app_repo_path(app_config, software_factory_root)
+        #
+        # Dry-run skips the commit/push entirely — there's no real work
+        # to preserve and ``_writing_worktree`` would try to ``git
+        # worktree add`` against a fixture repo that doesn't exist.
         commit_pushed = False
         commit_sha: str | None = None
-        try:
-            _git(target_repo, "add", "-A")
-            dirty = _git(target_repo, "status", "--porcelain").stdout.strip()
-            if dirty:
-                _git(
+        if not dry_run:
+            from factory.chain.branch import _run_git as _git
+
+            target_repo = _writing_worktree(app_config, software_factory_root, story)
+            try:
+                _git(target_repo, "add", "-A")
+                dirty = _git(target_repo, "status", "--porcelain").stdout.strip()
+                if dirty:
+                    _git(
+                        target_repo,
+                        "commit",
+                        "-m",
+                        (
+                            f"wip(dev-exhausted): preserve partial work for story "
+                            f"{story.id} ({story.slug})\n\n"
+                            f"Dev exhausted {story.dev_retries} chain-level retries "
+                            f"without reaching green. The chain commits this WIP so "
+                            f"the work is recoverable from origin rather than living "
+                            f"in a local stash. See ``factory why {story.id}`` for "
+                            f"the per-attempt event log."
+                        ),
+                    )
+                head_proc = _git(target_repo, "rev-parse", "HEAD")
+                commit_sha = head_proc.stdout.strip() or None
+                push_proc = _git(
                     target_repo,
-                    "commit",
-                    "-m",
-                    (
-                        f"wip(dev-exhausted): preserve partial work for story "
-                        f"{story.id} ({story.slug})\n\n"
-                        f"Dev exhausted {story.dev_retries} chain-level retries "
-                        f"without reaching green. The chain commits this WIP so "
-                        f"the work is recoverable from origin rather than living "
-                        f"in a local stash. See ``factory why {story.id}`` for "
-                        f"the per-attempt event log."
-                    ),
+                    "push",
+                    "-u",
+                    "origin",
+                    story.github_branch or "HEAD",
+                    check=False,
                 )
-            head_proc = _git(target_repo, "rev-parse", "HEAD")
-            commit_sha = head_proc.stdout.strip() or None
-            push_proc = _git(
-                target_repo,
-                "push",
-                "-u",
-                "origin",
-                story.github_branch or "HEAD",
-                check=False,
-            )
-            commit_pushed = push_proc.returncode == 0
-        except Exception as commit_exc:
-            payload["dev_exhausted_commit_error"] = repr(commit_exc)
+                commit_pushed = push_proc.returncode == 0
+            except Exception as commit_exc:
+                payload["dev_exhausted_commit_error"] = repr(commit_exc)
 
         story.state = advance(story, EVENT_DEV_EXHAUSTED).value
         story.error = (
@@ -1416,8 +1428,6 @@ def handle_tech_writer(
     # REVIEWER_REQUESTED_CHANGES so the chain routes back through the dev loop
     # instead of pretending docs are current.
     if not dry_run:
-        from factory.app_config import resolve_app_repo_path
-
         updates_raw = result.get("context_updates") or []
         updates = [
             ContextUpdate(
@@ -1425,10 +1435,10 @@ def handle_tech_writer(
             )
             for u in updates_raw
         ]
-        # Context lives in the real app repo (under the app's
-        # ``app_repo_path``/``context/``), not the factory's per-app metadata
-        # directory. Same root cause as the test_impl / dev repo_path fix.
-        repo_path = resolve_app_repo_path(app_config, software_factory_root)
+        # Context lives in the per-story worktree so concurrent stories
+        # don't collide. Each worktree shares ``.git`` with the source
+        # repo so refs and history stay consistent.
+        repo_path = _writing_worktree(app_config, software_factory_root, story)
         try:
             apply_context_updates(updates, repo_path)
         except Exception as exc:
@@ -1629,18 +1639,11 @@ def handle_docs_onboarder(
         persist_story(story, db)
         return HandlerResult(next_state=StoryState(story.state), payload=payload)
 
-    from factory.app_config import resolve_app_repo_path
-    from factory.chain.branch import ensure_feature_branch
+    from factory.chain.branch import feature_branch_name
     from factory.runner import LLMConfig, sandbox_run
 
-    target_repo = resolve_app_repo_path(app_config, software_factory_root)
-    branch = ensure_feature_branch(
-        target_repo,
-        story_id=story.github_issue_number,
-        slug=story.slug,
-        base_branch=app_config.default_branch or "main",
-        stash_dirty=True,
-    )
+    target_repo = _writing_worktree(app_config, software_factory_root, story)
+    branch = feature_branch_name(story.github_issue_number, story.slug)
     story.github_branch = branch
     persist_story(story, db)
 
@@ -1795,7 +1798,7 @@ def handle_docs_enforcer(
         and story.github_pr_number is None
         and story.github_branch
     ):
-        opened = _open_pr_for_docs_story(story, app_config)
+        opened = _open_pr_for_docs_story(story, app_config, software_factory_root)
         if opened is not None:
             story.github_pr_number = opened
             persist_story(story, db)
@@ -1806,7 +1809,9 @@ def handle_docs_enforcer(
     return HandlerResult(next_state=StoryState(story.state), payload=payload)
 
 
-def _open_pr_for_docs_story(story: StoryRecord, app_config: AppConfig) -> int | None:
+def _open_pr_for_docs_story(
+    story: StoryRecord, app_config: AppConfig, software_factory_root: Path
+) -> int | None:
     """Push the feature branch and open a PR via the ``gh`` CLI.
 
     Returns the PR number on success, ``None`` on any failure. Failures are
@@ -1815,13 +1820,13 @@ def _open_pr_for_docs_story(story: StoryRecord, app_config: AppConfig) -> int | 
 
     Uses ``gh`` rather than pygithub because the chain runs locally with
     ``gh auth login`` already configured; no extra token plumbing needed.
+
+    Pushes from the per-story worktree (same one the onboarder ran in)
+    rather than the source repo — that's where the branch's HEAD is.
     """
     import subprocess
 
-    from factory.app_config import resolve_app_repo_path
-
-    # Defer import to keep the handler's hot path simple.
-    target_repo = resolve_app_repo_path(app_config, Path("/home/k/software-factory"))
+    target_repo = _writing_worktree(app_config, software_factory_root, story)
     base = app_config.default_branch or "main"
     branch = story.github_branch
     title = f"docs(context): {story.title}"

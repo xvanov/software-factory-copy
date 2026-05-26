@@ -124,10 +124,14 @@ def test_dev_modifying_test_file_aborts_to_blocked(
     story = _story_at_tests_red(factory_root)
 
     def _fake_sandbox_run(*args: object, **kwargs: object) -> RunResult:
-        # Simulate Dev's actions: commit a code edit AND a test edit.
-        _commit_in_repo(target, "src/app.py", "# code\n", message="implement")
+        # Simulate Dev's actions: commit a code edit AND a test edit. Post the
+        # worktree refactor the sandbox runs inside a per-story worktree, not
+        # the source repo, so we commit there — that's the tree the handler
+        # diffs against ``pre_dev_sha``.
+        worktree = Path(kwargs["repo_path"])  # type: ignore[index]
+        _commit_in_repo(worktree, "src/app.py", "# code\n", message="implement")
         _commit_in_repo(
-            target,
+            worktree,
             "tests/test_app.py",
             "def test_x(): assert False\n",  # weaker assertion
             message="WRONG: dev edits a test file",

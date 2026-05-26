@@ -327,6 +327,26 @@ def tick(
     summary = TickSummary(app=app, dry_run=dry_run)
     stories = H.stories_in_flight(app, db)
 
+    # Prune worktrees for stories that no longer need them (terminal
+    # states, missing rows). Idempotent and best-effort — a failure here
+    # mustn't take the tick down.
+    if not dry_run:
+        try:
+            from factory.app_config import resolve_app_repo_path
+            from factory.chain.worktree import prune_stale_worktrees
+
+            active_ids: set[int] = {s.id for s in stories if s.id is not None}
+            source_repo = resolve_app_repo_path(cfg, root)
+            if source_repo.exists():
+                prune_stale_worktrees(
+                    source_repo,
+                    software_factory_root=root,
+                    app=app,
+                    active_story_ids=active_ids,
+                )
+        except Exception as exc:
+            summary.errors.append((app, f"worktree prune failed (non-fatal): {exc!r}"))
+
     # Even when no in-flight stories exist, we still want the
     # end-of-tick auto-merge hook to fire so PRs that landed in
     # PR_OPEN on a previous tick (and are therefore terminal here) get

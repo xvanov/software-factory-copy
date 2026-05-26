@@ -1,0 +1,256 @@
+"""Per-story git worktrees — the contention fix for parallel chain runs.
+
+Background
+==========
+
+The orchestrator was previously serialised to ``per_repo_concurrent_agents=1``
+because every sandbox handler ran against a single shared
+``app_repo_path`` working tree. Two stories alive at the same time would
+race on ``ensure_feature_branch`` — one's mid-sandbox dirty tree blocking
+the other's checkout. We stashed the dirty tree as a stopgap; this module
+removes the need to share a tree at all.
+
+Mental model
+============
+
+For every in-flight story we keep a private working tree under::
+
+    <software_factory_root>/state/worktrees/<app>-<story_id>-<slug>/
+
+backed by the same ``.git`` directory as the operator's main checkout
+(``app_repo_path``). Linked worktrees are a built-in ``git worktree``
+feature: they share refs, the index is per-worktree, and the working
+tree on disk is isolated. Adding/removing is cheap (no clone) and
+``git fetch``/``git push`` work normally because they operate on refs.
+
+Lifecycle
+=========
+
+* ``ensure_worktree_for_story`` — idempotent: if the worktree path
+  already exists and points at the right branch, returns the path
+  unchanged. Otherwise creates it off ``origin/<base_branch>`` (or
+  local ``<base_branch>`` if no remote) and checks out the per-story
+  feature branch. Stashes any dirty operator state in the source repo
+  the same way the stopgap did, because ``git worktree add`` on top of
+  an in-use branch needs an unobstructed source.
+
+* ``remove_worktree_for_story`` — called by the orchestrator when a
+  story reaches a terminal state (DEPLOYED, BLOCKED_*). Tolerant of a
+  missing path; the goal is to leave nothing behind.
+
+* ``prune_stale_worktrees`` — invoked at tick start. Removes worktree
+  directories whose ``StoryRecord`` is terminal-and-old OR whose
+  branch no longer exists. Keeps disk usage bounded across long runs.
+
+Concurrency
+===========
+
+Each worktree has its own HEAD and index, so N stories can each have
+their own sandbox running against their own tree without contention.
+``git worktree add`` itself takes a brief lock on the source repo's
+``.git/index.lock``; that's serialised at the git level. Same for
+``remove``. The chain handlers can otherwise operate in parallel.
+
+Safety notes
+============
+
+* We never delete the source ``app_repo_path`` — that's the operator's
+  workspace.
+* ``git worktree remove --force`` discards uncommitted changes inside
+  the linked worktree, which is exactly what we want for terminal
+  cleanup (the work is either merged via PR or stranded; the chain
+  separately commits + pushes terminal stories before cleanup).
+* The worktree directory name embeds story id + slug so post-hoc
+  inspection (``ls state/worktrees/``) is human-readable.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+from pathlib import Path
+
+from factory.chain.branch import (
+    _has_remote,
+    _is_clean_working_tree,
+    _run_git,
+    feature_branch_name,
+)
+
+
+def worktree_path(
+    software_factory_root: Path,
+    app: str,
+    story_id: int | None,
+    slug: str,
+) -> Path:
+    """Compute the deterministic worktree path for a story.
+
+    Encoded as ``<root>/state/worktrees/<app>-<story_id>-<slug>/`` so
+    ``ls state/worktrees/`` is operator-readable. Slug is sanitized to
+    the same character set as the feature branch.
+    """
+    sid = int(story_id) if story_id is not None else 0
+    safe_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-")[:60] or "story"
+    return Path(software_factory_root) / "state" / "worktrees" / f"{app}-{sid}-{safe_slug}"
+
+
+def ensure_worktree_for_story(
+    source_repo: Path,
+    *,
+    software_factory_root: Path,
+    app: str,
+    story_id: int | None,
+    slug: str,
+    base_branch: str = "main",
+) -> Path:
+    """Idempotently produce a private worktree for ``story_id`` on its branch.
+
+    Returns the worktree path. The worktree is checked out on the
+    per-story feature branch; that branch is created from
+    ``origin/<base_branch>`` (or local ``base_branch`` if no remote) if
+    it doesn't already exist locally.
+
+    Handlers should call this in place of ``ensure_feature_branch`` when
+    they want isolation from concurrent stories. They can still operate
+    on the source repo directly if they need to (e.g. operator-facing
+    tooling like ``factory inbox``).
+    """
+    repo = Path(source_repo)
+    if not (repo / ".git").exists():
+        raise RuntimeError(f"{repo} is not a git repository (no .git/ found)")
+
+    wt = worktree_path(software_factory_root, app, story_id, slug)
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    branch = feature_branch_name(story_id, slug)
+
+    # If the worktree already exists with the expected branch, reuse it.
+    if wt.exists() and (wt / ".git").exists():
+        head_proc = _run_git(wt, "rev-parse", "--abbrev-ref", "HEAD", check=False)
+        if head_proc.returncode == 0 and head_proc.stdout.strip() == branch:
+            return wt
+        # Mismatch: switch the worktree to the right branch. ``git worktree
+        # repair`` is for path-link mismatches; ``checkout`` handles the
+        # branch flip inside the worktree.
+        _run_git(wt, "checkout", branch, check=False)
+        return wt
+
+    # If the path exists but isn't a git worktree (leftover from a manual
+    # cleanup), remove it so ``git worktree add`` can recreate.
+    if wt.exists():
+        shutil.rmtree(wt, ignore_errors=True)
+
+    # Ensure the source's tree isn't dirty in a way that blocks
+    # ``git worktree add`` — same idea as ``ensure_feature_branch`` does
+    # for switching branches, except we never need to leave the source on
+    # the per-story branch. ``git worktree add`` works even when the
+    # source is on ``main``, so the safer move is to NOT mutate the
+    # source's checked-out branch at all.
+
+    # Pick the base ref: prefer ``origin/<base_branch>`` so PRs diff
+    # against the same shared tip; fall back to local ``<base_branch>``
+    # if no remote.
+    if _has_remote(repo):
+        _run_git(repo, "fetch", "origin", base_branch, check=False)
+        remote_ref = f"origin/{base_branch}"
+        ref_check = _run_git(repo, "rev-parse", "--verify", "--quiet", remote_ref, check=False)
+        base_ref = remote_ref if ref_check.returncode == 0 else base_branch
+    else:
+        base_ref = base_branch
+
+    # If the branch already exists locally (e.g. a previous story's
+    # worktree was removed but the branch wasn't), check it out;
+    # otherwise create from ``base_ref``.
+    branch_check = _run_git(
+        repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False
+    )
+    if branch_check.returncode == 0:
+        _run_git(repo, "worktree", "add", str(wt), branch)
+    else:
+        _run_git(repo, "worktree", "add", "-b", branch, str(wt), base_ref)
+
+    return wt
+
+
+def remove_worktree_for_story(
+    source_repo: Path,
+    *,
+    software_factory_root: Path,
+    app: str,
+    story_id: int | None,
+    slug: str,
+) -> bool:
+    """Remove the per-story worktree if present. Returns True if removed."""
+    wt = worktree_path(software_factory_root, app, story_id, slug)
+    if not wt.exists():
+        return False
+    repo = Path(source_repo)
+    if (repo / ".git").exists():
+        _run_git(repo, "worktree", "remove", "--force", str(wt), check=False)
+    # Some git versions / older Linux filesystems leave the dir behind
+    # after ``worktree remove``; rm what's left so a re-create succeeds.
+    if wt.exists():
+        shutil.rmtree(wt, ignore_errors=True)
+    # ``git worktree prune`` cleans the parent's internal worktree registry
+    # so future ``add``s don't see the removed entry.
+    if (repo / ".git").exists():
+        _run_git(repo, "worktree", "prune", check=False)
+    return True
+
+
+def prune_stale_worktrees(
+    source_repo: Path,
+    *,
+    software_factory_root: Path,
+    app: str,
+    active_story_ids: set[int],
+) -> list[Path]:
+    """Remove worktree dirs whose StoryRecord is no longer active.
+
+    ``active_story_ids`` is the set of in-flight story ids — anything
+    not in that set with a worktree under ``state/worktrees/`` is
+    fair game. Returns the list of paths that were removed.
+
+    Resilient: filesystem errors are swallowed so a tick can't be
+    taken down by a stuck worktree.
+    """
+    base = Path(software_factory_root) / "state" / "worktrees"
+    if not base.exists():
+        return []
+    removed: list[Path] = []
+    for entry in base.iterdir():
+        if not entry.is_dir():
+            continue
+        # Format: <app>-<story_id>-<slug>; if the parse fails we leave it
+        # alone (operator might have a manually-created dir there).
+        name = entry.name
+        if not name.startswith(f"{app}-"):
+            continue
+        try:
+            sid_part = name[len(app) + 1 :].split("-", 1)[0]
+            sid = int(sid_part)
+        except (ValueError, IndexError):
+            continue
+        if sid in active_story_ids:
+            continue
+        repo = Path(source_repo)
+        if (repo / ".git").exists():
+            _run_git(repo, "worktree", "remove", "--force", str(entry), check=False)
+        try:
+            if entry.exists():
+                shutil.rmtree(entry, ignore_errors=True)
+            removed.append(entry)
+        except OSError:
+            pass
+    repo = Path(source_repo)
+    if (repo / ".git").exists():
+        _run_git(repo, "worktree", "prune", check=False)
+    return removed
+
+
+__all__ = [
+    "ensure_worktree_for_story",
+    "prune_stale_worktrees",
+    "remove_worktree_for_story",
+    "worktree_path",
+]

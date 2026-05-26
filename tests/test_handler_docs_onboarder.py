@@ -205,16 +205,23 @@ def test_docs_onboarder_uses_real_app_repo_path(
     )
 
     assert captured["persona"] == "onboarder"
-    assert captured["repo_path"] == target, (
-        f"docs_onboarder must run sandbox against the real app repo {target}, "
-        f"got {captured['repo_path']!r}. Bug A regression for the docs path."
+    # Post-worktree refactor: sandbox runs in the per-story worktree under
+    # ``state/worktrees/``. The worktree shares ``.git`` with the source repo
+    # at ``target`` so commits made there land on the per-story branch ref.
+    repo_path = captured["repo_path"]
+    expected_prefix = factory_root / "state" / "worktrees"
+    assert str(repo_path).startswith(str(expected_prefix)), (
+        f"docs_onboarder must run sandbox in a per-story worktree under "
+        f"{expected_prefix}, got {repo_path!r}. Bug A regression."
     )
+    assert (Path(repo_path) / ".git").exists()
     # The handler commits the produced files on the feature branch.
     assert result.next_state == StoryState.DOCS_ONBOARDER_DONE
-    # Verify the commit exists on the feature branch.
+    # Verify the commit exists on the feature branch — read git from the
+    # worktree (the source repo's HEAD may be on a different branch).
     log = subprocess.run(
         ["git", "log", "--oneline", "-1"],
-        cwd=str(target),
+        cwd=str(repo_path),
         capture_output=True,
         text=True,
         check=True,
