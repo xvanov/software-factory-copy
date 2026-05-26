@@ -1,12 +1,5 @@
 # Story
-
-## Title
 Build D008 Expo CameraCapture component and permission states
-
-## Description
-As a Sacrifice user submitting future camera-based proof,
-I want a reusable Expo camera capture component with robust permission handling,
-so that I can record proof video without app crashes and confirm the captured asset before upload.
 
 ## Acceptance Criteria
 - AC1: A reusable `<CameraCapture>` component lives at `frontend/components/CameraCapture.tsx`. It:
@@ -18,54 +11,30 @@ so that I can record proof video without app crashes and confirm the captured as
   - Calls an `onCaptured(asset)` prop when the user confirms.
 - AC2: Denied permissions surface a clear in-screen message ("Camera access is required to submit this proof") with a "Open settings" link and a "Cancel" link that returns the user to the prior screen. The component does not crash on permission denial.
 - AC3: A unit test verifies the `<CameraCapture>` component renders the denied-permission state when Expo's permission mock returns denied; does not crash.
-- AC4: Out of scope for this direction
-  - Wiring the camera component into any specific goal-type's proof submission flow — that happens in D010 (pushup) or in future per-goal-type directions.
 
 ## Tasks / Subtasks
-- [ ] Task 1: Create reusable capture component at `frontend/components/CameraCapture.tsx`
-  - [ ] Implement permission request on mount for camera and microphone.
-  - [ ] Render ready-state camera preview with single "Start recording" control.
-  - [ ] Implement recording-state UI with "Stop recording" control and elapsed-time indicator.
+- [ ] Create `frontend/components/CameraCapture.tsx` as a reusable component.
+  - [ ] Request camera and microphone permissions on mount if not already granted.
+  - [ ] Render ready-state camera preview with a single "Start recording" button.
+  - [ ] Implement recording-state UI with "Stop recording" and elapsed-time indicator.
+  - [ ] Implement optional `maxDurationSeconds` auto-stop behavior.
   - [ ] Implement captured-state UI with "Retake" and "Use this video" actions.
-  - [ ] Invoke `onCaptured(asset)` only after explicit user confirmation.
-- [ ] Task 2: Implement denied-permission UX
-  - [ ] Render exact denied message: "Camera access is required to submit this proof".
+  - [ ] Call `onCaptured(asset)` only after explicit user confirmation.
+- [ ] Implement denied-permission UX.
+  - [ ] Show exact message: "Camera access is required to submit this proof".
   - [ ] Provide "Open settings" action.
-  - [ ] Provide "Cancel" action that returns the user to the prior screen via caller integration surface.
-  - [ ] Ensure denial path does not throw or crash.
-- [ ] Task 3: Implement recording lifecycle constraints
-  - [ ] Support optional `maxDurationSeconds` prop.
-  - [ ] Auto-stop active recording when `maxDurationSeconds` is reached.
-  - [ ] Reset component state correctly on retake.
-- [ ] Task 4: Add unit coverage
-  - [ ] Add frontend unit test for denied-permission render path.
-  - [ ] Mock Expo permission API to denied.
-  - [ ] Assert no crash and required actions/message are rendered.
-- [ ] Task 5: Preserve story boundary
-  - [ ] Do not wire this component into any specific goal-type submission flow in this story.
-  - [ ] Do not implement backend upload handling in this story.
+  - [ ] Provide "Cancel" action that returns the user to the prior screen via parent integration contract.
+  - [ ] Ensure denied permissions do not crash the app.
+- [ ] Keep this story scoped to shared capture infrastructure only.
+  - [ ] Do not wire the component into a specific goal-type submission flow here.
+- [ ] Add frontend unit coverage for denied-permission state.
+  - [ ] Mock Expo permission result as denied.
+  - [ ] Assert denied-permission UI renders.
+  - [ ] Assert component does not crash.
 
 ## Dev Notes
-### Direction acceptance criteria (verbatim)
-- A reusable `<CameraCapture>` component lives at `frontend/components/CameraCapture.tsx`. It:
-  - Requests Expo camera and microphone permissions on mount if not already granted.
-  - Renders a camera preview with a single "Start recording" button when ready.
-  - Toggles to "Stop recording" + elapsed-time indicator while recording.
-  - Auto-stops when an optional `maxDurationSeconds` prop is reached.
-  - Shows a "Retake" / "Use this video" choice after a recording is captured.
-  - Calls an `onCaptured(asset)` prop when the user confirms.
-- Denied permissions surface a clear in-screen message ("Camera access is required to submit this proof") with a "Open settings" link and a "Cancel" link that returns the user to the prior screen. The component does not crash on permission denial.
-- A new backend route `POST /api/uploads/video` accepts multipart uploads. See `api_spec.md`.
-- A new table `media_uploads` persists per-upload metadata: `id`, `user_id`, `goal_id` (nullable), `sha256`, `size_bytes`, `duration_seconds`, `mime_type`, `storage_path`, `created_at`. Migration generated via Alembic autogenerate.
-- Recorded videos are stored under a configurable path keyed by `(user_id, goal_id_or_unassigned, upload_id)`. Default: `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}/<user_id>/<goal_or_orphan>/<upload_id>.mp4`. The setting lives in `backend/app/config.py`.
-- A new endpoint `GET /api/uploads/{upload_id}` returns upload metadata for the owning user only. 403 for non-owners; 404 for unknown ids.
-- `backend/app/services/uploads.py` encapsulates path resolution, write, hash computation, and metadata persistence. The route is thin; the service is unit-testable.
-- An E2E `@smoke` Playwright test uploads a fixture video via the API and asserts a 201 with the expected response shape. (Pure HTTP test — does not exercise the Expo capture component.)
-- A unit test verifies the `<CameraCapture>` component renders the denied-permission state when Expo's permission mock returns denied; does not crash.
-- A new context module `context/modules/media.md` documents the capture component, the upload endpoint, and the storage convention.
-- `context/architecture-diagrams.md` is rewritten to show the media upload path in the primary system flow.
-
-### flow.md (verbatim)
+### Verbatim flow.md
+```md
 # User flow
 
 1. From a goal that requires camera capture, the app shows a "Record proof" button on the goal detail screen.
@@ -82,8 +51,10 @@ so that I can record proof video without app crashes and confirm the captured as
    - Network error during upload — app shows "Upload failed — retry?" with a "Retry" button and a "Save and try later" button. Save-and-try-later persists the file locally for the next app launch.
    - Server returns 413 (file too large) — app shows "Video is too large — try a shorter recording" with a "Retake" button.
    - Server returns 415 (unsupported media type) — app shows "Unsupported video format" with a "Retake" button.
+```
 
-### api_spec.md (verbatim)
+### Verbatim api_spec.md
+```md
 # API spec
 
 ## Endpoints
@@ -136,37 +107,58 @@ so that I can record proof video without app crashes and confirm the captured as
   - `401` — unauthenticated
   - `403` — upload not owned by authenticated user
   - `404` — upload not found
+```
 
-### Context pointers to load
+### Context pointers
 - [Source: context/project.md#Stack]
 - [Source: context/project.md#Active constraints]
 - [Source: context/navigation.md#When working on the Expo client]
-- [Source: context/navigation.md#When working on goals, proof submission, or verification status]
+- [Source: context/navigation.md#When working on goal creation]
+- [Source: context/navigation.md#When working on chat or goal-type matching]
 
-### Implementation notes
-- This story covers only the reusable capture component and denied-permission unit coverage.
-- Flow step 6+ upload behavior is directional context only; upload wiring belongs outside this story unless needed for component callback contract only.
-- The cancel action must support returning to the prior screen through the consuming screen's navigation contract; do not hardwire a specific goal flow here.
+### Verbatim direction acceptance criteria
+```md
+- A reusable `<CameraCapture>` component lives at `frontend/components/CameraCapture.tsx`. It:
+  - Requests Expo camera and microphone permissions on mount if not already granted.
+  - Renders a camera preview with a single "Start recording" button when ready.
+  - Toggles to "Stop recording" + elapsed-time indicator while recording.
+  - Auto-stops when an optional `maxDurationSeconds` prop is reached.
+  - Shows a "Retake" / "Use this video" choice after a recording is captured.
+  - Calls an `onCaptured(asset)` prop when the user confirms.
+- Denied permissions surface a clear in-screen message ("Camera access is required to submit this proof") with a "Open settings" link and a "Cancel" link that returns the user to the prior screen. The component does not crash on permission denial.
+- A new backend route `POST /api/uploads/video` accepts multipart uploads. See `api_spec.md`.
+- A new table `media_uploads` persists per-upload metadata: `id`, `user_id`, `goal_id` (nullable), `sha256`, `size_bytes`, `duration_seconds`, `mime_type`, `storage_path`, `created_at`. Migration generated via Alembic autogenerate.
+- Recorded videos are stored under a configurable path keyed by `(user_id, goal_id_or_unassigned, upload_id)`. Default: `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}/<user_id>/<goal_or_orphan>/<upload_id>.mp4`. The setting lives in `backend/app/config.py`.
+- A new endpoint `GET /api/uploads/{upload_id}` returns upload metadata for the owning user only. 403 for non-owners; 404 for unknown ids.
+- `backend/app/services/uploads.py` encapsulates path resolution, write, hash computation, and metadata persistence. The route is thin; the service is unit-testable.
+- An E2E `@smoke` Playwright test uploads a fixture video via the API and asserts a 201 with the expected response shape. (Pure HTTP test — does not exercise the Expo capture component.)
+- A unit test verifies the `<CameraCapture>` component renders the denied-permission state when Expo's permission mock returns denied; does not crash.
+- A new context module `context/modules/media.md` documents the capture component, the upload endpoint, and the storage convention.
+- `context/architecture-diagrams.md` is rewritten to show the media upload path in the primary system flow.
+```
+
+### Scope notes
+- Out of scope for this story: backend upload implementation, metadata endpoint, storage service, migration, smoke API test, context docs updates.
+- Preserve direction anchor: Do not wire the component into a specific goal-type submission flow here.
 
 ## References
 - `frontend/components/CameraCapture.tsx`
-- `frontend/screens/GoalDetailScreen.tsx`
-- `frontend/screens/ProofSubmissionScreen.tsx`
-- `frontend/services/api.ts`
-- `frontend/hooks/useNavigation.tsx`
 - `frontend/AGENTS.md`
+- `frontend/App.tsx`
+- `frontend/hooks/useNavigation.tsx`
+- `frontend/screens/GoalCreateScreen.tsx`
+- `frontend/services/api.ts`
+- `Direction: direction.md`
+- `Direction: flow.md`
+- `Direction: api_spec.md`
 
 ## Dev Agent Record
 - Status: Not started
-- Agent Model: 
-- Debug Log References: 
-- Completion Notes: 
-- File List: 
+- Notes: 
 
 ## Senior Developer Review
 - Status: Pending
-- Reviewer: 
-- Review Notes: 
+- Notes: 
 
 ## Review Follow-ups
-- None yet.
+- None.

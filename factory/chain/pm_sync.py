@@ -91,6 +91,15 @@ _PM_SCHEMA: dict[str, Any] = {
                     # the handler defaults missing values to ``"tdd"``.
                     "chain_kind": {"type": "string", "enum": ["tdd", "docs"]},
                     "rationale": {"type": "string"},
+                    # Size estimates per the PM persona's hard sizing rule.
+                    # Used by ``_validate_story_sizes`` to reject oversized
+                    # stories and re-prompt the PM. Optional (legacy PM runs
+                    # don't emit them) — when absent, the validator treats
+                    # them as 0 (passes) and logs a warning so the operator
+                    # can spot under-instrumented decomposition.
+                    "estimated_new_files": {"type": "integer", "minimum": 0},
+                    "estimated_modified_files": {"type": "integer", "minimum": 0},
+                    "estimated_sandbox_iterations": {"type": "integer", "minimum": 0},
                 },
             },
         },
@@ -231,12 +240,119 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
     }
 
 
+# --------------------------------------------------------------------------- #
+# Story sizing — enforce the PM persona's hard size rule
+# --------------------------------------------------------------------------- #
+
+
+# Per-story size ceilings the chain rejects on. Aligned with the PM persona
+# prompt's hard sizing rule; any single child_story exceeding these gets sent
+# back to the PM for further decomposition. Picked from observed dev-pass
+# budgets: dev sandbox has a 600-iteration default with up to 10 chain
+# retries, so a 200-iteration single-story estimate leaves ample headroom.
+MAX_NEW_FILES_PER_STORY = 5
+MAX_MODIFIED_FILES_PER_STORY = 2
+MAX_SANDBOX_ITERATIONS_PER_STORY = 200
+
+# Cap on how many times the chain will re-prompt the PM with size feedback
+# before accepting whatever it returns. Each re-prompt is a fresh LLM call;
+# small bound keeps cost predictable without giving up after one try.
+MAX_PM_REDECOMPOSITION_RETRIES = 3
+
+
+def _story_size_violations(child_story: dict[str, Any]) -> list[str]:
+    """Return a human-readable list of size violations for one child_story.
+
+    Empty list means the story fits. Missing/None estimates are treated as
+    zero (assumed-fine) but logged via the returned ``"missing_estimate_..."``
+    sentinel so the operator can spot under-instrumented PM output.
+    """
+    violations: list[str] = []
+    nf = child_story.get("estimated_new_files")
+    mf = child_story.get("estimated_modified_files")
+    it = child_story.get("estimated_sandbox_iterations")
+    if nf is None:
+        violations.append("missing_estimate_new_files")
+    elif isinstance(nf, int) and nf > MAX_NEW_FILES_PER_STORY:
+        violations.append(
+            f"estimated_new_files={nf} exceeds max {MAX_NEW_FILES_PER_STORY}"
+        )
+    if mf is None:
+        violations.append("missing_estimate_modified_files")
+    elif isinstance(mf, int) and mf > MAX_MODIFIED_FILES_PER_STORY:
+        violations.append(
+            f"estimated_modified_files={mf} exceeds max {MAX_MODIFIED_FILES_PER_STORY}"
+        )
+    if it is None:
+        violations.append("missing_estimate_sandbox_iterations")
+    elif isinstance(it, int) and it > MAX_SANDBOX_ITERATIONS_PER_STORY:
+        violations.append(
+            f"estimated_sandbox_iterations={it} exceeds max "
+            f"{MAX_SANDBOX_ITERATIONS_PER_STORY}"
+        )
+    return violations
+
+
+def _validate_pm_story_sizes(pm_result: dict[str, Any]) -> dict[int, list[str]]:
+    """Return ``{story_index: [violations]}`` for stories that exceed limits.
+
+    Skips when ``has_sufficient_backpressure`` is False (no stories spawn
+    anyway) or ``child_stories`` is empty. Missing-estimate sentinels are
+    included so the operator can see when PM is emitting unsized output.
+    """
+    if not pm_result.get("has_sufficient_backpressure"):
+        return {}
+    out: dict[int, list[str]] = {}
+    for idx, story in enumerate(pm_result.get("child_stories") or []):
+        violations = _story_size_violations(story)
+        # Treat the "missing_estimate_*" sentinels as soft warnings — they
+        # don't trigger re-prompts on their own (back-compat with PMs that
+        # haven't been updated to emit the fields). Only real-exceed
+        # violations gate the re-prompt loop.
+        hard = [v for v in violations if not v.startswith("missing_estimate_")]
+        if hard:
+            out[idx] = hard
+    return out
+
+
+def _format_redecomposition_feedback(violations: dict[int, list[str]]) -> str:
+    """Compose the operator-visible feedback string the chain hands back to PM."""
+    lines = [
+        "## Chain feedback — story sizes exceed dev's per-pass budget",
+        "",
+        "Your previous decomposition included stories that are too large for a",
+        "single dev sandbox pass. The chain rejects oversized stories so dev",
+        "doesn't burn retry budget on un-completable slices. Re-decompose the",
+        "flagged stories into smaller vertical slices and re-emit the full PM",
+        "JSON.",
+        "",
+        "Per-story size ceilings (HARD):",
+        f"  - estimated_new_files ≤ {MAX_NEW_FILES_PER_STORY}",
+        f"  - estimated_modified_files ≤ {MAX_MODIFIED_FILES_PER_STORY}",
+        f"  - estimated_sandbox_iterations ≤ {MAX_SANDBOX_ITERATIONS_PER_STORY}",
+        "",
+        "Flagged stories from your last output:",
+    ]
+    for idx, vs in sorted(violations.items()):
+        lines.append(f"  - story[{idx}]: {'; '.join(vs)}")
+    lines.append("")
+    lines.append(
+        "Re-emit the full PM JSON with every child_story now within the limits."
+    )
+    return "\n".join(lines)
+
+
 def _call_pm_persona(
     direction: Direction,
     app_repo_path: Path,
     software_factory_root: Path,
 ) -> dict[str, Any]:
-    """Real LLM call. Returns the parsed PM JSON result."""
+    """Real LLM call. Returns the parsed PM JSON result.
+
+    Loops up to ``MAX_PM_REDECOMPOSITION_RETRIES`` times when the returned
+    ``child_stories`` exceed the chain's per-story size ceilings, threading
+    structured feedback through to each retry so the PM can correct.
+    """
     # Import lazily so dry-run paths don't pull litellm.
     from factory.runner import text_run
 
@@ -252,7 +368,7 @@ def _call_pm_persona(
     )
     direction_block = _build_pm_prompt(direction, context_prelude)
 
-    full_prompt = (
+    base_prompt = (
         f"{persona_prompt.rstrip()}\n\n"
         "---\n\n"
         "## Input\n\n"
@@ -261,19 +377,51 @@ def _call_pm_persona(
         "Return the JSON object for this direction. No prose outside the JSON."
     )
     model_id = route(persona)
-    # Cap output tokens at 2048 — PM JSON is small; this controls cost on
-    # real DeepSeek calls.
-    result = text_run(
-        persona=persona,
-        prompt=full_prompt,
-        model_id=model_id,
-        schema=_PM_SCHEMA,
-        max_tokens=2048,
+
+    feedback: str | None = None
+    last_result: dict[str, Any] | None = None
+    for attempt in range(1, MAX_PM_REDECOMPOSITION_RETRIES + 2):
+        # On retries, prepend the chain's structured feedback so the PM sees
+        # what failed and re-decomposes accordingly. The persona prompt's
+        # sizing rule already covers the policy; this just surfaces which
+        # specific stories tripped it.
+        full_prompt = base_prompt
+        if feedback is not None:
+            full_prompt = f"{base_prompt}\n\n---\n\n{feedback}\n"
+
+        # Cap output tokens at 2048 — PM JSON is small.
+        result = text_run(
+            persona=persona,
+            prompt=full_prompt,
+            model_id=model_id,
+            schema=_PM_SCHEMA,
+            max_tokens=2048,
+        )
+        if not isinstance(result, dict):
+            # text_run only returns str when schema is None; treat anything
+            # else as failure.
+            raise RuntimeError("PM text_run returned a non-dict for schema-mode call")
+
+        last_result = result
+        violations = _validate_pm_story_sizes(result)
+        if not violations:
+            return result
+        if attempt > MAX_PM_REDECOMPOSITION_RETRIES:
+            break
+        feedback = _format_redecomposition_feedback(violations)
+
+    # Out of retries — return the last result with the violations recorded
+    # so downstream code can see we tried. Operators surface these via
+    # ``factory why`` / the tracker body.
+    assert last_result is not None
+    last_result.setdefault("_chain_warnings", []).append(
+        {
+            "kind": "story_sizes_exceeded_after_retries",
+            "retries_used": MAX_PM_REDECOMPOSITION_RETRIES,
+            "violations": _validate_pm_story_sizes(last_result),
+        }
     )
-    if isinstance(result, dict):
-        return result
-    # text_run only returns str when schema is None; treat anything else as failure.
-    raise RuntimeError("PM text_run returned a non-dict for schema-mode call")
+    return last_result
 
 
 def _resolve_chain_for_direction(
