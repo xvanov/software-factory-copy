@@ -278,16 +278,48 @@ def _build_initial_message(
     story_text: str,
     context_prelude: str,
     persona_prompt: str,
+    prior_attempts: list[dict[str, Any]] | None = None,
 ) -> str:
-    return (
-        f"{context_prelude}\n"
-        f"---\n"
-        f"# Persona prompt: {persona}\n"
-        f"{persona_prompt.rstrip()}\n"
-        f"---\n"
-        f"# Story\n"
-        f"{story_text.rstrip()}\n"
-    )
+    parts = [
+        context_prelude,
+        "---",
+        f"# Persona prompt: {persona}",
+        persona_prompt.rstrip(),
+        "---",
+        "# Story",
+        story_text.rstrip(),
+    ]
+    if prior_attempts:
+        # The chain feeds prior failed attempts forward so the LLM sees what
+        # was already tried and which assertions are still red. Without this,
+        # every retry is from scratch (no memory) and re-discovers the same
+        # dead ends. Cap each output tail at 1500 chars to keep the prompt
+        # bounded — full diagnostic lives in ``state/logs/<story>.log``.
+        parts.append("---")
+        parts.append("# Previous attempts on THIS story (most recent last)")
+        parts.append(
+            "These attempts ran in the same git worktree and any file changes "
+            "they made persist below. Use them to avoid repeating failed "
+            "approaches; if the same test keeps failing for a reason the test "
+            "itself is wrong, emit ``TESTS_NEED_CLARIFICATION:`` on a single "
+            "line followed by which test and why."
+        )
+        for entry in prior_attempts:
+            parts.append("")
+            parts.append(f"## Attempt {entry.get('attempt', '?')}")
+            files = entry.get("files_touched") or []
+            if files:
+                parts.append(f"- Files touched: {', '.join(files[:10])}")
+            summary = (entry.get("summary") or "").strip()
+            if summary:
+                parts.append(f"- Summary: {summary[:400]}")
+            tail = (entry.get("test_output_tail") or "").strip()
+            if tail:
+                parts.append("- Test output tail:")
+                parts.append("```")
+                parts.append(tail[-1500:])
+                parts.append("```")
+    return "\n".join(parts) + "\n"
 
 
 # Per-persona override map for ``sandbox_run.max_iterations``. Personas with
@@ -336,6 +368,7 @@ async def sandbox_run(
     direction_chain: list[Any] | None = None,
     software_factory_root: Path | None = None,
     test_command: str | None = None,
+    prior_attempts: list[dict[str, Any]] | None = None,
 ) -> RunResult:
     """Run a persona inside an OpenHands SDK sandbox against ``repo_path``.
 
@@ -366,6 +399,7 @@ async def sandbox_run(
         story_text=story_text,
         context_prelude=context_prelude,
         persona_prompt=persona_prompt,
+        prior_attempts=prior_attempts,
     )
 
     if dry_run:

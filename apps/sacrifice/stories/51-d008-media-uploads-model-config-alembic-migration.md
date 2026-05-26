@@ -6,22 +6,23 @@ D008 media_uploads model + config + Alembic migration
 ## Scope
 backend
 
-## Summary
-Establish the canonical media upload persistence foundation: configurable media storage root in `backend/app/config.py`, `media_uploads` persistence model, and Alembic migration for the table required by later upload service and route stories.
+## Goal
+Establish the persistence and configuration foundation for media uploads by adding the `media_uploads` table and configurable storage root required by later upload service and route stories.
 
 # Acceptance Criteria
 
-- AC1: A new table `media_uploads` persists per-upload metadata: `id`, `user_id`, `goal_id` (nullable), `sha256`, `size_bytes`, `duration_seconds`, `mime_type`, `storage_path`, `created_at`. Migration generated via Alembic autogenerate.
-- AC2: Recorded videos are stored under a configurable path keyed by `(user_id, goal_id_or_unassigned, upload_id)`. Default: `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}/<user_id>/<goal_or_orphan>/<upload_id>.mp4`. The setting lives in `backend/app/config.py`.
+- A new table `media_uploads` persists per-upload metadata: `id`, `user_id`, `goal_id` (nullable), `sha256`, `size_bytes`, `duration_seconds`, `mime_type`, `storage_path`, `created_at`. Migration generated via Alembic autogenerate.
+- Recorded videos are stored under a configurable path keyed by `(user_id, goal_id_or_unassigned, upload_id)`. Default: `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}/<user_id>/<goal_or_orphan>/<upload_id>.mp4`. The setting lives in `backend/app/config.py`.
 
 # Tasks / Subtasks
 
-- [ ] Add media storage configuration to `backend/app/config.py` with default root `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}`. (AC2)
-- [ ] Add persistence model for `media_uploads` with fields exactly matching the direction. (AC1)
-- [ ] Ensure `goal_id` is nullable and ownership linkage is represented via `user_id`. (AC1)
-- [ ] Generate and commit Alembic migration for `media_uploads` via autogenerate. (AC1)
-- [ ] Verify migration creates the canonical columns required by downstream service and route stories. (AC1)
-- [ ] Do not implement route or file-write logic in this story; foundation only.
+- [ ] Add storage-root configuration in `backend/app/config.py` for media persistence.
+- [ ] Add `media_uploads` SQLAlchemy model with fields exactly matching the direction.
+- [ ] Ensure nullable `goal_id` and ownership linkage via `user_id` are represented in the model.
+- [ ] Generate Alembic migration for `media_uploads` via autogenerate.
+- [ ] Verify migration creates the required columns and nullability constraints.
+- [ ] Verify default storage convention is expressible by later service logic using the new config setting.
+- [ ] Do not add upload routes or file-write business logic in this story.
 
 # Dev Notes
 
@@ -116,41 +117,37 @@ Establish the canonical media upload persistence foundation: configurable media 
   - `403` — upload not owned by authenticated user
   - `404` — upload not found
 
-## Context pointers to load
+## Context pointers
 - [Source: context/project.md#Stack]
 - [Source: context/project.md#Active constraints]
 - [Source: context/navigation.md#When working on backend HTTP behavior]
 
-## Implementation notes
-- This story is the schema/config foundation only.
-- Downstream stories depend on exact field names and storage-root semantics established here.
-- No acceptance in this story authorizes adding routes, upload service behavior, or frontend camera work.
+## Story-specific implementation notes
+- This story is limited to schema/model/config foundation.
+- Later stories own service implementation, POST route behavior, and GET metadata behavior.
+- Preserve alignment with existing goal ownership concepts because `goal_id` is optional but ownership-scoped.
 
 # References
 
 - Direction: Camera capture pipeline (Expo capture component + backend upload)
 - PM tracker: D008 camera-capture-pipeline upload + Expo capture
-- Planned follow-on stories in this direction:
+- Planned follow-on stories:
   - D008 uploads service for pathing, hashing, write, persistence
   - D008 POST /api/uploads/video multipart upload endpoint
   - D008 GET /api/uploads/{upload_id} owner metadata endpoint
-  - D008 smoke test for video upload API success path
-  - D008 CameraCapture denied-permission state + unit test
-  - D008 CameraCapture recording, timer, retake, confirm flow
-  - D008 media context + architecture diagram rewrite
 
 # Dev Agent Record
 
-- Status: Not started
-- Notes:
-  - Reserved for implementation agent.
+## Status
+Not started
+
+## Notes
+- To be completed by Dev.
 
 # Senior Developer Review
 
-- Status: Pending
-- Notes:
-  - Verify schema names and defaults align exactly with later service and route contracts.
+- Pending
 
 # Review Follow-ups
 
-- None yet.
+- None yet

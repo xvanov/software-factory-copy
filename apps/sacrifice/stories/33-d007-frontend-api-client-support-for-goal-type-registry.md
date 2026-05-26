@@ -7,31 +7,28 @@ D007 Frontend API client support for goal type registry
 frontend
 
 ## Summary
-Add `listGoalTypes()` to `frontend/services/api.ts` for the new backend registry endpoint. No other frontend UX or screen changes are included in this direction.
+Add `listGoalTypes()` to `frontend/services/api.ts` for the new backend registry endpoint. No other frontend UX or screen changes are in scope for this direction.
 
 # Acceptance Criteria
 
 - AC1: `frontend/services/api.ts` gains a `listGoalTypes()` call. No other frontend changes in this direction.
+- AC2: The Architect persona designs the exact abstract interface; this direction does not pre-design method signatures.
 
 # Tasks / Subtasks
 
-- [ ] T1 Add `listGoalTypes()` to `frontend/services/api.ts`. (AC1)
-  - [ ] T1.1 Call `GET /api/goal-types` per `api_spec.md`. (AC1)
-  - [ ] T1.2 Model the response shape returned by the endpoint: `goal_types[]` with `name`, `description`, `sample_prompts`, and `criteria_schema`. (AC1)
-  - [ ] T1.3 Preserve existing auth/request conventions already used by the frontend API client. (AC1)
-- [ ] T2 Confirm no other frontend files are changed in this story. (AC1)
+- [ ] Add `listGoalTypes()` to `frontend/services/api.ts` targeting `GET /api/goal-types`. (AC1)
+- [ ] Align request/response handling with `api_spec.md`. (AC1)
+- [ ] Keep all other frontend files unchanged unless required for type-safe compilation within `frontend/services/api.ts`. (AC1)
+- [ ] Do not add screens, navigation changes, or UX changes in this story. (AC1)
 
 # Dev Notes
 
 ## Direction flow.md
 
-```text
 (none)
-```
 
 ## Direction api_spec.md
 
-```markdown
 # API spec
 
 ## Endpoints
@@ -67,18 +64,21 @@ Add `listGoalTypes()` to `frontend/services/api.ts` for the new backend registry
 - **Success status:** `200`
 - **Error statuses:**
   - `401` — unauthenticated
-```
 
-## Context pointers to load
+## Context pointers
 
 - [Source: context/project.md#Identity]
 - [Source: context/project.md#Active constraints]
 - [Source: context/navigation.md#When working on the Expo client]
 - [Source: context/navigation.md#When working on goal creation]
+- [Source: context/navigation.md#When working on chat or goal-type matching]
+- [Source: context/modules/frontend.md#Frontend]
+- [Source: context/modules/goal-creation.md#Goal Creation]
+- [Source: context/modules/chat.md#Chat]
+- [Source: context/current-state.md#current-state]
 
-## Direction acceptance criteria (verbatim)
+## Verbatim direction acceptance criteria
 
-```markdown
 - A new package `backend/app/goal_types/` exists, with each goal type as a self-contained sub-package containing at minimum:
   - `definition.py` — registers `name`, human-readable `description`, `sample_prompts` (list[str]) used by chat matching in D009, and `criteria_schema` (JSON schema for the goal's `criteria_data`).
   - `verifier.py` — verification entrypoint conforming to the abstract base interface.
@@ -92,35 +92,48 @@ Add `listGoalTypes()` to `frontend/services/api.ts` for the new backend registry
 - `frontend/services/api.ts` gains a `listGoalTypes()` call. No other frontend changes in this direction.
 - Registry-discovery smoke test: a stub goal-type package added at `backend/app/goal_types/_smoke/` (added then removed within the test) demonstrates the registry picks it up without any other file changes.
 - `context/modules/backend-app.md` and `context/modules/backend-workers.md` are rewritten to reflect the new layout (no historical "previously branched on goal_type" notes — current truth only).
-```
 
-## Constraints / handoff notes
+## Notes for downstream agents
 
-- This story is intentionally limited to `frontend/services/api.ts` only.
-- No screen, navigation, or UX changes are allowed in this direction.
-- Match existing frontend API/auth conventions already present in the repo.
+- Scope is intentionally narrow: client surface only in `frontend/services/api.ts`.
+- Do not alter creation flow UX, screen navigation, or typed goal selection in this direction.
+- If frontend tests/types require shaping interfaces for the response body, keep those changes strictly in support of `frontend/services/api.ts`.
 
 # References
 
 - `frontend/services/api.ts`
 - `frontend/AGENTS.md`
+- `context/modules/frontend.md`
+- `context/modules/goal-creation.md`
 
 # Dev Agent Record
 
-## Status
-Not started
+## Agent Model Used
 
-## Notes
-- Reserved for implementation agent.
+TBD
+
+## Debug Log References
+
+- TBD
+
+## Completion Notes List
+
+- TBD
+
+## File List
+
+- TBD
 
 # Senior Developer Review
 
-## Status
-Pending
+## Reviewer
 
-## Notes
-- Reserved for senior developer review.
+TBD
+
+## Review Notes
+
+- TBD
 
 # Review Follow-ups
 
-- None yet.
+- [ ] TBD

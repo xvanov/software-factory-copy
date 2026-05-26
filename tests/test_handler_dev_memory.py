@@ -1,0 +1,222 @@
+"""Dev retry memory + TESTS_NEED_CLARIFICATION escape hatch.
+
+Each chain-level dev retry now (a) appends a per-attempt diagnostic
+(test output tail + files touched + summary) into ``story.dev_attempts_json``
+and (b) the NEXT dev sandbox invocation gets that history embedded in its
+initial message so the LLM sees what it tried and what's still red.
+
+If dev's stdout includes ``TESTS_NEED_CLARIFICATION:``, the chain routes
+back to ``TEST_DESIGN_DONE`` so test_implementer re-writes the tests
+WITHOUT consuming dev's retry budget.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from factory import runner as runner_module
+from factory.app_config import AppConfig
+from factory.chain import handlers as handlers_module
+from factory.chain.handlers import handle_dev, persist_story
+from factory.chain.state_machine import StoryRecord, StoryState
+from factory.runner import RunResult, _build_initial_message
+
+
+@pytest.fixture
+def temp_root(tmp_path: Path) -> Path:
+    import subprocess
+
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "apps" / "sacrifice" / "stories").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "apps" / "sacrifice" / "stories" / "1-x.md").write_text(
+        "# story\n", encoding="utf-8"
+    )
+    # Real git repo so the worktree machinery can run.
+    src = tmp_path / "sacrifice"
+    src.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=str(src), check=True)
+    subprocess.run(["git", "config", "user.email", "t@e.x"], cwd=str(src), check=True)
+    subprocess.run(["git", "config", "user.name", "T E"], cwd=str(src), check=True)
+    (src / "README.md").write_text("# init\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(src), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(src), check=True)
+    return tmp_path
+
+
+@pytest.fixture
+def app_config(temp_root: Path) -> AppConfig:
+    return AppConfig(
+        name="sacrifice",
+        repo="x/y",
+        default_branch="main",
+        app_repo_path=str(temp_root / "sacrifice"),
+    )
+
+
+def _story_at(state: StoryState, root: Path) -> StoryRecord:
+    return persist_story(
+        StoryRecord(
+            id=None,
+            direction_id="099",
+            app="sacrifice",
+            title="t",
+            slug="z",
+            scope="backend",
+            state=state.value,
+            github_issue_number=1,
+            story_file_path="stories/1-x.md",
+        ),
+        root / "state" / "factory.db",
+    )
+
+
+def test_build_initial_message_includes_prior_attempts() -> None:
+    """Prior-attempts get embedded into the dev sandbox's initial message
+    so the LLM doesn't re-discover dead ends each retry."""
+    msg = _build_initial_message(
+        persona="dev",
+        story_text="# story body",
+        context_prelude="# ctx",
+        persona_prompt="# persona",
+        prior_attempts=[
+            {
+                "attempt": 1,
+                "files_touched": ["src/a.py", "src/b.py"],
+                "summary": "tests not green",
+                "test_output_tail": "AssertionError: expected 1 got 2",
+            }
+        ],
+    )
+    assert "Previous attempts on THIS story" in msg
+    assert "Attempt 1" in msg
+    assert "src/a.py" in msg
+    assert "AssertionError: expected 1 got 2" in msg
+
+
+def test_build_initial_message_no_prior_attempts_skips_block() -> None:
+    msg = _build_initial_message(
+        persona="dev",
+        story_text="# s",
+        context_prelude="# c",
+        persona_prompt="# p",
+        prior_attempts=None,
+    )
+    assert "Previous attempts" not in msg
+
+
+def test_dev_records_attempt_into_story_dev_attempts_json(
+    temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed dev run appends an entry to ``story.dev_attempts_json``
+    capturing the tail + files touched + summary."""
+    story = _story_at(StoryState.TESTS_RED, temp_root)
+    db = temp_root / "state" / "factory.db"
+
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _fake_sandbox(*args: object, **kwargs: object) -> RunResult:
+        captured_kwargs.update(kwargs)
+        return RunResult(
+            success=False,
+            files_changed=["src/x.py", "src/y.py"],
+            test_run_passed=False,
+            tokens_in=10,
+            tokens_out=5,
+            cost_usd=0.0,
+            error="tests not green after run",
+            summary="FAILED test_x assertion: expected True got False",
+        )
+
+    monkeypatch.setattr(runner_module, "sandbox_run", _fake_sandbox, raising=True)
+    monkeypatch.setattr(handlers_module, "route", lambda *a, **kw: "azure/gpt-5.4")
+
+    result = handle_dev(story, app_config, temp_root, dry_run=False, db_path=db)
+
+    assert result.next_state == StoryState.DEV_RETRY
+    assert story.dev_retries == 1
+    assert story.dev_attempts_json is not None
+    attempts = json.loads(story.dev_attempts_json)
+    assert len(attempts) == 1
+    a = attempts[0]
+    assert a["attempt"] == 1
+    assert "src/x.py" in a["files_touched"]
+    assert "expected True got False" in a["test_output_tail"]
+    assert a["summary"]
+
+
+def test_dev_passes_prior_attempts_into_next_sandbox(
+    temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a retry, the NEXT sandbox_run gets the prior attempts as a kwarg
+    so the LLM sees what was tried."""
+    story = _story_at(StoryState.DEV_RETRY, temp_root)
+    story.dev_retries = 1
+    story.dev_attempts_json = json.dumps(
+        [
+            {
+                "attempt": 1,
+                "files_touched": ["src/x.py"],
+                "summary": "prev",
+                "test_output_tail": "AssertionError: prev",
+            }
+        ]
+    )
+    persist_story(story, temp_root / "state" / "factory.db")
+    db = temp_root / "state" / "factory.db"
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_sandbox(*args: object, **kwargs: object) -> RunResult:
+        captured["prior_attempts"] = kwargs.get("prior_attempts")
+        return RunResult(
+            success=False,
+            files_changed=[],
+            test_run_passed=False,
+            error="still red",
+            summary="still red after attempt 2",
+        )
+
+    monkeypatch.setattr(runner_module, "sandbox_run", _fake_sandbox, raising=True)
+    monkeypatch.setattr(handlers_module, "route", lambda *a, **kw: "azure/gpt-5.4")
+
+    handle_dev(story, app_config, temp_root, dry_run=False, db_path=db)
+
+    prior = captured["prior_attempts"]
+    assert prior is not None
+    assert len(prior) == 1
+    assert prior[0]["attempt"] == 1
+
+
+def test_tests_need_clarification_routes_back_to_test_design_done(
+    temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When dev emits the escape token, story goes to TEST_DESIGN_DONE
+    (re-invokes test_implementer) and dev_retries does NOT increment."""
+    story = _story_at(StoryState.TESTS_RED, temp_root)
+    db = temp_root / "state" / "factory.db"
+
+    async def _fake_sandbox(*args: object, **kwargs: object) -> RunResult:
+        return RunResult(
+            success=False,
+            files_changed=[],
+            test_run_passed=False,
+            error=None,
+            summary=(
+                "I tried for a while but the tests don't make sense.\n"
+                "TESTS_NEED_CLARIFICATION: test_widget asserts impossible behavior."
+            ),
+        )
+
+    monkeypatch.setattr(runner_module, "sandbox_run", _fake_sandbox, raising=True)
+    monkeypatch.setattr(handlers_module, "route", lambda *a, **kw: "azure/gpt-5.4")
+
+    result = handle_dev(story, app_config, temp_root, dry_run=False, db_path=db)
+
+    assert result.next_state == StoryState.TEST_DESIGN_DONE
+    assert story.dev_retries == 0, "clarification preserves retry budget"
+    assert story.last_rejection_reason is not None
+    assert "tests_need_clarification" in story.last_rejection_reason

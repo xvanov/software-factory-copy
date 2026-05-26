@@ -107,6 +107,12 @@ class StoryRecord(SQLModel, table=True):
     reviewer_result_json: str | None = None
     tech_writer_result_json: str | None = None
     dev_retries: int = 0
+    # JSON-serialised list of prior dev attempts on this story. Each entry:
+    # ``{"attempt": N, "ts": "...", "test_output_tail": "...",
+    #    "files_touched": [...], "summary": "..."}``. Carried forward into
+    # the next dev sandbox's initial message so the LLM sees what it tried
+    # and what failed instead of re-discovering dead ends from scratch.
+    dev_attempts_json: str | None = None
     current_model_tier: str = "standard"  # standard | hard
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -135,6 +141,7 @@ EVENT_DEV_STARTED = "dev_started"
 EVENT_DEV_TESTS_GREEN = "dev_tests_green"
 EVENT_DEV_TESTS_RED = "dev_tests_red"  # dev finished but tests still red
 EVENT_DEV_EXHAUSTED = "dev_exhausted"  # max retries hit
+EVENT_TESTS_NEED_CLARIFICATION = "tests_need_clarification"  # dev signalled bad tests
 EVENT_REVIEWER_STARTED = "reviewer_started"
 EVENT_REVIEWER_APPROVE = "reviewer_approve"
 EVENT_REVIEWER_REQUEST_CHANGES = "reviewer_request_changes"
@@ -179,6 +186,15 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_TESTS_GREEN): StoryState.TESTS_GREEN,
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_TESTS_RED): StoryState.DEV_RETRY,
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_EXHAUSTED): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
+    # Dev raised the TESTS_NEED_CLARIFICATION: escape hatch — the
+    # test_implementer's tests are wrong/contradictory. Route back to
+    # test_implementer (via TEST_DESIGN_DONE) so it can rewrite them.
+    # dev_retries is NOT bumped — the clarification path preserves the
+    # retry budget for genuine code-level dev work.
+    (
+        StoryState.DEV_IN_PROGRESS,
+        EVENT_TESTS_NEED_CLARIFICATION,
+    ): StoryState.TEST_DESIGN_DONE,
     (StoryState.DEV_RETRY, EVENT_DEV_STARTED): StoryState.DEV_IN_PROGRESS,
     (StoryState.DEV_RETRY, EVENT_DEV_EXHAUSTED): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
     (StoryState.TESTS_GREEN, EVENT_REVIEWER_STARTED): StoryState.REVIEWER_IN_PROGRESS,

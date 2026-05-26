@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from factory.chain.state_machine import (
     EVENT_DEV_STARTED,
     EVENT_DEV_TESTS_GREEN,
     EVENT_DEV_TESTS_RED,
+    EVENT_TESTS_NEED_CLARIFICATION,
     EVENT_DOCS_ENFORCER_CHECK,
     EVENT_DOCS_ENFORCER_FAIL,
     EVENT_DOCS_ENFORCER_PASS,
@@ -124,6 +126,11 @@ _MIGRATION_COLUMNS: dict[str, str] = {
     # historical pipeline; new docs-scope stories opt in via PM's child_story
     # output (``chain_kind: "docs"``).
     "chain_kind": "TEXT NOT NULL DEFAULT 'tdd'",
+    # JSONL of prior dev sandbox attempts (one entry per chain-level retry):
+    # ``[{attempt, ts, test_output_tail, files_touched, summary}, ...]``.
+    # Fed forward into the next dev invocation's initial message so the LLM
+    # sees what it already tried and what failed.
+    "dev_attempts_json": "TEXT",
 }
 
 
@@ -977,11 +984,17 @@ def handle_test_implementation(
 
 
 # Dev retry budget at the chain level. Each retry re-invokes the dev
-# sandbox (which itself has ``max_iterations`` tool calls inside). 10
-# is generous on purpose — agentic coding is heavy on tool turns, and
-# "exhausted retries" should be a rare/load-bearing signal, not the
-# common case. Token cost is not the binding constraint here.
-_MAX_DEV_RETRIES = 10
+# sandbox (which itself has ``max_iterations`` tool calls inside).
+#
+# 3 is deliberately low. The chain now feeds prior attempts' test-output
+# tails forward into each retry's initial message, so "the LLM has no
+# memory" is no longer the reason retries waste budget. Anything that
+# can't be fixed in 3 informed attempts is a signal the factory itself
+# needs work (test_implementer wrote impossible tests, persona prompt
+# is wrong, context docs are missing key info, etc.) — not a problem
+# more retries can fix. Exhaustion fires an explicit
+# ``factory_needs_redesign`` event so the operator sees the signal.
+_MAX_DEV_RETRIES = 3
 
 
 def _dry_run_dev(story: StoryRecord) -> tuple[bool, dict[str, Any]]:
@@ -1060,6 +1073,16 @@ def handle_dev(
         llm = LLMConfig(model=route("dev", difficulty=difficulty))
         import asyncio
 
+        # Carry prior attempts forward — the LLM gets to see what was tried
+        # and which assertions are still red, so retry N doesn't re-discover
+        # the same dead ends retries 1..N-1 already hit.
+        prior_attempts: list[dict[str, Any]] = []
+        if story.dev_attempts_json:
+            try:
+                prior_attempts = json.loads(story.dev_attempts_json) or []
+            except (json.JSONDecodeError, TypeError):
+                prior_attempts = []
+
         run_res = asyncio.run(
             sandbox_run(
                 persona="dev",
@@ -1071,6 +1094,7 @@ def handle_dev(
                 direction_chain=dev_chain,
                 software_factory_root=software_factory_root,
                 test_command=app_config.gates.test_command,
+                prior_attempts=prior_attempts,
             )
         )
 
@@ -1106,13 +1130,65 @@ def handle_dev(
             "summary": run_res.summary[-2000:],
         }
 
+        # Dev's escape hatch when the test_implementer wrote impossible /
+        # contradictory tests: emit ``TESTS_NEED_CLARIFICATION:`` and the
+        # chain routes back to the test_designer/test_implementer flow
+        # instead of burning more dev retries. The token is documented in
+        # ``factory/personas/dev.md`` — this is the chain-side wiring that
+        # actually catches it.
+        if not tests_green and "TESTS_NEED_CLARIFICATION:" in (run_res.summary or ""):
+            tail = run_res.summary or ""
+            idx = tail.find("TESTS_NEED_CLARIFICATION:")
+            clarification = tail[idx : idx + 800].splitlines()[0]
+            # Route back to test_implementer via TEST_DESIGN_DONE — the next
+            # tick dispatches handle_test_implementation which re-writes the
+            # tests. dev_retries is NOT bumped so the budget is preserved
+            # for the post-clarification dev run.
+            story.state = advance(story, EVENT_TESTS_NEED_CLARIFICATION).value
+            story.last_rejection_reason = f"tests_need_clarification: {clarification[:150]}"
+            payload["tests_need_clarification"] = clarification
+            persist_story(story, db)
+            log_story_event(
+                story.id,
+                "tests_need_clarification",
+                {"clarification": clarification[:300], "attempt": story.dev_retries + 1},
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
+            )
+            return HandlerResult(
+                next_state=StoryState(story.state),
+                payload=payload,
+                error=story.error,
+            )
+
     if tests_green:
         story.state = advance(story, EVENT_DEV_TESTS_GREEN).value
         persist_story(story, db)
         return HandlerResult(next_state=StoryState(story.state), payload=payload)
 
-    # Not green — bump retries.
+    # Not green — bump retries AND record this attempt's diagnostic so the
+    # next retry sees what was tried and what failed. Dry-run has no
+    # ``run_res`` (synthetic payload only); skip the feed-forward record
+    # so the retry test fixture isn't tangled.
     story.dev_retries += 1
+    if not dry_run:
+        attempt_record = {
+            "attempt": story.dev_retries,
+            "ts": datetime.now(UTC).isoformat(),
+            "files_touched": (run_res.files_changed or [])[:20],
+            "test_output_tail": (run_res.summary or "")[-1800:],
+            "summary": (run_res.error or "tests not green after run")[:300],
+        }
+        try:
+            prior = json.loads(story.dev_attempts_json or "[]")
+            if not isinstance(prior, list):
+                prior = []
+        except (json.JSONDecodeError, TypeError):
+            prior = []
+        prior.append(attempt_record)
+        # Cap history to last 5 entries — beyond that the prompt bloat outweighs
+        # the signal, and we have the full chain in the per-story event log.
+        story.dev_attempts_json = json.dumps(prior[-5:])
     if story.dev_retries >= _MAX_DEV_RETRIES:
         # Preserve whatever dev produced so the work doesn't evaporate
         # into a stash when the next story takes the working tree. Commit
@@ -1182,7 +1258,92 @@ def handle_dev(
                 "files_changed": payload.get("files_changed", []),
             },
             software_factory_root=software_factory_root,
+            slug_hint=story.slug,
         )
+        # Exhausted retries with the new low cap + prior-attempts feed-forward
+        # is a strong signal something upstream of dev is wrong: tests are
+        # impossible, persona prompts need work, context docs lack
+        # information, or PM cut the story too broadly. Emit a structured
+        # "factory_needs_redesign" event with a recommendation so the
+        # operator (or a future improver persona) can act on it instead of
+        # just retrying more.
+        prior_attempts_summary = []
+        try:
+            prior_attempts_summary = json.loads(story.dev_attempts_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Heuristic suggestions based on what the diagnostic actually shows.
+        last_tail = ""
+        if prior_attempts_summary:
+            last_tail = prior_attempts_summary[-1].get("test_output_tail", "")
+        suggestions: list[str] = []
+        if "ImportError" in last_tail or "ModuleNotFoundError" in last_tail:
+            suggestions.append(
+                "Test harness fails at import — check .env / DATABASE_URL "
+                "replication into the worktree, conftest dependencies, or "
+                "missing fixtures. Not a code issue dev can fix."
+            )
+        if "TESTS_NEED_CLARIFICATION" in last_tail:
+            suggestions.append(
+                "Dev tried to escalate test-design — verify the escape "
+                "hatch wiring is firing and test_implementer re-ran with "
+                "the clarification."
+            )
+        same_tails = (
+            len(prior_attempts_summary) >= 2
+            and len({a.get("test_output_tail", "")[-300:] for a in prior_attempts_summary}) == 1
+        )
+        if same_tails:
+            suggestions.append(
+                "All attempts hit the exact same failure tail — dev's LLM "
+                "is stuck on a problem code alone cannot fix. Re-prompt "
+                "test_implementer or revisit the story's acceptance criteria."
+            )
+        if not suggestions:
+            suggestions.append(
+                "Investigate the per-story event log (``factory trace "
+                f"{story.id}``) and the partial commit on origin "
+                f"({commit_sha[:12] if commit_sha else 'no commit'}) — "
+                "the chain ran out of attempts but the cause isn't obvious "
+                "from the diagnostic."
+            )
+
+        log_story_event(
+            story.id,
+            "factory_needs_redesign",
+            {
+                "retries_used": story.dev_retries,
+                "max_retries": _MAX_DEV_RETRIES,
+                "last_test_output_tail": last_tail[-600:],
+                "suggestions": suggestions,
+                "branch": story.github_branch,
+                "commit_sha": commit_sha,
+            },
+            software_factory_root=software_factory_root,
+            slug_hint=story.slug,
+        )
+
+        # Post a comment on the direction's tracker issue (best-effort) so
+        # the signal is loud + persistent + linkable.
+        if not dry_run:
+            try:
+                _post_factory_needs_redesign_comment(
+                    story=story,
+                    app_config=app_config,
+                    suggestions=suggestions,
+                    last_tail=last_tail,
+                    software_factory_root=software_factory_root,
+                )
+            except Exception as exc:  # never let a comment failure mask the real return
+                log_story_event(
+                    story.id,
+                    "factory_needs_redesign_comment_failed",
+                    {"error": repr(exc)},
+                    software_factory_root=software_factory_root,
+                    slug_hint=story.slug,
+                )
+
         return HandlerResult(next_state=StoryState(story.state), payload=payload, error=story.error)
 
     # Escalate model tier on retry (standard -> hard).
@@ -1807,6 +1968,71 @@ def handle_docs_enforcer(
     story.state = advance(story, EVENT_DOCS_ENFORCER_PASS).value
     persist_story(story, db)
     return HandlerResult(next_state=StoryState(story.state), payload=payload)
+
+
+def _post_factory_needs_redesign_comment(
+    *,
+    story: StoryRecord,
+    app_config: AppConfig,
+    suggestions: list[str],
+    last_tail: str,
+    software_factory_root: Path,
+) -> None:
+    """Post a 'factory needs redesign' comment on the direction's tracker issue.
+
+    Operator-loud signal that the chain ran out of dev retries on a small
+    story — likely the factory itself needs work (test_implementer wrote
+    impossible tests, persona prompt missing context, env/runtime gap,
+    etc.) rather than dev needing more chances.
+
+    Best-effort: silently no-ops when ``gh`` isn't on PATH, the direction
+    has no tracker_issue recorded, or the call fails. The structured
+    event log entry is the durable record; this comment is the surface.
+    """
+    direction = find_direction_for_story(story, software_factory_root)
+    if direction is None:
+        return
+    tracker = direction.state.get("tracker_issue") if hasattr(direction, "state") else None
+    if not tracker:
+        return
+    repo = f"{app_config.repo_owner}/{app_config.repo_name}"
+    body_parts = [
+        f"## :warning: factory_needs_redesign — story #{story.id} ({story.slug})",
+        "",
+        f"Dev exhausted **{story.dev_retries}/{_MAX_DEV_RETRIES}** chain-level "
+        f"retries with prior-attempt feed-forward enabled. That's a strong "
+        f"signal something upstream of dev needs work — not that dev needs more chances.",
+        "",
+        f"- Branch: `{story.github_branch}`",
+        f"- Story slug: `{story.slug}`",
+        f"- Direction: `{story.direction_id}`",
+        "",
+        "### Suggestions",
+    ]
+    for s in suggestions:
+        body_parts.append(f"- {s}")
+    if last_tail.strip():
+        body_parts += [
+            "",
+            "### Last test-output tail",
+            "```",
+            last_tail[-1500:],
+            "```",
+        ]
+    body_parts.append("")
+    body_parts.append(
+        f"Inspect via `factory trace {story.id}` for the per-attempt event log."
+    )
+    body = "\n".join(body_parts)
+
+    import subprocess
+
+    subprocess.run(
+        ["gh", "issue", "comment", str(tracker), "--repo", repo, "--body", body],
+        check=False,
+        timeout=30,
+        capture_output=True,
+    )
 
 
 def _open_pr_for_docs_story(
