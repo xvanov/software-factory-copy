@@ -47,3 +47,7 @@ def test_tick_emits_tick_start_and_tick_end(factory_root: Path) -> None:
     assert "duration_s" in tick_end, "tick_end must have duration_s"
     assert tick_end["duration_s"] >= 0
     assert tick_end["app"] == "testapp"
+    assert tick_end["success"] is True, "tick_end must carry success=True on a normal tick"
+    assert "exception" not in tick_end or tick_end["exception"] is None, (
+        "tick_end must not carry an exception on a normal tick"
+    )

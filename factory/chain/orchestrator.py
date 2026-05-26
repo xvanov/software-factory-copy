@@ -484,266 +484,279 @@ def tick(
     except Exception:  # noqa: BLE001
         pass
 
-    # Recover stories stranded in ``*_in_progress`` from a crashed tick or
-    # a prior config-change regime (e.g. retry-cap lowered while a row was
-    # mid-attempt). Pure DB rewrite — no LLM / git work. See the function
-    # docstring for the recovery mapping.
-    if not dry_run:
-        try:
-            recovered = _prune_stale_in_progress(db, app, settings=settings, root=root)
-            for slug, from_state, to_state in recovered:
-                summary.handler_runs.append((slug, f"{from_state}(stale)", to_state))
-        except Exception as exc:
-            summary.errors.append((app, f"stale-state recovery failed (non-fatal): {exc!r}"))
+    # Track outcome for the guaranteed tick_end signal in the finally block.
+    _tick_succeeded = False
+    _tick_exception: str | None = None
 
-    stories = H.stories_in_flight(app, db)
-
-    # ---- Signal: queue snapshot + spend snapshot ---------------------------
     try:
-        from factory.manager.signals import write_queue_snapshot, write_spend_snapshot
-        from factory.settings.spend import projected_end_of_day
+        # Recover stories stranded in ``*_in_progress`` from a crashed tick or
+        # a prior config-change regime (e.g. retry-cap lowered while a row was
+        # mid-attempt). Pure DB rewrite — no LLM / git work. See the function
+        # docstring for the recovery mapping.
+        if not dry_run:
+            try:
+                recovered = _prune_stale_in_progress(db, app, settings=settings, root=root)
+                for slug, from_state, to_state in recovered:
+                    summary.handler_runs.append((slug, f"{from_state}(stale)", to_state))
+            except Exception as exc:
+                summary.errors.append((app, f"stale-state recovery failed (non-fatal): {exc!r}"))
 
-        # Count stories by state for queue snapshot.
-        _all_stories_for_app: list[StoryRecord] = []
+        stories = H.stories_in_flight(app, db)
+
+        # ---- Signal: queue snapshot + spend snapshot ---------------------------
         try:
-            _eng_q = create_engine(f"sqlite:///{db}", echo=False)
-            with Session(_eng_q) as _sess_q:
-                _all_stories_for_app = list(
-                    _sess_q.exec(select(StoryRecord).where(StoryRecord.app == app)).all()
-                )
-        except Exception:
-            pass
-        _counts: dict[str, int] = {}
-        for _s in _all_stories_for_app:
-            _counts[_s.state] = _counts.get(_s.state, 0) + 1
-        write_queue_snapshot(app=app, counts_by_state=_counts, software_factory_root=root)
+            from factory.manager.signals import write_queue_snapshot, write_spend_snapshot
+            from factory.settings.spend import projected_end_of_day
 
-        # Spend snapshot — query by persona for by_persona breakdown.
-        _today_usd = today_spend_usd(root, db_path=db)
-        _hour_usd = hour_spend_usd(root, db_path=db)
-        _proj_usd = projected_end_of_day(root, db_path=db)
-        _daily_cap = float(getattr(settings.caps, "daily_spend_usd", 0) or 0)
-        _hourly_cap = float(getattr(settings.caps, "hourly_spend_usd", 0) or 0)
-        _by_persona: dict[str, float] = {}
-        try:
-            from factory.runner import Run as _Run
-
-            _today_str = datetime.now(UTC).date().isoformat()
-            _eng_sp = create_engine(f"sqlite:///{db}", echo=False)
-            with Session(_eng_sp) as _sess_sp:
-                _run_rows = list(_sess_sp.exec(select(_Run)).all())
-            for _r in _run_rows:
-                if (_r.ts or "").startswith(_today_str):
-                    _by_persona[_r.persona] = _by_persona.get(_r.persona, 0.0) + float(
-                        _r.cost_usd or 0.0
+            # Count stories by state for queue snapshot.
+            _all_stories_for_app: list[StoryRecord] = []
+            try:
+                _eng_q = create_engine(f"sqlite:///{db}", echo=False)
+                with Session(_eng_q) as _sess_q:
+                    _all_stories_for_app = list(
+                        _sess_q.exec(select(StoryRecord).where(StoryRecord.app == app)).all()
                     )
-        except Exception:
+            except Exception:
+                pass
+            _counts: dict[str, int] = {}
+            for _s in _all_stories_for_app:
+                _counts[_s.state] = _counts.get(_s.state, 0) + 1
+            write_queue_snapshot(app=app, counts_by_state=_counts, software_factory_root=root)
+
+            # Spend snapshot — query by persona for by_persona breakdown.
+            _today_usd = today_spend_usd(root, db_path=db)
+            _hour_usd = hour_spend_usd(root, db_path=db)
+            _proj_usd = projected_end_of_day(root, db_path=db)
+            _daily_cap = float(getattr(settings.caps, "daily_spend_usd", 0) or 0)
+            _hourly_cap = float(getattr(settings.caps, "hourly_spend_usd", 0) or 0)
+            _by_persona: dict[str, float] = {}
+            try:
+                from factory.runner import Run as _Run
+
+                _today_str = datetime.now(UTC).date().isoformat()
+                _eng_sp = create_engine(f"sqlite:///{db}", echo=False)
+                with Session(_eng_sp) as _sess_sp:
+                    _run_rows = list(_sess_sp.exec(select(_Run)).all())
+                for _r in _run_rows:
+                    if (_r.ts or "").startswith(_today_str):
+                        _by_persona[_r.persona] = _by_persona.get(_r.persona, 0.0) + float(
+                            _r.cost_usd or 0.0
+                        )
+            except Exception:
+                pass
+            write_spend_snapshot(
+                today_usd=_today_usd,
+                last_hour_usd=_hour_usd,
+                projected_eod_usd=_proj_usd,
+                daily_cap_usd=_daily_cap,
+                hourly_cap_usd=_hourly_cap,
+                by_persona=_by_persona,
+                software_factory_root=root,
+            )
+        except Exception:  # noqa: BLE001
             pass
-        write_spend_snapshot(
-            today_usd=_today_usd,
-            last_hour_usd=_hour_usd,
-            projected_eod_usd=_proj_usd,
-            daily_cap_usd=_daily_cap,
-            hourly_cap_usd=_hourly_cap,
-            by_persona=_by_persona,
-            software_factory_root=root,
-        )
-    except Exception:  # noqa: BLE001
-        pass
 
-    # Prune worktrees for stories that no longer need them (terminal
-    # states, missing rows). Idempotent and best-effort — a failure here
-    # mustn't take the tick down.
-    if not dry_run:
-        try:
-            from factory.app_config import resolve_app_repo_path
-            from factory.chain.worktree import prune_stale_worktrees
+        # Prune worktrees for stories that no longer need them (terminal
+        # states, missing rows). Idempotent and best-effort — a failure here
+        # mustn't take the tick down.
+        if not dry_run:
+            try:
+                from factory.app_config import resolve_app_repo_path
+                from factory.chain.worktree import prune_stale_worktrees
 
-            active_ids: set[int] = {s.id for s in stories if s.id is not None}
-            source_repo = resolve_app_repo_path(cfg, root)
-            if source_repo.exists():
-                prune_stale_worktrees(
-                    source_repo,
-                    software_factory_root=root,
+                active_ids: set[int] = {s.id for s in stories if s.id is not None}
+                source_repo = resolve_app_repo_path(cfg, root)
+                if source_repo.exists():
+                    prune_stale_worktrees(
+                        source_repo,
+                        software_factory_root=root,
+                        app=app,
+                        active_story_ids=active_ids,
+                    )
+            except Exception as exc:
+                summary.errors.append((app, f"worktree prune failed (non-fatal): {exc!r}"))
+
+        # Even when no in-flight stories exist, we still want the
+        # end-of-tick auto-merge hook to fire so PRs that landed in
+        # PR_OPEN on a previous tick (and are therefore terminal here) get
+        # a fresh merge attempt.
+        for story in stories:
+            # Advance up to ``max_advances_per_story`` steps for this story.
+            for _ in range(max_advances_per_story):
+                handler_name = _dispatch_for_story(story)
+                if handler_name is None:
+                    # No handler for this state — either in-progress (waiting on
+                    # webhook) or terminal. Stop driving.
+                    break
+
+                # Backpressure check before dispatch. The current_state dict is
+                # recomputed each iteration so the in-flight counts reflect any
+                # newly-completed stories. Use the cap-aware counter
+                # (``_count_app_in_flight``) so queued ``STORY_CREATED`` siblings
+                # spawned in the same PM-sync batch don't self-block the entire
+                # batch — only stories with an active agent count.
+                in_flight_app = _count_app_in_flight(db, app, exclude_story_id=story.id)
+                state_dict = _build_current_state(
+                    root=root,
+                    db=db,
                     app=app,
-                    active_story_ids=active_ids,
+                    in_flight_app=in_flight_app,
+                    exclude_story_id=story.id,
                 )
-        except Exception as exc:
-            summary.errors.append((app, f"worktree prune failed (non-fatal): {exc!r}"))
+                # Resolve the actual job_kind to dispatch — bug-typed directions
+                # get a "-bug" suffix so ``fix-only`` mode lets the work
+                # proceed while still blocking feature stories.
+                direction = H.find_direction_for_story(story, root)
+                job_kind = _resolve_job_kind(story, direction, handler_name)
+                decision = can_dispatch(job_kind, app, state_dict, settings)
+                if not decision.allowed:
+                    story.last_rejection_reason = decision.rejected_reason
+                    H.persist_story(story, db)
+                    summary.blocked_by_caps += 1
+                    summary.rejected.append((story.slug, decision.rejected_reason or "unknown"))
+                    log_story_event(
+                        story.id,
+                        "dispatch_rejected",
+                        {
+                            "handler": handler_name,
+                            "job_kind": job_kind,
+                            "reason": decision.rejected_reason,
+                            "global_in_flight": state_dict.get("global_in_flight"),
+                            "app_in_flight": state_dict.get("app_in_flight"),
+                            "today_spend_usd": state_dict.get("today_spend_usd"),
+                            "hour_spend_usd": state_dict.get("hour_spend_usd"),
+                        },
+                        software_factory_root=root,
+                        slug_hint=story.slug,
+                    )
+                    break
+                # Job is allowed — clear any stale rejection reason.
+                if story.last_rejection_reason is not None:
+                    story.last_rejection_reason = None
+                    H.persist_story(story, db)
 
-    # Even when no in-flight stories exist, we still want the
-    # end-of-tick auto-merge hook to fire so PRs that landed in
-    # PR_OPEN on a previous tick (and are therefore terminal here) get
-    # a fresh merge attempt.
-    for story in stories:
-        # Advance up to ``max_advances_per_story`` steps for this story.
-        for _ in range(max_advances_per_story):
-            handler_name = _dispatch_for_story(story)
-            if handler_name is None:
-                # No handler for this state — either in-progress (waiting on
-                # webhook) or terminal. Stop driving.
-                break
+                from_state = story.state
+                log_story_event(
+                    story.id,
+                    "handler_start",
+                    {
+                        "handler": handler_name,
+                        "from_state": from_state,
+                        "model_tier": story.current_model_tier,
+                        "dev_retries_so_far": story.dev_retries,
+                    },
+                    software_factory_root=root,
+                    slug_hint=story.slug,
+                )
+                try:
+                    result = _invoke_handler(
+                        handler_name,
+                        story,
+                        cfg,
+                        root,
+                        dry_run=dry_run,
+                        db_path=db,
+                    )
+                except Exception as exc:
+                    # Roll the story back to its pre-handler state and stash the
+                    # error on the StoryRecord. Handlers typically advance the
+                    # story into a foo_in_progress state and persist it BEFORE
+                    # invoking the LLM, so an exception leaves the row stuck —
+                    # ``_dispatch_for_story`` returns None for *_in_progress
+                    # states (those are webhook-driven), and the next tick can't
+                    # retry. Rolling back makes handler crashes recoverable: the
+                    # next tick will dispatch the same handler again.
+                    story.state = from_state
+                    story.error = repr(exc)
+                    H.persist_story(story, db)
+                    summary.errors.append((story.slug, repr(exc)))
+                    log_story_event(
+                        story.id,
+                        "handler_exception",
+                        {
+                            "handler": handler_name,
+                            "rolled_back_to": from_state,
+                            "exception": repr(exc),
+                        },
+                        software_factory_root=root,
+                        slug_hint=story.slug,
+                    )
+                    break
+                summary.handler_runs.append((story.slug, from_state, story.state))
+                summary.stories_advanced += 1
+                log_story_event(
+                    story.id,
+                    "handler_end",
+                    {
+                        "handler": handler_name,
+                        "from_state": from_state,
+                        "to_state": story.state,
+                        "had_error": bool(result.error),
+                        "error": result.error,
+                    },
+                    software_factory_root=root,
+                    slug_hint=story.slug,
+                )
+                if result.error or story.state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value:
+                    summary.stories_blocked += 1
+                    break
+                if story.state == StoryState.PR_OPEN.value:
+                    break
 
-            # Backpressure check before dispatch. The current_state dict is
-            # recomputed each iteration so the in-flight counts reflect any
-            # newly-completed stories. Use the cap-aware counter
-            # (``_count_app_in_flight``) so queued ``STORY_CREATED`` siblings
-            # spawned in the same PM-sync batch don't self-block the entire
-            # batch — only stories with an active agent count.
-            in_flight_app = _count_app_in_flight(db, app, exclude_story_id=story.id)
-            state_dict = _build_current_state(
-                root=root,
-                db=db,
+        # End-of-tick auto-merge hook. Runs after every story handler has had
+        # its turn so a story that JUST advanced into PR_OPEN this tick gets
+        # a merge attempt on the same tick. Gated by
+        # ``factory_settings.auto_merge.enabled`` and skipped in modes where
+        # forward motion is suppressed (``paused``, ``drain-reviews``).
+        if settings.auto_merge.enabled:
+            current_mode = get_mode(root, db_path=db)
+            if current_mode not in {"paused", "drain-reviews"}:
+                try:
+                    merge_actions = auto_merge_tick(
+                        root,
+                        app,
+                        dry_run=dry_run,
+                        db_path=db,
+                        merge_method=settings.auto_merge.merge_method,
+                        wait_for_ci=settings.auto_merge.wait_for_ci,
+                        delete_branch_after_merge=settings.auto_merge.delete_branch_after_merge,
+                    )
+                    summary.merges = merge_actions
+                except Exception as exc:
+                    # Auto-merge failures must not break the tick — the
+                    # operator can still inspect the chain via ``factory
+                    # story`` and re-run auto-merge by hand.
+                    summary.errors.append(("auto-merge", repr(exc)))
+
+        _tick_succeeded = True
+    except Exception as _exc:  # noqa: BLE001
+        _tick_exception = repr(_exc)
+        raise
+    finally:
+        # ---- Signal: tick_end (guaranteed even on unhandled exceptions) ----
+        try:
+            from factory.manager.signals import write_tick_event as _wte
+
+            _wte(
+                "tick_end",
+                tick_id=tick_id,
                 app=app,
-                in_flight_app=in_flight_app,
-                exclude_story_id=story.id,
-            )
-            # Resolve the actual job_kind to dispatch — bug-typed directions
-            # get a "-bug" suffix so ``fix-only`` mode lets the work
-            # proceed while still blocking feature stories.
-            direction = H.find_direction_for_story(story, root)
-            job_kind = _resolve_job_kind(story, direction, handler_name)
-            decision = can_dispatch(job_kind, app, state_dict, settings)
-            if not decision.allowed:
-                story.last_rejection_reason = decision.rejected_reason
-                H.persist_story(story, db)
-                summary.blocked_by_caps += 1
-                summary.rejected.append((story.slug, decision.rejected_reason or "unknown"))
-                log_story_event(
-                    story.id,
-                    "dispatch_rejected",
-                    {
-                        "handler": handler_name,
-                        "job_kind": job_kind,
-                        "reason": decision.rejected_reason,
-                        "global_in_flight": state_dict.get("global_in_flight"),
-                        "app_in_flight": state_dict.get("app_in_flight"),
-                        "today_spend_usd": state_dict.get("today_spend_usd"),
-                        "hour_spend_usd": state_dict.get("hour_spend_usd"),
-                    },
-                    software_factory_root=root,
-                    slug_hint=story.slug,
-                )
-                break
-            # Job is allowed — clear any stale rejection reason.
-            if story.last_rejection_reason is not None:
-                story.last_rejection_reason = None
-                H.persist_story(story, db)
-
-            from_state = story.state
-            log_story_event(
-                story.id,
-                "handler_start",
-                {
-                    "handler": handler_name,
-                    "from_state": from_state,
-                    "model_tier": story.current_model_tier,
-                    "dev_retries_so_far": story.dev_retries,
-                },
+                dry_run=dry_run,
+                duration_s=round(datetime.now(UTC).timestamp() - _tick_t0, 3),
+                stories_advanced=summary.stories_advanced,
+                stories_blocked=summary.stories_blocked,
+                errors=len(summary.errors),
+                merges_attempted=len(summary.merges),
+                success=_tick_succeeded,
+                exception=_tick_exception,
                 software_factory_root=root,
-                slug_hint=story.slug,
             )
-            try:
-                result = _invoke_handler(
-                    handler_name,
-                    story,
-                    cfg,
-                    root,
-                    dry_run=dry_run,
-                    db_path=db,
-                )
-            except Exception as exc:
-                # Roll the story back to its pre-handler state and stash the
-                # error on the StoryRecord. Handlers typically advance the
-                # story into a foo_in_progress state and persist it BEFORE
-                # invoking the LLM, so an exception leaves the row stuck —
-                # ``_dispatch_for_story`` returns None for *_in_progress
-                # states (those are webhook-driven), and the next tick can't
-                # retry. Rolling back makes handler crashes recoverable: the
-                # next tick will dispatch the same handler again.
-                story.state = from_state
-                story.error = repr(exc)
-                H.persist_story(story, db)
-                summary.errors.append((story.slug, repr(exc)))
-                log_story_event(
-                    story.id,
-                    "handler_exception",
-                    {
-                        "handler": handler_name,
-                        "rolled_back_to": from_state,
-                        "exception": repr(exc),
-                    },
-                    software_factory_root=root,
-                    slug_hint=story.slug,
-                )
-                break
-            summary.handler_runs.append((story.slug, from_state, story.state))
-            summary.stories_advanced += 1
-            log_story_event(
-                story.id,
-                "handler_end",
-                {
-                    "handler": handler_name,
-                    "from_state": from_state,
-                    "to_state": story.state,
-                    "had_error": bool(result.error),
-                    "error": result.error,
-                },
-                software_factory_root=root,
-                slug_hint=story.slug,
-            )
-            if result.error or story.state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value:
-                summary.stories_blocked += 1
-                break
-            if story.state == StoryState.PR_OPEN.value:
-                break
+        except Exception:  # noqa: BLE001
+            pass
+        # Clean up the dry-run temp DB regardless of success or failure.
+        if _dry_run_db_temp is not None:
+            _dry_run_db_temp.unlink(missing_ok=True)
 
-    # End-of-tick auto-merge hook. Runs after every story handler has had
-    # its turn so a story that JUST advanced into PR_OPEN this tick gets
-    # a merge attempt on the same tick. Gated by
-    # ``factory_settings.auto_merge.enabled`` and skipped in modes where
-    # forward motion is suppressed (``paused``, ``drain-reviews``).
-    if settings.auto_merge.enabled:
-        current_mode = get_mode(root, db_path=db)
-        if current_mode not in {"paused", "drain-reviews"}:
-            try:
-                merge_actions = auto_merge_tick(
-                    root,
-                    app,
-                    dry_run=dry_run,
-                    db_path=db,
-                    merge_method=settings.auto_merge.merge_method,
-                    wait_for_ci=settings.auto_merge.wait_for_ci,
-                    delete_branch_after_merge=settings.auto_merge.delete_branch_after_merge,
-                )
-                summary.merges = merge_actions
-            except Exception as exc:
-                # Auto-merge failures must not break the tick — the
-                # operator can still inspect the chain via ``factory
-                # story`` and re-run auto-merge by hand.
-                summary.errors.append(("auto-merge", repr(exc)))
-
-    # ---- Signal: tick_end --------------------------------------------------
-    try:
-        from factory.manager.signals import write_tick_event as _wte
-
-        _wte(
-            "tick_end",
-            tick_id=tick_id,
-            app=app,
-            dry_run=dry_run,
-            duration_s=round(datetime.now(UTC).timestamp() - _tick_t0, 3),
-            stories_advanced=summary.stories_advanced,
-            stories_blocked=summary.stories_blocked,
-            errors=len(summary.errors),
-            merges_attempted=len(summary.merges),
-            software_factory_root=root,
-        )
-    except Exception:  # noqa: BLE001
-        pass
-
-    if _dry_run_db_temp is not None:
-        _dry_run_db_temp.unlink(missing_ok=True)
     return summary
 
 

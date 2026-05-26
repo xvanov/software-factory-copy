@@ -164,6 +164,7 @@ def write_tick_event(
     stories_blocked: int | None = None,
     errors: int | None = None,
     merges_attempted: int | None = None,
+    success: bool | None = None,
     exception: str | None = None,
     software_factory_root: Path | None = None,
 ) -> None:
@@ -184,6 +185,8 @@ def write_tick_event(
         payload["errors"] = errors
     if merges_attempted is not None:
         payload["merges_attempted"] = merges_attempted
+    if success is not None:
+        payload["success"] = success
     if exception is not None:
         payload["exception"] = exception
     write_event("ticks", payload, software_factory_root=software_factory_root)
