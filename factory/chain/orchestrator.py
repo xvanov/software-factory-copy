@@ -283,11 +283,12 @@ _STALE_RECOVERY_MAP: dict[str, str] = {
 
 
 # How long an ``*_in_progress`` row can sit without a row-level update
-# before the cleanup pass considers it stranded. Real handler invocations
-# can take 10+ minutes (long dev sandboxes); 30 minutes leaves comfortable
-# headroom for the tail of any single run while still catching genuine
-# stalls within a useful operator-attention window.
-_STALE_THRESHOLD_SECONDS = 30 * 60
+# before the cleanup pass considers it stranded. Picked to be just above
+# the worst-case legitimate sandbox run (dev iteration cap is 600 calls
+# ≈ 8–12 min in real LLM timing) so we recover stuck rows quickly
+# without racing a live in-progress sandbox. Operators wanting more
+# aggressive recovery can lower this and accept the false-positive risk.
+_STALE_THRESHOLD_SECONDS = 10 * 60
 
 
 def _prune_stale_in_progress(

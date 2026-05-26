@@ -108,6 +108,48 @@ def test_build_initial_message_no_prior_attempts_skips_block() -> None:
     assert "Previous attempts" not in msg
 
 
+def test_each_dev_retry_emits_factory_needs_redesign_event(
+    temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each (non-exhausted) dev retry emits a ``factory_needs_redesign``
+    event with ``kind: dev_retry_observed`` so the factory_improver sees
+    the failure signal early instead of waiting for full retry exhaustion."""
+    story = _story_at(StoryState.TESTS_RED, temp_root)
+    db = temp_root / "state" / "factory.db"
+
+    async def _fake_sandbox(*args: object, **kwargs: object) -> RunResult:
+        return RunResult(
+            success=False,
+            files_changed=["src/x.py"],
+            test_run_passed=False,
+            error="tests not green after run",
+            summary="FAILED test_x: expected 1 got 2",
+        )
+
+    monkeypatch.setattr(runner_module, "sandbox_run", _fake_sandbox, raising=True)
+    monkeypatch.setattr(handlers_module, "route", lambda *a, **kw: "azure/gpt-5.4")
+
+    result = handle_dev(story, app_config, temp_root, dry_run=False, db_path=db)
+
+    # Re-fetch the story-level event log via the factory's reader so
+    # we exercise the same path operators use.
+    from factory.chain.event_log import read_story_events
+
+    events = read_story_events(
+        story.id,
+        software_factory_root=temp_root,
+        slug_hint=story.slug,
+    )
+    redesign_events = [
+        e for e in events if e.get("event") == "factory_needs_redesign"
+    ]
+    assert redesign_events, "every dev retry should emit a factory_needs_redesign event"
+    last = redesign_events[-1]
+    assert last["kind"] == "dev_retry_observed"
+    assert last["retries"] == 1
+    assert result.next_state == StoryState.DEV_RETRY
+
+
 def test_dev_records_attempt_into_story_dev_attempts_json(
     temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

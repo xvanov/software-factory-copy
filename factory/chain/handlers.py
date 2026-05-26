@@ -1544,6 +1544,37 @@ def handle_dev(
         },
         software_factory_root=software_factory_root,
     )
+
+    # Each retry IS a factory-improvement signal: under a healthy chain,
+    # most stories should land first-pass. A retry means something upstream
+    # of dev needs work — test_implementer wrote ambiguous tests, the persona
+    # prompts missed context, the harness was subtly off, etc. Emit a
+    # ``factory_needs_redesign`` event on EACH retry so the factory_improver
+    # persona sees the pattern early instead of waiting for exhaustion.
+    # ``kind: dev_retry_observed`` distinguishes this from the exhaustion
+    # event the improver also consumes.
+    if not dry_run:
+        log_story_event(
+            story.id,
+            "factory_needs_redesign",
+            {
+                "kind": "dev_retry_observed",
+                "retries": story.dev_retries,
+                "max_retries": _MAX_DEV_RETRIES,
+                "model_tier": story.current_model_tier,
+                "last_test_output_tail": (payload.get("summary") or "")[-600:],
+                "files_changed": payload.get("files_changed", [])[:10],
+                "branch": story.github_branch,
+                "suggestions": [
+                    "Inspect this story's dev retry — even a single retry is a "
+                    "failure signal worth aggregating. Recurring retries on the "
+                    "same persona / scope shape mean a prompt or harness gap."
+                ],
+            },
+            software_factory_root=software_factory_root,
+            slug_hint=story.slug,
+        )
+
     return HandlerResult(next_state=StoryState(story.state), payload=payload)
 
 
