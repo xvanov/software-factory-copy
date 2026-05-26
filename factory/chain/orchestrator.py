@@ -102,6 +102,12 @@ _DISPATCH = {
     # threshold (3+ stories, ``infra`` scope, schema/migration/dependency in
     # the title), so the orchestrator can read sm_result_json to decide.
     StoryState.TEST_DESIGN_DONE: "test_impl",
+    # Item 4: ``TESTS_RED`` dispatches the one-shot harness precheck
+    # FIRST. The actual dispatch decision is done in
+    # ``_dispatch_for_story`` (it reads the ``harness_precheck_passed``
+    # flag to decide between "harness_precheck" and "dev") — the
+    # _DISPATCH entry here is the default ("dev") for retried-from-
+    # DEV_RETRY paths and for stories whose precheck already passed.
     StoryState.TESTS_RED: "dev",
     StoryState.DEV_RETRY: "dev",
     StoryState.TESTS_GREEN: "review",
@@ -126,15 +132,23 @@ _DISPATCH = {
 def _dispatch_for_story(story: StoryRecord) -> str | None:
     """Pick the handler name for ``story`` given its current state.
 
-    Pure wrapper around ``_DISPATCH`` plus the docs-chain branch at
-    ``STORY_CREATED`` — that one entry point depends on ``story.chain_kind``,
-    everything else is a simple table lookup.
+    Pure wrapper around ``_DISPATCH`` plus two branches:
+      * ``STORY_CREATED`` depends on ``story.chain_kind`` (tdd vs docs).
+      * ``TESTS_RED`` depends on ``story.harness_precheck_passed``
+        (Item 4) — first visit runs the harness precheck; subsequent
+        visits (after PASS sets the flag) go straight to dev. Retried
+        stories that land in ``DEV_RETRY`` always go to dev — precheck
+        runs once per story, not once per dev attempt.
     """
     state = StoryState(story.state)
     if state == StoryState.STORY_CREATED:
         if story.chain_kind == "docs":
             return "docs_sm"
         return "sm"
+    if state == StoryState.TESTS_RED and not getattr(
+        story, "harness_precheck_passed", False
+    ):
+        return "harness_precheck"
     return _DISPATCH.get(state)
 
 
@@ -157,6 +171,10 @@ def _invoke_handler(
         )
     if name == "test_impl":
         return H.handle_test_implementation(
+            story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
+        )
+    if name == "harness_precheck":
+        return H.handle_harness_precheck(
             story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
         )
     if name == "dev":

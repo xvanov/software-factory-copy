@@ -50,6 +50,15 @@ class StoryState(StrEnum):
     TEST_DESIGN_DONE = "test_design_done"
     TEST_IMPLEMENTATION_IN_PROGRESS = "test_implementation_in_progress"
     TESTS_RED = "tests_red"
+    # Item 4: between TESTS_RED and DEV_IN_PROGRESS we run a one-shot
+    # harness precheck: pytest must COLLECT (exit 0 or 1) before dev
+    # gets dispatched. Collection failure (exit 2 or 3) means the test
+    # set is environmentally broken — missing .env, missing dep,
+    # ImportError in conftest — and dev cannot fix it. The precheck
+    # routes the story to ``BLOCKED_TESTS_NEED_CLARIFICATION`` with a
+    # ``factory_needs_redesign`` event so the improver/operator sees the
+    # signal instead of dev burning the retry budget on a config bug.
+    HARNESS_PRECHECK_IN_PROGRESS = "harness_precheck_in_progress"
     DEV_IN_PROGRESS = "dev_in_progress"
     DEV_RETRY = "dev_retry"
     TESTS_GREEN = "tests_green"
@@ -127,6 +136,14 @@ class StoryRecord(SQLModel, table=True):
     format_passed: bool | None = None
     types_passed: bool | None = None
     coverage_passed: bool | None = None
+    # Item 4 — harness precheck. Set True after a one-shot pytest
+    # collect+exit pass succeeds against the per-story worktree (with
+    # ONLY the test files committed, before dev writes production
+    # code). The orchestrator's dispatch table reads this flag when
+    # state==TESTS_RED to decide whether to fire ``harness_precheck``
+    # or skip ahead to ``dev``. Default ``False`` so existing stories
+    # transparently get the precheck on their next visit.
+    harness_precheck_passed: bool = False
 
 
 # Event names — strings the chain emits when a handler completes.
@@ -137,6 +154,14 @@ EVENT_TEST_DESIGN_DONE = "test_design_done"
 EVENT_TEST_IMPL_STARTED = "test_impl_started"
 EVENT_TESTS_RED = "tests_red"
 EVENT_TEST_IMPL_SLOP = "test_impl_slop"
+# Item 4 — harness precheck events. Started fires on the
+# TESTS_RED→HARNESS_PRECHECK_IN_PROGRESS edge; PASS routes to DEV_IN_PROGRESS;
+# FAIL routes to BLOCKED_TESTS_NEED_CLARIFICATION (same terminal blocked
+# state the test-impl-slop path lands in — it's the operator-attention
+# bucket).
+EVENT_HARNESS_PRECHECK_STARTED = "harness_precheck_started"
+EVENT_HARNESS_PRECHECK_PASS = "harness_precheck_pass"
+EVENT_HARNESS_PRECHECK_FAIL = "harness_precheck_fail"
 EVENT_DEV_STARTED = "dev_started"
 EVENT_DEV_TESTS_GREEN = "dev_tests_green"
 EVENT_DEV_TESTS_RED = "dev_tests_red"  # dev finished but tests still red
@@ -181,6 +206,24 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
     (
         StoryState.TEST_IMPLEMENTATION_IN_PROGRESS,
         EVENT_TEST_IMPL_SLOP,
+    ): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
+    # Item 4 — harness precheck between TESTS_RED and DEV. Runs ONCE
+    # per story (the orchestrator's dispatch table reads
+    # ``story.harness_precheck_passed`` and skips re-running on
+    # subsequent visits to TESTS_RED). PASS routes back to TESTS_RED
+    # with the flag set so dev gets dispatched next iteration; FAIL
+    # routes to the operator-attention bucket.
+    (
+        StoryState.TESTS_RED,
+        EVENT_HARNESS_PRECHECK_STARTED,
+    ): StoryState.HARNESS_PRECHECK_IN_PROGRESS,
+    (
+        StoryState.HARNESS_PRECHECK_IN_PROGRESS,
+        EVENT_HARNESS_PRECHECK_PASS,
+    ): StoryState.TESTS_RED,
+    (
+        StoryState.HARNESS_PRECHECK_IN_PROGRESS,
+        EVENT_HARNESS_PRECHECK_FAIL,
     ): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
     (StoryState.TESTS_RED, EVENT_DEV_STARTED): StoryState.DEV_IN_PROGRESS,
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_TESTS_GREEN): StoryState.TESTS_GREEN,

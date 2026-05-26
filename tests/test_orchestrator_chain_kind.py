@@ -11,7 +11,12 @@ from factory.chain.orchestrator import _dispatch_for_story
 from factory.chain.state_machine import StoryRecord, StoryState
 
 
-def _story(state: StoryState, *, chain_kind: str = "tdd") -> StoryRecord:
+def _story(
+    state: StoryState,
+    *,
+    chain_kind: str = "tdd",
+    harness_precheck_passed: bool = False,
+) -> StoryRecord:
     return StoryRecord(
         id=1,
         direction_id="005",
@@ -21,6 +26,7 @@ def _story(state: StoryState, *, chain_kind: str = "tdd") -> StoryRecord:
         scope="docs",
         state=state.value,
         chain_kind=chain_kind,
+        harness_precheck_passed=harness_precheck_passed,
     )
 
 
@@ -71,7 +77,27 @@ def test_tdd_chain_dispatch_unchanged_by_chain_kind_branch() -> None:
 
     Guards against the subtle bug where ``_dispatch_for_story`` would over-
     apply the chain_kind branch and break the historical TDD pipeline.
+
+    Item 4 added a TESTS_RED branch: the FIRST visit routes to
+    ``harness_precheck`` to fail fast on env/collection issues; once the
+    precheck passes (``harness_precheck_passed`` flips True) the story
+    routes to ``dev``. Both shapes verified below.
     """
     assert _dispatch_for_story(_story(StoryState.SM_DONE, chain_kind="tdd")) == "test_design"
-    assert _dispatch_for_story(_story(StoryState.TESTS_RED, chain_kind="tdd")) == "dev"
+    # First TESTS_RED visit: precheck hasn't run yet → harness_precheck.
+    assert (
+        _dispatch_for_story(_story(StoryState.TESTS_RED, chain_kind="tdd"))
+        == "harness_precheck"
+    )
+    # After precheck passes, TESTS_RED routes to dev as before.
+    assert (
+        _dispatch_for_story(
+            _story(
+                StoryState.TESTS_RED,
+                chain_kind="tdd",
+                harness_precheck_passed=True,
+            )
+        )
+        == "dev"
+    )
     assert _dispatch_for_story(_story(StoryState.REVIEWER_DONE, chain_kind="tdd")) == "tech_writer"

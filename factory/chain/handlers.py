@@ -33,6 +33,9 @@ from factory.chain.state_machine import (
     EVENT_DEV_STARTED,
     EVENT_DEV_TESTS_GREEN,
     EVENT_DEV_TESTS_RED,
+    EVENT_HARNESS_PRECHECK_FAIL,
+    EVENT_HARNESS_PRECHECK_PASS,
+    EVENT_HARNESS_PRECHECK_STARTED,
     EVENT_TESTS_NEED_CLARIFICATION,
     EVENT_DOCS_ENFORCER_CHECK,
     EVENT_DOCS_ENFORCER_FAIL,
@@ -131,6 +134,9 @@ _MIGRATION_COLUMNS: dict[str, str] = {
     # Fed forward into the next dev invocation's initial message so the LLM
     # sees what it already tried and what failed.
     "dev_attempts_json": "TEXT",
+    # Item 4 — harness precheck flag. Bool, default 0 (False). SQLite
+    # stores bool as 0/1 INTEGER; the SQLModel layer coerces on read.
+    "harness_precheck_passed": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
@@ -976,6 +982,169 @@ def handle_test_implementation(
     story.state = advance(story, EVENT_TESTS_RED).value
     persist_story(story, db)
     return HandlerResult(next_state=StoryState(story.state), payload=result)
+
+
+# --------------------------------------------------------------------------- #
+# harness_precheck (Item 4)
+# --------------------------------------------------------------------------- #
+
+
+# pytest exit codes:
+#   0  — all tests passed (we don't expect this pre-dev; tests SHOULD be red)
+#   1  — tests collected and at least one failed (the desired pre-dev state)
+#   2  — usage error / interrupted
+#   3  — internal error
+#   4  — pytest command-line usage error
+#   5  — no tests collected
+#
+# 0 + 1 are "harness OK" (collection succeeded). 2/3/4/5 are
+# "environmental failure" — dev cannot fix it; the chain must route to
+# the operator-attention bucket with a clear redesign signal.
+_HARNESS_PRECHECK_OK_EXIT_CODES = {0, 1}
+_HARNESS_PRECHECK_TIMEOUT_S = 120
+
+
+def handle_harness_precheck(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+    *,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+    fixture_exit_code: int | None = None,
+    fixture_output: str | None = None,
+) -> HandlerResult:
+    """Run a one-shot test-collection check before dev gets dispatched.
+
+    Why
+    ---
+    When pytest fails to *collect* (missing .env, ImportError in
+    conftest, missing dep, wrong DATABASE_URL), dev sees a stack trace
+    its code cannot fix and burns the entire retry budget on a config
+    bug. This handler runs the configured ``test_command`` ONCE per
+    story (gated by ``story.harness_precheck_passed``) inside the
+    per-story worktree with ONLY the test files committed (i.e. before
+    dev writes production code). If pytest can collect — exit 0 or 1 —
+    the precheck passes and the orchestrator dispatches dev on the
+    next iteration. If pytest blows up with a collection failure (exit
+    2/3/4/5), the precheck routes the story to
+    ``BLOCKED_TESTS_NEED_CLARIFICATION`` and emits a
+    ``factory_needs_redesign`` event so the improver/operator sees the
+    environmental gap.
+
+    Dry-run / tests
+    ---------------
+    ``fixture_exit_code`` + ``fixture_output`` let tests drive the
+    decision deterministically without spinning a real subprocess.
+    """
+    db = db_path or (software_factory_root / "state" / "factory.db")
+    story.state = advance(story, EVENT_HARNESS_PRECHECK_STARTED).value
+    persist_story(story, db)
+
+    exit_code: int
+    output: str
+
+    if fixture_exit_code is not None:
+        exit_code = fixture_exit_code
+        output = fixture_output or "(fixture)"
+    elif dry_run:
+        # Dry-run with no fixture: assume the harness collects fine.
+        # Tests that want to exercise the fail path always pass a
+        # fixture exit code; the dry-run default is "happy harness".
+        exit_code = 1  # collected, tests failed (desired pre-dev state)
+        output = "(dry-run: harness assumed healthy)"
+    else:
+        # Real run: execute the app's test_command against the per-story
+        # worktree. If no test_command is configured, treat as "harness
+        # not declared, skip precheck cleanly" — same effect as a
+        # successful precheck, since there's nothing to check.
+        test_command = app_config.gates.test_command
+        if not test_command:
+            exit_code = 1
+            output = "(no app_config.gates.test_command configured; precheck skipped)"
+        else:
+            target_repo = _writing_worktree(app_config, software_factory_root, story)
+            try:
+                import subprocess
+
+                proc = subprocess.run(
+                    test_command,
+                    shell=True,
+                    cwd=str(target_repo),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=_HARNESS_PRECHECK_TIMEOUT_S,
+                )
+                exit_code = proc.returncode
+                output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            except subprocess.TimeoutExpired as exc:
+                exit_code = 124  # canonical timeout exit; not in OK set
+                output = f"(precheck timed out after {_HARNESS_PRECHECK_TIMEOUT_S}s): {exc}"
+            except Exception as exc:  # noqa: BLE001
+                exit_code = 99
+                output = f"(precheck subprocess raised): {exc!r}"
+
+    passed = exit_code in _HARNESS_PRECHECK_OK_EXIT_CODES
+    tail = output[-2000:]
+
+    log_story_event(
+        story.id,
+        "harness_precheck",
+        {
+            "exit_code": exit_code,
+            "passed": passed,
+            "output_tail": tail[-600:],
+        },
+        software_factory_root=software_factory_root,
+        slug_hint=story.slug,
+    )
+
+    if passed:
+        story.harness_precheck_passed = True
+        story.state = advance(story, EVENT_HARNESS_PRECHECK_PASS).value
+        persist_story(story, db)
+        return HandlerResult(
+            next_state=StoryState(story.state),
+            payload={
+                "passed": True,
+                "exit_code": exit_code,
+                "output_tail": tail,
+            },
+        )
+
+    # Precheck failed — the harness is broken. Route to
+    # BLOCKED_TESTS_NEED_CLARIFICATION + emit factory_needs_redesign so
+    # the improver picks up the signal.
+    story.state = advance(story, EVENT_HARNESS_PRECHECK_FAIL).value
+    story.error = (
+        f"harness_precheck_failed: pytest exit_code={exit_code} "
+        f"(expected 0 or 1; got something that means 'tests did not collect')"
+    )
+    persist_story(story, db)
+    log_story_event(
+        story.id,
+        "factory_needs_redesign",
+        {
+            "kind": "harness_failure",
+            "exit_code": exit_code,
+            "output_tail": tail[-1200:],
+            "suggestions": [
+                "Test harness failed to collect — typical causes: missing "
+                ".env in worktree, ImportError in conftest, missing "
+                "dependency, wrong DATABASE_URL. Investigate the worktree "
+                "environment before re-dispatching dev.",
+            ],
+            "branch": story.github_branch,
+        },
+        software_factory_root=software_factory_root,
+        slug_hint=story.slug,
+    )
+    return HandlerResult(
+        next_state=StoryState(story.state),
+        payload={"passed": False, "exit_code": exit_code, "output_tail": tail},
+        error=story.error,
+    )
 
 
 # --------------------------------------------------------------------------- #
