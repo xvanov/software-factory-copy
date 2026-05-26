@@ -21,7 +21,7 @@ fi
 APP="$1"
 cd "$(dirname "$0")/.."
 
-DAILY_LIMIT_USD="${DAILY_LIMIT_USD:-90}"  # default guard: 90% of $100 cap
+DAILY_LIMIT_USD="${DAILY_LIMIT_USD:-180}"  # default guard: 90% of $200 cap
 
 emit() { printf '[drive %s app=%s] %s\n' "$(date -u +%H:%M:%S)" "$APP" "$*"; }
 

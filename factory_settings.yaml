@@ -11,7 +11,7 @@ caps:
   # Set to 10 so non-active in-flight states (deploy_pending, dev_retry
   # waiting on next tick, etc.) don't accidentally throttle dispatch.
   per_repo_concurrent_agents: 10
-  daily_spend_usd: 100
+  daily_spend_usd: 200
   hourly_spend_usd: 15
 queues:
   human_review_max_open_prs: 5
