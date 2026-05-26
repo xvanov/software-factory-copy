@@ -36,6 +36,9 @@ class RateLimitsConfig(BaseModel):
     bug_hunter_runs_per_day: int = 2
     security_runs_per_day: int = 1
     ux_auditor_runs_per_day: int = 2
+    # Factory self-improver cap. Cron fires it daily; the second slot
+    # leaves room for a manual ``factory improve`` invocation.
+    factory_improver_runs_per_day: int = 2
 
 
 class ModesConfig(BaseModel):

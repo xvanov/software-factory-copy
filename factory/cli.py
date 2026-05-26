@@ -398,6 +398,38 @@ def tick_cmd(
         if due.rate_limit_hit:
             scheduled_results.append((due.schedule.name, "rate_limited", 0, 0))
             continue
+        # ``factory_improver`` is dispatched through its own pipeline —
+        # it does not file directions like ralph/bug_hunter; it persists
+        # a proposal JSON + updates a pinned issue. We surface it in the
+        # same table so the operator sees the cron slot fired.
+        if due.schedule.persona == "factory_improver":
+            from factory.chain.factory_improver import run_factory_improver
+
+            try:
+                cfg_for_issue = None
+                try:
+                    from factory.app_config import load_app_config
+
+                    cfg_for_issue = load_app_config(app_name, _FACTORY_ROOT).repo
+                except Exception:
+                    cfg_for_issue = None
+                fi_out = run_factory_improver(
+                    app=app_name,
+                    software_factory_root=_FACTORY_ROOT,
+                    dry_run=dry_run,
+                    repo_for_issue=cfg_for_issue,
+                )
+                scheduled_results.append(
+                    (
+                        due.schedule.name,
+                        "ok" if fi_out.succeeded else "errored",
+                        fi_out.events_processed,
+                        fi_out.improvements_count,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - never fail the tick
+                scheduled_results.append((due.schedule.name, f"errored:{exc!r}"[:60], 0, 0))
+            continue
         out = run_scheduled_persona(
             due.schedule.persona,
             app_name,
@@ -1537,6 +1569,91 @@ def ralph_now_cmd(
 ) -> None:
     """Force-fire the Ralph (continuous-improvement) persona once."""
     _scheduled_persona_now(persona="ralph", app_name=app_name, dry_run=dry_run, label="ralph")
+
+
+@app.command("improve")
+def improve_cmd(
+    app_name: str | None = typer.Option(
+        None,
+        "--app",
+        help=(
+            "Optional app filter — only blocked stories under this app "
+            "are surfaced to the improver. Events are always aggregated "
+            "across all apps."
+        ),
+    ),
+    window_hours: int = typer.Option(
+        24,
+        "--window-hours",
+        help="How far back to aggregate factory_needs_redesign events.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="No LLM/GitHub call"),
+    no_issue: bool = typer.Option(
+        False,
+        "--no-issue",
+        help=(
+            "Skip the pinned-issue update. The JSON output is still "
+            "persisted under state/improvements/."
+        ),
+    ),
+) -> None:
+    """Run the factory_improver persona over the recent
+    ``factory_needs_redesign`` events.
+
+    Aggregates the last N hours of redesign events + terminally-blocked
+    story rows, invokes the improver persona, persists the proposal to
+    ``state/improvements/<ts>.json``, and (unless ``--no-issue``) posts
+    a summary on the rolling ``factory-improvements`` GH issue.
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+    if not dry_run:
+        ok, hint = _has_any_llm_provider_key()
+        if not ok:
+            console.print(
+                f"[red]error:[/red] real `factory improve` requires an "
+                f"LLM provider key. " + hint
+            )
+            raise typer.Exit(code=2)
+
+    from factory.chain.factory_improver import run_factory_improver
+
+    # Resolve the repo for the pinned issue: prefer the explicit app's
+    # config (when provided) so the issue lands in the right place. When
+    # no app filter is set, default to the factory's own repo (recorded
+    # under apps/software-factory if available; otherwise skip the issue
+    # post). This is the documented "factory self-improvement" path.
+    repo_for_issue: str | None = None
+    if not no_issue and app_name:
+        try:
+            from factory.app_config import load_app_config
+
+            cfg = load_app_config(app_name, _FACTORY_ROOT)
+            repo_for_issue = cfg.repo
+        except Exception:
+            repo_for_issue = None
+
+    out = run_factory_improver(
+        app=app_name,
+        software_factory_root=_FACTORY_ROOT,
+        window_hours=window_hours,
+        dry_run=dry_run,
+        repo_for_issue=None if no_issue else repo_for_issue,
+    )
+
+    table = Table(title=f"factory improve — app={app_name or '(all)'} dry_run={dry_run}")
+    table.add_column("field")
+    table.add_column("value")
+    table.add_row("timestamp", out.timestamp)
+    table.add_row("events_processed", str(out.events_processed))
+    table.add_row("improvements", str(out.improvements_count))
+    table.add_row("output_path", str(out.output_path or "(none)"))
+    table.add_row("issue_number", str(out.issue_number) if out.issue_number else "(none)")
+    if out.error:
+        table.add_row("error", out.error)
+    console.print(table)
+    if out.error:
+        raise typer.Exit(code=1)
 
 
 @app.command("bug-hunt-now")

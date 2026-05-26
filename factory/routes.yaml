@@ -38,6 +38,7 @@ routes:
   ralph: deepseek/deepseek-chat
   bug_hunter: deepseek/deepseek-chat
   security: anthropic/claude-opus-4-7
+  factory_improver: deepseek/deepseek-chat
 
 # Azure OpenAI / Cognitive Services deployments at mv-coding-agent-foundry.
 # Three deployments live there:
@@ -67,6 +68,10 @@ azure_routes:
   ralph: azure/gpt-5.4
   bug_hunter: azure/gpt-5.4
   release_manager: azure/gpt-5.4
+  # Factory self-improvement scout — cheap general-purpose model fits
+  # the persona's pattern (structured JSON proposals, no code-judgment
+  # heavy lifting). Direct routing per user spec.
+  factory_improver: azure/gpt-5.4
 
   # Code-judgment work → intent is gpt-5.3-codex; falls back to gpt-5.4 today
   # (codex is Responses-API-only — see header note). reviewer ≠ dev still

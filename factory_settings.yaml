@@ -22,6 +22,10 @@ rate_limits:
   bug_hunter_runs_per_day: 2
   security_runs_per_day: 1
   ux_auditor_runs_per_day: 2
+  # Factory self-improver. Daily cap of 2 — the cron schedule fires it
+  # once at 05:00 UTC; the second slot covers a manual ``factory
+  # improve`` invocation on the same day without tripping the limiter.
+  factory_improver_runs_per_day: 2
 modes:
   default: normal
   available: [normal, fix-only, drain-reviews, paused, exploratory, deploy-frozen, ux-audit-only]
@@ -66,3 +70,15 @@ schedules:
     cron: "0 9 * * 1"
     persona: security
     rate_limit_key: security_runs_per_day
+  # Daily factory self-improvement scan — aggregates the last 24h of
+  # ``factory_needs_redesign`` events + terminally-blocked stories and
+  # asks the ``factory_improver`` persona for concrete change
+  # proposals. The cron tick dispatches via
+  # ``factory.chain.factory_improver.run_factory_improver``; output is
+  # persisted to ``state/improvements/<ts>.json`` and surfaced on a
+  # single pinned GH issue (``factory-improvements`` label) so the
+  # operator sees one rolling thread, not a spam fountain.
+  - name: factory_improver
+    cron: "0 5 * * *"
+    persona: factory_improver
+    rate_limit_key: factory_improver_runs_per_day
