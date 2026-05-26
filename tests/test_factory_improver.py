@@ -27,7 +27,9 @@ from factory.chain.factory_improver import (
     FactoryImproverResult,
     aggregate_factory_needs_redesign_events,
     post_to_pinned_issue,
+    record_improver_fired,
     run_factory_improver,
+    should_fire_improver,
 )
 
 
@@ -70,14 +72,30 @@ def test_route_entry_exists() -> None:
     assert "factory_improver" in azure
 
 
-def test_cron_schedule_entry_exists() -> None:
-    """``factory_settings.yaml`` schedules the improver."""
+def test_no_cron_schedule_entry() -> None:
+    """``factory_improver`` is NOT a cron-scheduled persona anymore —
+    ``factory tick`` calls ``should_fire_improver`` directly. The
+    settings file must not carry a stale schedule entry that would
+    cause the cron path to also fire the improver (double-dispatch)."""
     import yaml
 
     root = Path(__file__).resolve().parent.parent
     cfg = yaml.safe_load((root / "factory_settings.yaml").read_text(encoding="utf-8"))
     names = [s["name"] for s in (cfg.get("schedules") or [])]
-    assert "factory_improver" in names
+    assert "factory_improver" not in names
+
+
+def test_rate_limit_cap_raised_for_event_trigger() -> None:
+    """The daily cap was 2 under the cron design; event-driven needs
+    headroom. Assert it's at least 6 so we have room for normal event
+    bursts before the circuit-breaker trips."""
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    cfg = yaml.safe_load((root / "factory_settings.yaml").read_text(encoding="utf-8"))
+    cap = (cfg.get("rate_limits") or {}).get("factory_improver_runs_per_day")
+    assert cap is not None
+    assert cap >= 6, f"event-driven improver needs cap >= 6, got {cap}"
 
 
 # ---------------------------------------------------------------------------
@@ -409,3 +427,129 @@ def test_run_factory_improver_skips_apply_when_no_improvements(
     )
     assert result.succeeded
     assert result.apply_summary is None
+
+
+# ---------------------------------------------------------------------------
+# Event-trigger gate (should_fire_improver / record_improver_fired)
+# ---------------------------------------------------------------------------
+
+
+def test_should_fire_returns_false_when_no_events(tmp_path: Path) -> None:
+    """An empty logs dir → no trigger, reason ``no_events_in_window``."""
+    (tmp_path / "state").mkdir()
+    fire, reason = should_fire_improver(software_factory_root=tmp_path)
+    assert fire is False
+    assert reason == "no_events_in_window"
+
+
+def test_should_fire_returns_true_on_fresh_event_no_prior_run(
+    tmp_path: Path,
+) -> None:
+    """A fresh ``factory_needs_redesign`` event with no prior run-history
+    triggers a fire — the first event after a quiet period must wake the
+    improver up."""
+    now = datetime.now(UTC)
+    _write_log(
+        tmp_path / "state" / "logs",
+        "0001-x.log",
+        [{"ts": now.isoformat(), "event": "factory_needs_redesign"}],
+    )
+    fire, reason = should_fire_improver(
+        software_factory_root=tmp_path, now=now
+    )
+    assert fire is True
+    assert "events=1" in reason
+
+
+def test_should_fire_debounces_recent_run(tmp_path: Path) -> None:
+    """A run 2 minutes ago + ``debounce_minutes=10`` → no fire even
+    though there's a fresh event."""
+    now = datetime.now(UTC)
+    _write_log(
+        tmp_path / "state" / "logs",
+        "0001-x.log",
+        [{"ts": now.isoformat(), "event": "factory_needs_redesign"}],
+    )
+    # Pretend we ran 2 minutes ago.
+    record_improver_fired(tmp_path, now=now - timedelta(minutes=2))
+    fire, reason = should_fire_improver(
+        software_factory_root=tmp_path, debounce_minutes=10, now=now
+    )
+    assert fire is False
+    assert reason.startswith("debounce:")
+
+
+def test_should_fire_after_debounce_window_passes(tmp_path: Path) -> None:
+    """Same conditions as the debounce test but the run was 15 minutes
+    ago — debounce has elapsed, so we fire."""
+    now = datetime.now(UTC)
+    _write_log(
+        tmp_path / "state" / "logs",
+        "0001-x.log",
+        [{"ts": now.isoformat(), "event": "factory_needs_redesign"}],
+    )
+    record_improver_fired(tmp_path, now=now - timedelta(minutes=15))
+    fire, reason = should_fire_improver(
+        software_factory_root=tmp_path, debounce_minutes=10, now=now
+    )
+    assert fire is True
+
+
+def test_should_fire_respects_daily_cap(tmp_path: Path) -> None:
+    """N runs in the last 24h ≥ ``daily_cap`` → no fire."""
+    now = datetime.now(UTC)
+    _write_log(
+        tmp_path / "state" / "logs",
+        "0001-x.log",
+        [{"ts": now.isoformat(), "event": "factory_needs_redesign"}],
+    )
+    # Pre-seed three runs all within 24h.
+    for offset in (20, 15, 5):
+        record_improver_fired(tmp_path, now=now - timedelta(hours=offset))
+    fire, reason = should_fire_improver(
+        software_factory_root=tmp_path, daily_cap=3, now=now
+    )
+    assert fire is False
+    assert reason.startswith("daily_cap_reached:")
+
+
+def test_should_fire_skips_when_no_new_events_since_last_run(
+    tmp_path: Path,
+) -> None:
+    """If the newest event in the window is older than the last
+    improver run, there's nothing new to react to."""
+    now = datetime.now(UTC)
+    old_event_ts = now - timedelta(hours=3)
+    last_run_ts = now - timedelta(hours=2)
+    _write_log(
+        tmp_path / "state" / "logs",
+        "0001-x.log",
+        [{"ts": old_event_ts.isoformat(), "event": "factory_needs_redesign"}],
+    )
+    record_improver_fired(tmp_path, now=last_run_ts)
+    fire, reason = should_fire_improver(
+        software_factory_root=tmp_path,
+        debounce_minutes=10,
+        now=now,
+    )
+    assert fire is False
+    assert reason == "no_new_events_since_last_run"
+
+
+def test_record_improver_fired_prunes_old_history(tmp_path: Path) -> None:
+    """Entries older than 24h are dropped on every write so the
+    history file stays tiny."""
+    now = datetime.now(UTC)
+    # Pre-write an ancient entry by hand.
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / ".improver_run_history.json").write_text(
+        json.dumps([(now - timedelta(days=5)).isoformat()]),
+        encoding="utf-8",
+    )
+    record_improver_fired(tmp_path, now=now)
+    persisted = json.loads(
+        (state_dir / ".improver_run_history.json").read_text(encoding="utf-8")
+    )
+    assert len(persisted) == 1
+    assert persisted[0].startswith(now.isoformat()[:19])

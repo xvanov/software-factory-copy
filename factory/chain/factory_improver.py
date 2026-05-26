@@ -207,6 +207,144 @@ def _terminally_blocked_stories(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Event-trigger gate
+# ---------------------------------------------------------------------------
+#
+# The improver used to fire on a cron (daily at 05:00 UTC, twice per day
+# cap). That made the feedback loop ~12h: an event written at 06:00
+# would sit until ~17:00 before the persona even looked at it. The
+# trigger is now event-driven — ``factory tick`` calls
+# ``should_fire_improver`` every tick and fires when a fresh
+# ``factory_needs_redesign`` event exists AND debounce has elapsed AND
+# the daily cap isn't reached.
+#
+# Run-history is persisted as a JSONL-ish list at
+# ``state/.improver_run_history.json``. Pruned to a 24h window on every
+# write so it stays tiny.
+
+_HISTORY_FILENAME = ".improver_run_history.json"
+
+
+def _history_path(software_factory_root: Path) -> Path:
+    return Path(software_factory_root) / "state" / _HISTORY_FILENAME
+
+
+def _load_history(software_factory_root: Path) -> list[str]:
+    """Return the list of run-start ISO timestamps, oldest-first. Best-effort."""
+    p = _history_path(software_factory_root)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [t for t in data if isinstance(t, str)] if isinstance(data, list) else []
+
+
+def _parse_ts(ts: str) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def should_fire_improver(
+    *,
+    software_factory_root: Path,
+    debounce_minutes: int = 10,
+    daily_cap: int = 12,
+    window_hours: int = 24,
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """Decide whether ``factory tick`` should fire the improver now.
+
+    The gate is a conjunction of:
+
+    * **Event-newer-than-last-run** — at least one
+      ``factory_needs_redesign`` event in the window has a ``ts`` after
+      our most recent run. The first ever run fires as long as there
+      is *any* event in the window.
+    * **Debounce** — ``debounce_minutes`` since the last run, so a
+      burst of events doesn't kick off a stampede of LLM calls.
+    * **Daily cap** — at most ``daily_cap`` runs in the trailing 24h
+      window. Circuit-breaker against a runaway persona / event flood.
+
+    Returns ``(fire, reason)``. ``reason`` is a short human-readable
+    string the ``tick`` command surfaces in its results table so the
+    operator can see why a run was or wasn't dispatched.
+
+    Pure with respect to clock + filesystem state; ``now`` is
+    injectable for tests.
+    """
+    now = now or datetime.now(UTC)
+    history = _load_history(software_factory_root)
+
+    # Daily cap. We trim the history view to the trailing 24h so a
+    # cap of N means "N in the last day", not "N since the dawn of
+    # time."
+    day_cutoff = now - timedelta(hours=24)
+    recent_runs = [
+        t for t in history if (_parse_ts(t) or day_cutoff - timedelta(days=999)) >= day_cutoff
+    ]
+    if len(recent_runs) >= daily_cap:
+        return False, f"daily_cap_reached:{len(recent_runs)}/{daily_cap}"
+
+    # Debounce.
+    if recent_runs:
+        last_dt = _parse_ts(recent_runs[-1])
+        if last_dt is not None:
+            elapsed = now - last_dt
+            if elapsed < timedelta(minutes=debounce_minutes):
+                secs = int(elapsed.total_seconds())
+                return False, f"debounce:{secs}s<{debounce_minutes}m"
+
+    events = aggregate_factory_needs_redesign_events(
+        software_factory_root=software_factory_root,
+        window_hours=window_hours,
+        now=now,
+    )
+    if not events:
+        return False, "no_events_in_window"
+
+    newest_event_ts = max(
+        (_parse_ts(e.get("ts", "")) for e in events if isinstance(e.get("ts"), str)),
+        default=None,
+    )
+    if newest_event_ts is None:
+        return False, "no_parseable_event_ts"
+
+    if recent_runs:
+        last_dt = _parse_ts(recent_runs[-1])
+        if last_dt is not None and newest_event_ts <= last_dt:
+            return False, "no_new_events_since_last_run"
+
+    return True, f"fire:events={len(events)}"
+
+
+def record_improver_fired(
+    software_factory_root: Path, *, now: datetime | None = None
+) -> None:
+    """Append ``now`` to the history file, then prune to the last 24h.
+
+    Called by the tick path right after a successful (or attempted —
+    we count attempts toward the cap) ``run_factory_improver`` invocation.
+    """
+    now = now or datetime.now(UTC)
+    p = _history_path(software_factory_root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    history = _load_history(software_factory_root)
+    history.append(now.isoformat())
+    cutoff = now - timedelta(hours=24)
+    history = [
+        t
+        for t in history
+        if (_parse_ts(t) or cutoff - timedelta(days=999)) >= cutoff
+    ]
+    p.write_text(json.dumps(history), encoding="utf-8")
+
+
 def _personas_index(personas_dir: Path) -> list[dict[str, Any]]:
     """Compose a lightweight index of every persona prompt.
 
@@ -607,5 +745,7 @@ __all__ = [
     "FactoryImproverResult",
     "aggregate_factory_needs_redesign_events",
     "post_to_pinned_issue",
+    "record_improver_fired",
     "run_factory_improver",
+    "should_fire_improver",
 ]

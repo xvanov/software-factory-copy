@@ -394,17 +394,34 @@ def tick_cmd(
     from factory.scheduler.cron import due_schedules
 
     scheduled_results = []
-    for due in due_schedules(_FACTORY_ROOT, audit_app=app_name):
-        if due.rate_limit_hit:
-            scheduled_results.append((due.schedule.name, "rate_limited", 0, 0))
-            continue
-        # ``factory_improver`` is dispatched through its own pipeline —
-        # it does not file directions like ralph/bug_hunter; it persists
-        # a proposal JSON + updates a pinned issue. We surface it in the
-        # same table so the operator sees the cron slot fired.
-        if due.schedule.persona == "factory_improver":
-            from factory.chain.factory_improver import run_factory_improver
 
+    # Event-triggered factory_improver. Every tick, ask whether a
+    # ``factory_needs_redesign`` event has landed since the last
+    # improver run AND the debounce window has elapsed AND we're under
+    # the daily cap. Fires inside the same tick so the L2 apply pass
+    # can land a fix within minutes of the originating failure, not
+    # hours.
+    if not dry_run:
+        from factory.chain.factory_improver import (
+            record_improver_fired,
+            run_factory_improver,
+            should_fire_improver,
+        )
+
+        try:
+            from factory.settings.loader import load_settings
+
+            settings = load_settings(_FACTORY_ROOT)
+            daily_cap_imp = int(
+                getattr(settings.rate_limits, "factory_improver_runs_per_day", 12)
+            )
+        except Exception:
+            daily_cap_imp = 12
+        fire, reason = should_fire_improver(
+            software_factory_root=_FACTORY_ROOT,
+            daily_cap=daily_cap_imp,
+        )
+        if fire:
             try:
                 cfg_for_issue = None
                 try:
@@ -413,24 +430,40 @@ def tick_cmd(
                     cfg_for_issue = load_app_config(app_name, _FACTORY_ROOT).repo
                 except Exception:
                     cfg_for_issue = None
+                record_improver_fired(_FACTORY_ROOT)
                 fi_out = run_factory_improver(
                     app=app_name,
                     software_factory_root=_FACTORY_ROOT,
-                    dry_run=dry_run,
+                    dry_run=False,
                     repo_for_issue=cfg_for_issue,
-                    apply_pass=not dry_run,
+                    apply_pass=True,
                     apply_repo="xvanov/software-factory",
                 )
                 scheduled_results.append(
                     (
-                        due.schedule.name,
+                        "factory_improver (event)",
                         "ok" if fi_out.succeeded else "errored",
                         fi_out.events_processed,
                         fi_out.improvements_count,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - never fail the tick
-                scheduled_results.append((due.schedule.name, f"errored:{exc!r}"[:60], 0, 0))
+                scheduled_results.append(
+                    ("factory_improver (event)", f"errored:{exc!r}"[:60], 0, 0)
+                )
+        else:
+            scheduled_results.append(
+                ("factory_improver (event)", f"skipped:{reason}", 0, 0)
+            )
+
+    for due in due_schedules(_FACTORY_ROOT, audit_app=app_name):
+        if due.rate_limit_hit:
+            scheduled_results.append((due.schedule.name, "rate_limited", 0, 0))
+            continue
+        # ``factory_improver`` used to be in this list under a daily
+        # cron; it's now event-triggered above. Skip any stale entry
+        # an operator may still have in their YAML.
+        if due.schedule.persona == "factory_improver":
             continue
         out = run_scheduled_persona(
             due.schedule.persona,

@@ -20,6 +20,9 @@ state/logs/
 # one; surfaced via the pinned GH issue and the L2 apply pass — durable
 # state lives in the PRs that result, not here.
 state/improvements/
+# Event-trigger debounce / daily-cap history for the factory_improver
+# (one ISO timestamp per fire, pruned to 24h). Pure runtime bookkeeping.
+state/.improver_run_history.json
 # Per-story git worktrees created by factory.chain.worktree. Each is a
 # linked working dir under state/worktrees/<app>-<id>-<slug>/; sharing
 # .git with the source app repo, NOT this one.
