@@ -16,6 +16,10 @@ state/dry_run_scratch/
 # Per-story event logs (JSONL, append-only, grow with chain activity).
 # Surface via ``factory why`` / ``factory trace``; recreated on demand.
 state/logs/
+# Factory-improver proposal JSONs. Each ``factory improve`` run writes
+# one; surfaced via the pinned GH issue and the L2 apply pass — durable
+# state lives in the PRs that result, not here.
+state/improvements/
 # Per-story git worktrees created by factory.chain.worktree. Each is a
 # linked working dir under state/worktrees/<app>-<id>-<slug>/; sharing
 # .git with the source app repo, NOT this one.

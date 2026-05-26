@@ -418,6 +418,8 @@ def tick_cmd(
                     software_factory_root=_FACTORY_ROOT,
                     dry_run=dry_run,
                     repo_for_issue=cfg_for_issue,
+                    apply_pass=not dry_run,
+                    apply_repo="xvanov/software-factory",
                 )
                 scheduled_results.append(
                     (
@@ -1596,14 +1598,35 @@ def improve_cmd(
             "persisted under state/improvements/."
         ),
     ),
+    apply_pass: bool = typer.Option(
+        True,
+        "--apply/--no-apply",
+        help=(
+            "L2 apply pass: classify each proposal, apply safe ones to "
+            "a fresh branch on this repo, run the factory test suite, "
+            "and open PRs (auto-merging safe ones via `gh pr merge --squash --auto`). "
+            "`--no-apply` skips the pass for dry-running the persona only."
+        ),
+    ),
+    apply_repo: str = typer.Option(
+        "xvanov/software-factory",
+        "--apply-repo",
+        help=(
+            "owner/name of the factory repo where apply-pass PRs land. "
+            "Pass an empty string to skip PR creation entirely "
+            "(branches still get pushed locally if push is reachable)."
+        ),
+    ),
 ) -> None:
     """Run the factory_improver persona over the recent
     ``factory_needs_redesign`` events.
 
     Aggregates the last N hours of redesign events + terminally-blocked
     story rows, invokes the improver persona, persists the proposal to
-    ``state/improvements/<ts>.json``, and (unless ``--no-issue``) posts
-    a summary on the rolling ``factory-improvements`` GH issue.
+    ``state/improvements/<ts>.json``, (unless ``--no-issue``) posts
+    a summary on the rolling ``factory-improvements`` GH issue, and
+    (unless ``--no-apply``) runs the L2 apply pass to open PRs against
+    ``--apply-repo``.
     """
     load_dotenv()
     load_dotenv(_FACTORY_ROOT / ".env", override=False)
@@ -1639,6 +1662,8 @@ def improve_cmd(
         window_hours=window_hours,
         dry_run=dry_run,
         repo_for_issue=None if no_issue else repo_for_issue,
+        apply_pass=apply_pass,
+        apply_repo=(apply_repo or None) if apply_pass else None,
     )
 
     table = Table(title=f"factory improve — app={app_name or '(all)'} dry_run={dry_run}")
@@ -1649,6 +1674,12 @@ def improve_cmd(
     table.add_row("improvements", str(out.improvements_count))
     table.add_row("output_path", str(out.output_path or "(none)"))
     table.add_row("issue_number", str(out.issue_number) if out.issue_number else "(none)")
+    if out.apply_summary is not None:
+        s = out.apply_summary
+        table.add_row("applied (safe)", str(s.applied))
+        table.add_row("queued_for_review (risky)", str(s.queued_for_review))
+        table.add_row("abandoned", str(s.abandoned))
+        table.add_row("invalid", str(s.invalid))
     if out.error:
         table.add_row("error", out.error)
     console.print(table)

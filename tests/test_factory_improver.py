@@ -359,3 +359,53 @@ def test_run_factory_improver_dry_with_fixture_output(tmp_path: Path) -> None:
     persisted = json.loads(result.output_path.read_text(encoding="utf-8"))
     assert persisted["summary"] == "fixture summary"
     assert persisted["improvements"][0]["kind"] == "prompt_edit"
+
+
+# ---------------------------------------------------------------------------
+# L2 apply-pass wiring
+# ---------------------------------------------------------------------------
+
+
+def test_run_factory_improver_skips_apply_in_dry_run(tmp_path: Path) -> None:
+    """Dry-run never triggers the L2 apply pass (no subprocess, no
+    branches, no PRs)."""
+    (tmp_path / "state").mkdir()
+    result = run_factory_improver(
+        app=None,
+        software_factory_root=tmp_path,
+        dry_run=True,
+        fixture_output={
+            "improvements": [
+                {
+                    "kind": "prompt_edit",
+                    "target": "factory/personas/dev.md",
+                    "rationale": "x",
+                    "suggested_patch": "free-text",
+                }
+            ],
+            "summary": "s",
+            "events_processed": 0,
+        },
+        apply_pass=True,
+    )
+    assert result.succeeded
+    assert result.apply_summary is None
+
+
+def test_run_factory_improver_skips_apply_when_no_improvements(
+    tmp_path: Path,
+) -> None:
+    """An empty proposals list skips the apply pass — nothing to do."""
+    (tmp_path / "state").mkdir()
+    result = run_factory_improver(
+        app=None,
+        software_factory_root=tmp_path,
+        dry_run=True,
+        fixture_output={
+            "improvements": [],
+            "summary": "healthy",
+            "events_processed": 0,
+        },
+    )
+    assert result.succeeded
+    assert result.apply_summary is None

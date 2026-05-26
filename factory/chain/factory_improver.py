@@ -92,6 +92,7 @@ class FactoryImproverResult:
     raw_output: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     dry_run: bool = False
+    apply_summary: Any = None  # ApplyPassSummary, when L2 apply pass ran
 
     @property
     def succeeded(self) -> bool:
@@ -373,6 +374,9 @@ def run_factory_improver(
     fixture_output: dict[str, Any] | None = None,
     gh_runner: Any = None,
     repo_for_issue: str | None = None,
+    apply_pass: bool = True,
+    apply_repo: str | None = None,
+    apply_runner: Any = None,
 ) -> FactoryImproverResult:
     """Full pipeline. Returns ``FactoryImproverResult``.
 
@@ -456,11 +460,33 @@ def run_factory_improver(
 
     improvements_count = len(raw.get("improvements") or [])
 
+    # L2 apply pass — classify, apply, open PRs. Disabled on dry-run
+    # (no branches/PRs created in tests by default), and disabled
+    # entirely via ``apply_pass=False`` for the ``factory improve
+    # --no-apply`` CLI path.
+    apply_summary = None
+    if apply_pass and not dry_run and improvements_count > 0:
+        from factory.chain.factory_improver_apply import run_apply_pass
+
+        apply_summary = run_apply_pass(
+            out_path,
+            root,
+            repo=apply_repo,
+            runner=apply_runner,
+            open_prs=apply_repo is not None,
+        )
+
     # Post on the pinned issue (real-run only). Skipped in dry-run so
-    # tests don't shell out to ``gh``.
+    # tests don't shell out to ``gh``. Body now embeds the apply-pass
+    # summary when one ran.
     issue_number: int | None = None
     if not dry_run and repo_for_issue:
-        body = _format_issue_body(raw, events_count=len(events), ts=ts)
+        body = _format_issue_body(
+            raw,
+            events_count=len(events),
+            ts=ts,
+            apply_summary=apply_summary,
+        )
         issue_number, err = post_to_pinned_issue(
             repo=repo_for_issue, body=body, gh_runner=gh_runner
         )
@@ -477,11 +503,23 @@ def run_factory_improver(
         improvements_count=improvements_count,
         raw_output=raw,
         dry_run=dry_run,
+        apply_summary=apply_summary,
     )
 
 
-def _format_issue_body(raw: dict[str, Any], *, events_count: int, ts: str) -> str:
-    """Markdown body for the pinned-issue comment / new-issue body."""
+def _format_issue_body(
+    raw: dict[str, Any],
+    *,
+    events_count: int,
+    ts: str,
+    apply_summary: Any = None,
+) -> str:
+    """Markdown body for the pinned-issue comment / new-issue body.
+
+    When ``apply_summary`` is supplied (L2 apply pass ran), its counts
+    table is embedded after the per-proposal list so the operator can
+    see at a glance which proposals turned into PRs.
+    """
     lines = [
         f"### Factory-improver run @ {ts}",
         "",
@@ -516,6 +554,11 @@ def _format_issue_body(raw: dict[str, Any], *, events_count: int, ts: str) -> st
                 for ln in patch.splitlines():
                     lines.append("     " + ln)
                 lines.append("     ```")
+    if apply_summary is not None:
+        from factory.chain.factory_improver_apply import format_apply_pass_md
+
+        lines.append("")
+        lines.append(format_apply_pass_md(apply_summary))
     lines.append("")
     lines.append(
         f"_Persisted at_ `state/improvements/{ts.replace(':', '').replace('+', '_')}.json`"
