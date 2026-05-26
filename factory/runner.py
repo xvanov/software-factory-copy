@@ -141,11 +141,14 @@ def _record_run(
     duration_s: float | None = None,
     story_id: int | None = None,
     model_tier: str | None = None,
+    software_factory_root: Path | None = None,
+    started_at: str | None = None,
 ) -> None:
+    ended_at = datetime.now(UTC).isoformat()
     engine = _engine(db_path)
     with Session(engine) as session:
         row = Run(
-            ts=datetime.now(UTC).isoformat(),
+            ts=ended_at,
             persona=persona,
             model=model,
             mode=mode,
@@ -162,6 +165,51 @@ def _record_run(
         )
         session.add(row)
         session.commit()
+
+        # Count prior runs with the same story_id + persona to derive attempt_n.
+        # Do this inside the same session so the row we just committed is counted.
+        try:
+            from sqlmodel import select as _select
+
+            attempt_n = (
+                session.exec(
+                    _select(Run).where(
+                        Run.persona == persona,
+                        Run.story_id == story_id,
+                    )
+                )
+                .all()
+                .__len__()
+            )
+        except Exception:
+            attempt_n = 1
+
+    # Emit the structured signal — best-effort, never raises.
+    try:
+        from factory.manager.signals import write_run_event
+
+        _root = software_factory_root or (
+            Path(db_path).parent.parent if db_path is not None else None
+        )
+        write_run_event(
+            started_at=started_at or ended_at,
+            ended_at=ended_at,
+            duration_s=duration_s,
+            cost_usd=cost_usd,
+            success=success,
+            error=error,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            model=model,
+            model_tier=model_tier,
+            attempt_n=attempt_n,
+            story_id=story_id,
+            persona=persona,
+            worktree_path=repo_path,
+            software_factory_root=_root,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -348,9 +396,7 @@ def _extract_conversation_memory(conversation: Any) -> tuple[str, list[dict[str,
         # Observations — attach to the matching action by id, or to the
         # most-recent action in stream order if no id match.
         if "observation" in kind:
-            obs_text = _safe_truncate(
-                _stringify_observation(ev), _TOOL_FIELD_CHAR_CAP
-            )
+            obs_text = _safe_truncate(_stringify_observation(ev), _TOOL_FIELD_CHAR_CAP)
             tcid = getattr(ev, "tool_call_id", None)
             if tcid is not None and str(tcid) in actions_by_id:
                 actions_by_id[str(tcid)]["observation"] = obs_text
@@ -404,9 +450,7 @@ def _stringify_message_content(ev: Any) -> str:
         if isinstance(node, str):
             return node
         if isinstance(node, list):
-            return "\n".join(
-                str(c.get("text", c)) if isinstance(c, dict) else str(c) for c in node
-            )
+            return "\n".join(str(c.get("text", c)) if isinstance(c, dict) else str(c) for c in node)
     return ""
 
 
@@ -562,7 +606,11 @@ def _build_initial_message(
         prior_thinking_entries = [
             e
             for e in prior_attempts
-            if (e.get("self_summary") or e.get("last_assistant_message") or e.get("recent_tool_calls"))
+            if (
+                e.get("self_summary")
+                or e.get("last_assistant_message")
+                or e.get("recent_tool_calls")
+            )
         ]
         if prior_thinking_entries:
             parts.append("")
@@ -581,7 +629,9 @@ def _build_initial_message(
                 parts.append(f"## Attempt {entry.get('attempt', '?')} — prior thinking")
                 self_sum = (entry.get("self_summary") or "").strip()
                 if self_sum:
-                    parts.append("### Self-summary (what I tried / what failed / what I'd try next)")
+                    parts.append(
+                        "### Self-summary (what I tried / what failed / what I'd try next)"
+                    )
                     parts.append(self_sum[:1500])
                 last_msg = (entry.get("last_assistant_message") or "").strip()
                 if last_msg and last_msg != self_sum:
@@ -686,9 +736,18 @@ async def sandbox_run(
     )
 
     _t0 = time.monotonic()
+    _started_at = datetime.now(UTC).isoformat()
 
     def _elapsed() -> float:
         return round(time.monotonic() - _t0, 3)
+
+    def _record(**kw: Any) -> None:
+        """Thin wrapper that injects started_at + software_factory_root."""
+        _record_run(
+            **kw,
+            started_at=_started_at,
+            software_factory_root=software_factory_root,
+        )
 
     if dry_run:
         # Walk: did the prelude actually pull in project.md / navigation.md? Surface that.
@@ -703,7 +762,7 @@ async def sandbox_run(
         if "NO CONTEXT AVAILABLE" in context_prelude:
             prelude_signals.append("NO_CONTEXT_AVAILABLE notice issued")
 
-        _record_run(
+        _record(
             persona=persona,
             model=llm_config.model,
             mode="sandbox-dry-run",
@@ -746,7 +805,7 @@ async def sandbox_run(
             f"env var (DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / "
             f"AZURE_AI_API_KEY) or pass --dry-run."
         )
-        _record_run(
+        _record(
             persona=persona,
             model=llm_config.model,
             mode="sandbox",
@@ -773,7 +832,7 @@ async def sandbox_run(
         from pydantic import SecretStr
     except Exception as exc:  # pragma: no cover - exercised only with SDK
         err = f"OpenHands SDK import failed: {exc}"
-        _record_run(
+        _record(
             persona=persona,
             model=llm_config.model,
             mode="sandbox",
@@ -906,7 +965,7 @@ async def sandbox_run(
             ) = await loop.run_in_executor(None, _do_run)
     except Exception as exc:
         err = f"sandbox run raised: {exc!r}"
-        _record_run(
+        _record(
             persona=persona,
             model=llm_config.model,
             mode="sandbox",
@@ -935,7 +994,7 @@ async def sandbox_run(
     test_passed, test_out = _run_pytest(Path(repo_path), test_command=test_command)
     self_summary = _extract_self_summary(last_assistant_message)
 
-    _record_run(
+    _record(
         persona=persona,
         model=llm_config.model,
         mode="sandbox",
@@ -987,6 +1046,7 @@ def text_run(
     app: str | None = None,
     direction_id: str | None = None,
     model_tier: str | None = None,
+    software_factory_root: Path | None = None,
 ) -> str | dict[str, Any]:
     """Single ``litellm.completion()`` call. Returns text, or a dict if ``schema`` set.
 
@@ -999,12 +1059,21 @@ def text_run(
     resolved_key = _resolve_api_key(cfg)
 
     _t0 = time.monotonic()
+    _started_at = datetime.now(UTC).isoformat()
 
     def _elapsed() -> float:
         return round(time.monotonic() - _t0, 3)
 
-    if dry_run:
+    def _record(**kw: Any) -> None:
+        """Inject started_at + software_factory_root into every _record_run call."""
         _record_run(
+            **kw,
+            started_at=_started_at,
+            software_factory_root=software_factory_root,
+        )
+
+    if dry_run:
+        _record(
             persona=persona,
             model=model_id,
             mode="text-dry-run",
@@ -1026,7 +1095,7 @@ def text_run(
 
     if resolved_key is None:
         msg = f"No API key available for {model_id!r}"
-        _record_run(
+        _record(
             persona=persona,
             model=model_id,
             mode="text",
@@ -1160,7 +1229,7 @@ def text_run(
                     if _hb_id is not None:
                         with contextlib.suppress(Exception):
                             end_heartbeat(_hb_db, _hb_id)
-                    _record_run(
+                    _record(
                         persona=persona,
                         model=model_id,
                         mode="text",
@@ -1194,7 +1263,7 @@ def text_run(
 
     success = True
 
-    _record_run(
+    _record(
         persona=persona,
         model=model_id,
         mode="text",

@@ -27,3 +27,6 @@ state/.improver_run_history.json
 # linked working dir under state/worktrees/<app>-<id>-<slug>/; sharing
 # .git with the source app repo, NOT this one.
 state/worktrees/
+# FMS Phase-1 structured event streams (append-only NDJSON). Runtime-only;
+# read via ``factory manager signals dump``. Do NOT commit .ndjson files.
+state/events/

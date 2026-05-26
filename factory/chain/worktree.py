@@ -164,12 +164,33 @@ def ensure_worktree_for_story(
     branch_check = _run_git(
         repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False
     )
-    if branch_check.returncode == 0:
-        _run_git(repo, "worktree", "add", str(wt), branch)
-    else:
-        _run_git(repo, "worktree", "add", "-b", branch, str(wt), base_ref)
+    _wt_error: str | None = None
+    try:
+        if branch_check.returncode == 0:
+            _run_git(repo, "worktree", "add", str(wt), branch)
+        else:
+            _run_git(repo, "worktree", "add", "-b", branch, str(wt), base_ref)
+    except Exception as _wt_exc:
+        _wt_error = repr(_wt_exc)
+        raise
 
     _replicate_uncommitted_runtime_files(repo, wt)
+
+    # Emit git signal — best-effort, never raises.
+    try:
+        from factory.manager.signals import write_git_event
+
+        write_git_event(
+            kind="worktree_create",
+            story_id=story_id,
+            worktree_path=str(wt),
+            result="ok" if _wt_error is None else "error",
+            error=_wt_error,
+            software_factory_root=software_factory_root,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     return wt
 
 
@@ -244,6 +265,21 @@ def remove_worktree_for_story(
     # so future ``add``s don't see the removed entry.
     if (repo / ".git").exists():
         _run_git(repo, "worktree", "prune", check=False)
+
+    # Emit git signal — best-effort, never raises.
+    try:
+        from factory.manager.signals import write_git_event
+
+        write_git_event(
+            kind="worktree_destroy",
+            story_id=story_id,
+            worktree_path=str(wt),
+            result="ok",
+            software_factory_root=software_factory_root,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     return True
 
 

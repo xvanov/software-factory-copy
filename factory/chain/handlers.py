@@ -1461,6 +1461,29 @@ def handle_dev(
                     check=False,
                 )
                 commit_pushed = push_proc.returncode == 0
+                # Emit git signals — best-effort.
+                try:
+                    from factory.manager.signals import write_git_event as _wge
+
+                    if dirty:
+                        _wge(
+                            kind="commit",
+                            story_id=story.id,
+                            worktree_path=str(target_repo),
+                            commit_sha=commit_sha,
+                            result="ok",
+                            software_factory_root=software_factory_root,
+                        )
+                    _wge(
+                        kind="push",
+                        story_id=story.id,
+                        worktree_path=str(target_repo),
+                        result="ok" if commit_pushed else "error",
+                        error=None if commit_pushed else "push failed",
+                        software_factory_root=software_factory_root,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception as commit_exc:
                 payload["dev_exhausted_commit_error"] = repr(commit_exc)
 
@@ -2340,6 +2363,20 @@ def _open_pr_for_docs_story(
             capture_output=True,
             timeout=60,
         )
+        # Emit push signal — best-effort.
+        try:
+            from factory.manager.signals import write_git_event as _wge
+
+            _wge(
+                kind="push",
+                story_id=story.id,
+                worktree_path=str(target_repo),
+                result="ok",
+                software_factory_root=software_factory_root,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
         proc = subprocess.run(
             [
                 "gh",
@@ -2362,16 +2399,44 @@ def _open_pr_for_docs_story(
             text=True,
             timeout=60,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as _push_exc:
+        # Emit error signal — best-effort.
+        try:
+            from factory.manager.signals import write_git_event as _wge_err
+
+            _wge_err(
+                kind="pr_open",
+                story_id=story.id,
+                worktree_path=str(target_repo),
+                result="error",
+                error=repr(_push_exc),
+                software_factory_root=software_factory_root,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         return None
 
     # gh prints the PR URL on stdout; parse the trailing digits.
     url = (proc.stdout or "").strip().splitlines()[-1] if proc.stdout else ""
     # URL shape: https://github.com/<org>/<repo>/pull/<n>
     m = re.search(r"/pull/(\d+)$", url)
-    if m:
-        return int(m.group(1))
-    return None
+    pr_num = int(m.group(1)) if m else None
+
+    # Emit pr_open signal — best-effort.
+    try:
+        from factory.manager.signals import write_git_event as _wge_pr
+
+        _wge_pr(
+            kind="pr_open",
+            story_id=story.id,
+            pr_number=pr_num,
+            result="ok",
+            software_factory_root=software_factory_root,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return pr_num
 
 
 # --------------------------------------------------------------------------- #

@@ -329,14 +329,33 @@ def dispatch_event(event: str, payload: dict[str, Any]) -> dict[str, Any]:
     downstream errors because GitHub will retry.
     """
     if event == "issues":
-        return _handle_issues(payload)
-    if event == "pull_request":
-        return _handle_pull_request(payload)
-    if event in ("check_suite", "check_run"):
-        return _handle_check(payload)
-    if event == "pull_request_review":
-        return _handle_pull_request_review(payload)
-    return {"acted": False, "reason": f"unhandled event {event!r}"}
+        result = _handle_issues(payload)
+    elif event == "pull_request":
+        result = _handle_pull_request(payload)
+    elif event in ("check_suite", "check_run"):
+        result = _handle_check(payload)
+    elif event == "pull_request_review":
+        result = _handle_pull_request_review(payload)
+    else:
+        result = {"acted": False, "reason": f"unhandled event {event!r}"}
+
+    # Emit structured webhook signal — best-effort, never raises.
+    try:
+        from factory.manager.signals import write_webhook_event
+
+        _story_id: int | None = result.get("story_id") if isinstance(result, dict) else None
+        _excerpt = json.dumps(payload)[:500]
+        write_webhook_event(
+            source="github",
+            kind=event,
+            story_id=_story_id,
+            payload_excerpt=_excerpt,
+            software_factory_root=_FACTORY_ROOT,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return result
 
 
 # --------------------------------------------------------------------------- #

@@ -412,9 +412,7 @@ def tick_cmd(
             from factory.settings.loader import load_settings
 
             settings = load_settings(_FACTORY_ROOT)
-            daily_cap_imp = int(
-                getattr(settings.rate_limits, "factory_improver_runs_per_day", 12)
-            )
+            daily_cap_imp = int(getattr(settings.rate_limits, "factory_improver_runs_per_day", 12))
         except Exception:
             daily_cap_imp = 12
         fire, reason = should_fire_improver(
@@ -452,9 +450,7 @@ def tick_cmd(
                     ("factory_improver (event)", f"errored:{exc!r}"[:60], 0, 0)
                 )
         else:
-            scheduled_results.append(
-                ("factory_improver (event)", f"skipped:{reason}", 0, 0)
-            )
+            scheduled_results.append(("factory_improver (event)", f"skipped:{reason}", 0, 0))
 
     for due in due_schedules(_FACTORY_ROOT, audit_app=app_name):
         if due.rate_limit_hit:
@@ -1189,9 +1185,7 @@ def tui_cmd(
     app_name: str | None = typer.Option(
         None, "--app", help="Filter the dashboard to a single app; default: all apps"
     ),
-    refresh: float = typer.Option(
-        1.0, "--refresh", help="Refresh interval in seconds (>= 0.25)"
-    ),
+    refresh: float = typer.Option(1.0, "--refresh", help="Refresh interval in seconds (>= 0.25)"),
     recompute_baselines: bool = typer.Option(
         False,
         "--recompute-baselines",
@@ -1730,8 +1724,7 @@ def improve_cmd(
         ok, hint = _has_any_llm_provider_key()
         if not ok:
             console.print(
-                "[red]error:[/red] real `factory improve` requires an "
-                "LLM provider key. " + hint
+                "[red]error:[/red] real `factory improve` requires an LLM provider key. " + hint
             )
             raise typer.Exit(code=2)
 
@@ -1988,3 +1981,134 @@ def webhook_serve(
         )
     )
     uvicorn.run("factory.webhook.github:app", host=host, port=port, log_level="info")
+
+
+# --------------------------------------------------------------------------- #
+# Phase FMS-1 commands: manager (signal inspection)
+# --------------------------------------------------------------------------- #
+
+
+manager_app = typer.Typer(help="FMS manager sub-commands.")
+app.add_typer(manager_app, name="manager")
+
+signals_app = typer.Typer(help="Inspect structured event streams.")
+manager_app.add_typer(signals_app, name="signals")
+
+
+def _parse_duration(s: str) -> float:
+    """Parse a simple duration string into seconds.
+
+    Accepted formats: ``30s``, ``15m``, ``2h``, ``1d``.
+    Falls back to treating the raw value as seconds if no suffix.
+    """
+    s = s.strip().lower()
+    if s.endswith("d"):
+        return float(s[:-1]) * 86400
+    if s.endswith("h"):
+        return float(s[:-1]) * 3600
+    if s.endswith("m"):
+        return float(s[:-1]) * 60
+    if s.endswith("s"):
+        return float(s[:-1])
+    return float(s)
+
+
+@signals_app.command("dump")
+def signals_dump_cmd(
+    since: str = typer.Option("1h", "--since", help="Duration to look back (e.g. 1h, 30m, 2d)"),
+    stream: str | None = typer.Option(
+        None, "--stream", help="Only show events from this stream (e.g. ticks, runs)"
+    ),
+    fmt: str = typer.Option("human", "--format", help="Output format: human | json"),
+) -> None:
+    """Print all events from the signal streams since ``--since``, interleaved by ts."""
+    import json as _json
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from factory.manager.signals import _events_dir
+
+    events_dir = _events_dir(_FACTORY_ROOT)
+    if not events_dir.exists():
+        console.print(
+            Panel.fit(
+                f"No events directory at [bold]{events_dir}[/bold]. "
+                "Run [bold]factory tick --app <app> --dry-run[/bold] first.",
+                title="signals dump",
+            )
+        )
+        return
+
+    try:
+        window_s = _parse_duration(since)
+    except ValueError:
+        console.print(f"[red]error:[/red] could not parse --since={since!r}")
+        raise typer.Exit(code=2) from None
+
+    cutoff = _dt.now(_UTC) - _td(seconds=window_s)
+
+    # Collect all .ndjson files in the events directory.
+    stream_files = sorted(events_dir.glob("*.ndjson"))
+    if stream:
+        stream_files = [f for f in stream_files if f.stem == stream]
+    if not stream_files:
+        console.print(f"[dim]No event streams found (stream={stream!r}).[/dim]")
+        return
+
+    all_events: list[tuple[str, str, dict[str, Any]]] = []  # (ts_str, stream_name, record)
+    for sf in stream_files:
+        try:
+            lines = sf.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            ts_str = rec.get("ts") or ""
+            try:
+                ts_dt = _dt.fromisoformat(ts_str)
+                if ts_dt.tzinfo is None:
+                    ts_dt = ts_dt.replace(tzinfo=_UTC)
+            except (TypeError, ValueError):
+                continue
+            if ts_dt < cutoff:
+                continue
+            all_events.append((ts_str, sf.stem, rec))
+
+    if not all_events:
+        console.print(f"[dim]No events in the last {since}.[/dim]")
+        return
+
+    # Sort by ts ascending.
+    all_events.sort(key=lambda x: x[0])
+
+    for ts_str, stream_name, rec in all_events:
+        if fmt == "json":
+            # Use plain print so Rich doesn't wrap or markup the JSON.
+            print(_json.dumps(rec))
+        else:
+            event = rec.get("event", "?")
+            ts_short = ts_str[:19].replace("T", " ") if ts_str else "?"
+            # Build a concise summary from the most useful fields.
+            highlights: list[str] = []
+            for key in (
+                "story_id",
+                "persona",
+                "success",
+                "duration_s",
+                "app",
+                "kind",
+                "result",
+                "tick_id",
+                "pr_number",
+            ):
+                if rec.get(key) is not None:
+                    highlights.append(f"{key}={rec[key]!r}")
+            summary = " ".join(highlights) if highlights else ""
+            console.print(f"[{ts_short}] {stream_name}/{event} {summary}")

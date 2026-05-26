@@ -15,7 +15,9 @@ the story for this tick; an operator can inspect via ``factory why``.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -145,9 +147,7 @@ def _dispatch_for_story(story: StoryRecord) -> str | None:
         if story.chain_kind == "docs":
             return "docs_sm"
         return "sm"
-    if state == StoryState.TESTS_RED and not getattr(
-        story, "harness_precheck_passed", False
-    ):
+    if state == StoryState.TESTS_RED and not getattr(story, "harness_precheck_passed", False):
         return "harness_precheck"
     return _DISPATCH.get(state)
 
@@ -342,9 +342,7 @@ def _prune_stale_in_progress(
     now_ts = (now or _dt.now(UTC)).timestamp()
     eng = create_engine(f"sqlite:///{db}", echo=False)
     with Session(eng) as session:
-        candidates = session.exec(
-            select(StoryRecord).where(StoryRecord.app == app)
-        ).all()
+        candidates = session.exec(select(StoryRecord).where(StoryRecord.app == app)).all()
 
     recovered: list[tuple[str, str, str]] = []
     for story in candidates:
@@ -457,6 +455,11 @@ def tick(
         shutil.copyfile(db, _dry_run_db_temp)
         db = _dry_run_db_temp
 
+    # Unique ID for this tick invocation; threaded into runs.ndjson so
+    # each run record can be linked back to the tick that spawned it.
+    tick_id = str(uuid.uuid4())
+    _tick_t0 = datetime.now(UTC).timestamp()
+
     try:
         cfg = load_app_config(app, root)
     except FileNotFoundError as exc:
@@ -466,6 +469,20 @@ def tick(
 
     settings = load_settings(root)
     summary = TickSummary(app=app, dry_run=dry_run)
+
+    # ---- Signal: tick_start ------------------------------------------------
+    try:
+        from factory.manager.signals import write_tick_event
+
+        write_tick_event(
+            "tick_start",
+            tick_id=tick_id,
+            app=app,
+            dry_run=dry_run,
+            software_factory_root=root,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     # Recover stories stranded in ``*_in_progress`` from a crashed tick or
     # a prior config-change regime (e.g. retry-cap lowered while a row was
@@ -480,6 +497,59 @@ def tick(
             summary.errors.append((app, f"stale-state recovery failed (non-fatal): {exc!r}"))
 
     stories = H.stories_in_flight(app, db)
+
+    # ---- Signal: queue snapshot + spend snapshot ---------------------------
+    try:
+        from factory.manager.signals import write_queue_snapshot, write_spend_snapshot
+        from factory.settings.spend import projected_end_of_day
+
+        # Count stories by state for queue snapshot.
+        _all_stories_for_app: list[StoryRecord] = []
+        try:
+            _eng_q = create_engine(f"sqlite:///{db}", echo=False)
+            with Session(_eng_q) as _sess_q:
+                _all_stories_for_app = list(
+                    _sess_q.exec(select(StoryRecord).where(StoryRecord.app == app)).all()
+                )
+        except Exception:
+            pass
+        _counts: dict[str, int] = {}
+        for _s in _all_stories_for_app:
+            _counts[_s.state] = _counts.get(_s.state, 0) + 1
+        write_queue_snapshot(app=app, counts_by_state=_counts, software_factory_root=root)
+
+        # Spend snapshot — query by persona for by_persona breakdown.
+        _today_usd = today_spend_usd(root, db_path=db)
+        _hour_usd = hour_spend_usd(root, db_path=db)
+        _proj_usd = projected_end_of_day(root, db_path=db)
+        _daily_cap = float(getattr(settings.caps, "daily_spend_usd", 0) or 0)
+        _hourly_cap = float(getattr(settings.caps, "hourly_spend_usd", 0) or 0)
+        _by_persona: dict[str, float] = {}
+        try:
+            from factory.runner import Run as _Run
+
+            _today_str = datetime.now(UTC).date().isoformat()
+            _eng_sp = create_engine(f"sqlite:///{db}", echo=False)
+            with Session(_eng_sp) as _sess_sp:
+                _run_rows = list(_sess_sp.exec(select(_Run)).all())
+            for _r in _run_rows:
+                if (_r.ts or "").startswith(_today_str):
+                    _by_persona[_r.persona] = _by_persona.get(_r.persona, 0.0) + float(
+                        _r.cost_usd or 0.0
+                    )
+        except Exception:
+            pass
+        write_spend_snapshot(
+            today_usd=_today_usd,
+            last_hour_usd=_hour_usd,
+            projected_eod_usd=_proj_usd,
+            daily_cap_usd=_daily_cap,
+            hourly_cap_usd=_hourly_cap,
+            by_persona=_by_persona,
+            software_factory_root=root,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     # Prune worktrees for stories that no longer need them (terminal
     # states, missing rows). Idempotent and best-effort — a failure here
@@ -652,6 +722,25 @@ def tick(
                 # operator can still inspect the chain via ``factory
                 # story`` and re-run auto-merge by hand.
                 summary.errors.append(("auto-merge", repr(exc)))
+
+    # ---- Signal: tick_end --------------------------------------------------
+    try:
+        from factory.manager.signals import write_tick_event as _wte
+
+        _wte(
+            "tick_end",
+            tick_id=tick_id,
+            app=app,
+            dry_run=dry_run,
+            duration_s=round(datetime.now(UTC).timestamp() - _tick_t0, 3),
+            stories_advanced=summary.stories_advanced,
+            stories_blocked=summary.stories_blocked,
+            errors=len(summary.errors),
+            merges_attempted=len(summary.merges),
+            software_factory_root=root,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     if _dry_run_db_temp is not None:
         _dry_run_db_temp.unlink(missing_ok=True)

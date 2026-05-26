@@ -483,5 +483,20 @@ def auto_merge_tick(
                     # queue entry still drives the work; the story will be
                     # reconciled by the orchestrator on a later tick.
                     pass
+        # Emit auto_merge_attempt signal — best-effort, never raises.
+        try:
+            from factory.manager.signals import write_git_event as _wge_am
+
+            _story_id_am: int | None = f.story.id if f.story is not None else None
+            _wge_am(
+                kind="auto_merge_attempt",
+                story_id=_story_id_am,
+                pr_number=action.pr_number,
+                result="ok" if action.merged else "error",
+                error=None if action.merged else action.reason,
+                software_factory_root=root,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         actions.append(action)
     return actions
