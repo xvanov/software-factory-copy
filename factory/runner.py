@@ -65,6 +65,18 @@ class RunResult:
     cost_usd: float = 0.0
     error: str | None = None
     summary: str = ""
+    # Richer signal extracted from the sandbox conversation for cross-retry
+    # memory. ``last_assistant_message`` is the verbatim final assistant
+    # message (capped); ``recent_tool_calls`` is the trailing window of
+    # (tool, args_excerpt, observation_excerpt) so the next retry can see
+    # *what dev was doing* when it gave up — not just the test-output tail.
+    # ``self_summary`` is dev's own 3-5 sentence reflection (parsed from
+    # the ``SELF_SUMMARY:`` marker the dev persona prompt requests). All
+    # three fall back to empty / [] when the conversation didn't expose
+    # them; callers must tolerate the empty case.
+    last_assistant_message: str = ""
+    recent_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    self_summary: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -220,6 +232,206 @@ def _scan_repo_for_changed_files(repo_path: Path) -> list[str]:
     return files
 
 
+# Cap for extracted strings — kept in module scope so tests can assert
+# against the limits. ``RECENT_TOOL_CALL_WINDOW`` is the number of trailing
+# action/observation pairs we keep; each gets its args + observation
+# truncated to ``_TOOL_FIELD_CHAR_CAP`` so the JSON we persist on the
+# story stays a few KB, not a few MB.
+RECENT_TOOL_CALL_WINDOW = 8
+_TOOL_FIELD_CHAR_CAP = 600
+_LAST_MSG_CHAR_CAP = 2000
+
+# Marker the dev persona emits for its 3-5-sentence self-summary at the end
+# of a run. Falls back to the trailing assistant message if absent.
+_SELF_SUMMARY_MARKER = "SELF_SUMMARY:"
+
+
+def _extract_self_summary(last_assistant_message: str) -> str:
+    """Pull the ``SELF_SUMMARY:`` paragraph out of the last assistant message.
+
+    The dev persona prompt asks for ``SELF_SUMMARY: <3-5 sentences>``
+    before exit. If the marker is present, we return the text following
+    it (up to the next blank line or end-of-message). If not, we fall
+    back to the trailing 500 chars of the message — better than nothing
+    so the next retry has *some* free-form context to read.
+    """
+    if not last_assistant_message:
+        return ""
+    idx = last_assistant_message.find(_SELF_SUMMARY_MARKER)
+    if idx == -1:
+        return last_assistant_message[-500:].strip()
+    tail = last_assistant_message[idx + len(_SELF_SUMMARY_MARKER) :].lstrip()
+    # Stop at a blank-line boundary so we don't pull in a wall of trailing
+    # tool logs the persona may have appended.
+    blank = tail.find("\n\n")
+    return (tail[:blank] if blank != -1 else tail).strip()[:_LAST_MSG_CHAR_CAP]
+
+
+def _extract_conversation_memory(conversation: Any) -> tuple[str, list[dict[str, Any]]]:
+    """Pull cross-retry memory signal from an OpenHands ``Conversation``.
+
+    Returns ``(last_assistant_message, recent_tool_calls)``. Each tool
+    call dict has the shape::
+
+        {
+          "tool": "<name>",          # e.g. "execute_bash", "str_replace_editor"
+          "args": "<truncated>",     # JSON-ish excerpt of the call args
+          "observation": "<truncated>",  # truncated tool output
+        }
+
+    Robust to SDK shape changes — every attribute access is defensive,
+    every coercion goes through ``str()`` with a fallback. A failure here
+    must not break the run; we return ``("", [])``.
+    """
+    last_msg = ""
+    pairs: list[dict[str, Any]] = []
+    try:
+        state = getattr(conversation, "state", None)
+        if state is None:
+            return last_msg, pairs
+        events = list(getattr(state, "events", []) or [])
+    except Exception:
+        return last_msg, pairs
+
+    # Walk events in order. Build (action, observation) pairs by matching
+    # tool_call_id when the SDK exposes one; otherwise pair consecutive
+    # action+observation events in the stream.
+    actions_by_id: dict[str, dict[str, Any]] = {}
+    ordered_pairs: list[dict[str, Any]] = []
+    for ev in events:
+        kind = (getattr(ev, "kind", None) or type(ev).__name__).lower()
+        # Capture assistant messages — last one wins.
+        if "message" in kind:
+            source = getattr(ev, "source", "") or ""
+            role = getattr(ev, "role", "") or source
+            if str(role).lower() in {"assistant", "agent"}:
+                content = _stringify_message_content(ev)
+                if content:
+                    last_msg = content
+        # Tool actions.
+        if "action" in kind and "agent" not in kind and "rejection" not in kind:
+            tool_name = (
+                getattr(ev, "tool_name", None)
+                or getattr(ev, "name", None)
+                or getattr(getattr(ev, "action", None), "tool", None)
+                or "tool"
+            )
+            args_excerpt = _safe_truncate(_stringify_action_args(ev), _TOOL_FIELD_CHAR_CAP)
+            tcid = getattr(ev, "tool_call_id", None)
+            record = {"tool": str(tool_name), "args": args_excerpt, "observation": ""}
+            if tcid is not None:
+                actions_by_id[str(tcid)] = record
+            ordered_pairs.append(record)
+            continue
+        # Observations — attach to the matching action by id, or to the
+        # most-recent action in stream order if no id match.
+        if "observation" in kind:
+            obs_text = _safe_truncate(
+                _stringify_observation(ev), _TOOL_FIELD_CHAR_CAP
+            )
+            tcid = getattr(ev, "tool_call_id", None)
+            if tcid is not None and str(tcid) in actions_by_id:
+                actions_by_id[str(tcid)]["observation"] = obs_text
+            elif ordered_pairs:
+                ordered_pairs[-1]["observation"] = obs_text
+
+    # Keep just the trailing window so the persisted JSON stays bounded.
+    pairs = ordered_pairs[-RECENT_TOOL_CALL_WINDOW:]
+    last_msg = (last_msg or "")[-_LAST_MSG_CHAR_CAP:]
+    return last_msg, pairs
+
+
+def _stringify_message_content(ev: Any) -> str:
+    """Best-effort extract of a message event's text content."""
+    # Common shape: ev.llm_message.content is a list of dicts {type, text}
+    # OR ev.message.content is a similar list. The SDK has shifted naming
+    # across versions; try a few attribute paths.
+    for attr in ("llm_message", "message"):
+        msg = getattr(ev, attr, None)
+        if msg is None:
+            continue
+        content = getattr(msg, "content", None)
+        if content is None:
+            continue
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for c in content:
+                if isinstance(c, dict):
+                    text = c.get("text") or c.get("content") or ""
+                    parts.append(str(text))
+                else:
+                    text = getattr(c, "text", None) or str(c)
+                    parts.append(text)
+            joined = "\n".join(p for p in parts if p)
+            if joined:
+                return joined
+    # Fallback: model_dump() and pull a "content" field.
+    try:
+        data = ev.model_dump()  # type: ignore[attr-defined]
+    except Exception:
+        return ""
+    for path in (("llm_message", "content"), ("message", "content"), ("content",)):
+        node: Any = data
+        for key in path:
+            if not isinstance(node, dict):
+                node = None
+                break
+            node = node.get(key)
+        if isinstance(node, str):
+            return node
+        if isinstance(node, list):
+            return "\n".join(
+                str(c.get("text", c)) if isinstance(c, dict) else str(c) for c in node
+            )
+    return ""
+
+
+def _stringify_action_args(ev: Any) -> str:
+    """Pull a JSON-ish representation of a tool call's args off the event."""
+    for attr in ("arguments", "args", "tool_args", "action"):
+        val = getattr(ev, attr, None)
+        if val is None:
+            continue
+        try:
+            return json.dumps(val, default=str)
+        except Exception:
+            return str(val)
+    try:
+        data = ev.model_dump()  # type: ignore[attr-defined]
+        return json.dumps(data, default=str)
+    except Exception:
+        return ""
+
+
+def _stringify_observation(ev: Any) -> str:
+    """Pull the text body of a tool observation event."""
+    for attr in ("output", "content", "result", "text", "observation"):
+        val = getattr(ev, attr, None)
+        if isinstance(val, str) and val:
+            return val
+        if val is None:
+            continue
+        try:
+            return json.dumps(val, default=str)
+        except Exception:
+            return str(val)
+    try:
+        data = ev.model_dump()  # type: ignore[attr-defined]
+        return json.dumps(data, default=str)
+    except Exception:
+        return ""
+
+
+def _safe_truncate(text: str, cap: int) -> str:
+    if not isinstance(text, str):
+        text = str(text)
+    if len(text) <= cap:
+        return text
+    return text[: cap - 20] + "...[truncated]"
+
+
 def _run_pytest(repo_path: Path, test_command: str | None = None) -> tuple[bool, str]:
     """Return (passed, captured_output) for the chain's post-sandbox test gate.
 
@@ -319,6 +531,52 @@ def _build_initial_message(
                 parts.append("```")
                 parts.append(tail[-1500:])
                 parts.append("```")
+
+        # Cross-retry memory: dev's own reasoning + the trailing tool-call
+        # window. Captured by ``_extract_conversation_memory`` after each
+        # sandbox closes. The next retry sees not just *what failed* but
+        # *what dev was trying to do* — the difference between giving the
+        # LLM a stack trace and giving it the previous LLM's notebook.
+        prior_thinking_entries = [
+            e
+            for e in prior_attempts
+            if (e.get("self_summary") or e.get("last_assistant_message") or e.get("recent_tool_calls"))
+        ]
+        if prior_thinking_entries:
+            parts.append("")
+            parts.append("---")
+            parts.append("# Your prior thinking (from previous sandbox sessions)")
+            parts.append(
+                "Each retry runs a fresh OpenHands conversation, but the "
+                "previous run's last assistant message, recent tool calls, "
+                "and self-summary are surfaced here so you keep context "
+                "across the retry boundary. Do NOT repeat the exact "
+                "approach if it failed; use this to inform a new line of "
+                "investigation."
+            )
+            for entry in prior_thinking_entries:
+                parts.append("")
+                parts.append(f"## Attempt {entry.get('attempt', '?')} — prior thinking")
+                self_sum = (entry.get("self_summary") or "").strip()
+                if self_sum:
+                    parts.append("### Self-summary (what I tried / what failed / what I'd try next)")
+                    parts.append(self_sum[:1500])
+                last_msg = (entry.get("last_assistant_message") or "").strip()
+                if last_msg and last_msg != self_sum:
+                    parts.append("### Last assistant message (verbatim tail)")
+                    parts.append("```")
+                    parts.append(last_msg[-1200:])
+                    parts.append("```")
+                calls = entry.get("recent_tool_calls") or []
+                if calls:
+                    parts.append("### Recent tool calls (trailing window)")
+                    for i, call in enumerate(calls[-RECENT_TOOL_CALL_WINDOW:], 1):
+                        tool = call.get("tool", "tool")
+                        args = (call.get("args") or "")[:300]
+                        obs = (call.get("observation") or "")[:300]
+                        parts.append(f"{i}. **{tool}** — args: `{args}`")
+                        if obs:
+                            parts.append(f"   → `{obs}`")
     return "\n".join(parts) + "\n"
 
 
@@ -556,7 +814,7 @@ async def sandbox_run(
 
     loop = asyncio.get_running_loop()
 
-    def _do_run() -> tuple[int, int, float]:
+    def _do_run() -> tuple[int, int, float, str, list[dict[str, Any]]]:
         # ``Conversation`` is a factory that returns LocalConversation/RemoteConversation
         # depending on the workspace type. Treat as Any for mypy purposes.
         conversation: Any = Conversation(
@@ -573,12 +831,25 @@ async def sandbox_run(
             t_in = int(getattr(tok, "prompt_tokens", 0) or 0)
             t_out = int(getattr(tok, "completion_tokens", 0) or 0)
             cost = float(getattr(stats, "accumulated_cost", 0.0) or 0.0)
-            return (t_in, t_out, cost)
+            # Extract cross-retry memory signal from the conversation's
+            # event stream BEFORE closing. ``conversation.state.events`` is
+            # the canonical sequence of MessageEvent / ActionEvent /
+            # ObservationEvent records. We do the extraction inside the
+            # executor (same thread that owns the state) and pass plain
+            # dicts back to the async layer.
+            last_msg, recent = _extract_conversation_memory(conversation)
+            return (t_in, t_out, cost, last_msg, recent)
         finally:
             conversation.close()
 
     try:
-        tokens_in, tokens_out, cost_usd = await loop.run_in_executor(None, _do_run)
+        (
+            tokens_in,
+            tokens_out,
+            cost_usd,
+            last_assistant_message,
+            recent_tool_calls,
+        ) = await loop.run_in_executor(None, _do_run)
     except Exception as exc:
         err = f"sandbox run raised: {exc!r}"
         _record_run(
@@ -594,10 +865,18 @@ async def sandbox_run(
             error=err,
             db_path=db_path,
         )
-        return RunResult(success=False, error=err, summary=err)
+        return RunResult(
+            success=False,
+            error=err,
+            summary=err,
+            last_assistant_message="",
+            recent_tool_calls=[],
+            self_summary="",
+        )
 
     files_changed = _scan_repo_for_changed_files(Path(repo_path))
     test_passed, test_out = _run_pytest(Path(repo_path), test_command=test_command)
+    self_summary = _extract_self_summary(last_assistant_message)
 
     _record_run(
         persona=persona,
@@ -622,6 +901,9 @@ async def sandbox_run(
         cost_usd=cost_usd,
         error=None if test_passed else "tests not green after run",
         summary=test_out[-2000:],
+        last_assistant_message=last_assistant_message,
+        recent_tool_calls=recent_tool_calls,
+        self_summary=self_summary,
     )
 
 

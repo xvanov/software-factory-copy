@@ -1172,12 +1172,25 @@ def handle_dev(
     # so the retry test fixture isn't tangled.
     story.dev_retries += 1
     if not dry_run:
+        # Capture rich cross-retry memory: the file diff + test tail are
+        # the "what failed" signal; ``self_summary`` + ``last_assistant_message``
+        # + ``recent_tool_calls`` are the "what dev was thinking" signal.
+        # The next retry's _build_initial_message renders both layers into
+        # the prompt so the new conversation inherits the prior session's
+        # context, not just its stack trace.
         attempt_record = {
             "attempt": story.dev_retries,
             "ts": datetime.now(UTC).isoformat(),
             "files_touched": (run_res.files_changed or [])[:20],
             "test_output_tail": (run_res.summary or "")[-1800:],
             "summary": (run_res.error or "tests not green after run")[:300],
+            "self_summary": (getattr(run_res, "self_summary", "") or "")[:2000],
+            "last_assistant_message": (
+                getattr(run_res, "last_assistant_message", "") or ""
+            )[:2000],
+            "recent_tool_calls": list(getattr(run_res, "recent_tool_calls", []) or [])[
+                -8:
+            ],
         }
         try:
             prior = json.loads(story.dev_attempts_json or "[]")

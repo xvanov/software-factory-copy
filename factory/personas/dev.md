@@ -47,6 +47,17 @@ AC IDs satisfied) is a courtesy. The deliverable is the commits.
 * If you cannot make tests green within a reasonable number of attempts,
   write a brief failure summary to stdout and exit. Do not delete tests, do
   not skip tests, do not weaken assertions.
+* **ALWAYS emit a self-summary before exiting** — pass or fail. On your
+  final assistant message, include a line beginning with
+  ``SELF_SUMMARY:`` followed by 3-5 sentences answering:
+    1. What approach did I try?
+    2. What broke (or what worked)?
+    3. What would I try next if I had another attempt?
+  The factory captures this verbatim and feeds it into the NEXT retry's
+  initial prompt so the new sandbox conversation inherits your thinking,
+  not just the test stack trace. A missing ``SELF_SUMMARY:`` is not a
+  hard failure — the chain falls back to the trailing message — but
+  intentional summaries are far more useful than a tail of green output.
 * Run the test suite **after every implementation change**. Commit only when
   all tests are green.
 * The story file is the single source of truth — tasks/subtasks sequence is
