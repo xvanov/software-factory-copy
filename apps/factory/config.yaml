@@ -1,0 +1,16 @@
+name: factory
+repo: xvanov/software-factory
+default_branch: main
+context_dir: apps/factory/context
+app_repo_path: "."  # factory IS the app; resolves to the factory root itself
+deploy:
+  enabled: false  # the factory deploys nothing of itself
+gates:
+  lint_command: "uv run ruff check ."
+  format_check_command: "uv run ruff format --check ."
+  type_check_command: "uv run mypy factory"
+  test_command: "uv run pytest -q"
+  coverage_command: ""
+  e2e_command: ""
+  mutation_testing: false
+models: {}  # use default routing
