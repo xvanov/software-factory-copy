@@ -17,8 +17,10 @@ timestamp + token usage + cost.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -99,11 +101,25 @@ class Run(SQLModel, table=True):
     story_path: str | None = None
     repo_path: str | None = None
     error: str | None = None
+    # Observability / EBS instrumentation. ``duration_s`` is the wall-clock
+    # time the runner spent inside the LLM call (set by sandbox_run /
+    # text_run on exit). ``story_id`` lets the TUI tie a run back to its
+    # story for per-direction progress / velocity sampling. ``model_tier``
+    # is the route's difficulty bucket (standard/hard) when available.
+    duration_s: float | None = None
+    story_id: int | None = None
+    model_tier: str | None = None
 
 
 def _engine(db_path: Path | None = None) -> Any:
     path = db_path or _DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Run idempotent schema migrations so old DBs gain ``duration_s`` /
+    # ``story_id`` / ``model_tier`` on ``runs`` and ``points`` /
+    # ``estimated_seconds`` on ``stories`` without dropping data.
+    from factory.observability.schema import migrate
+
+    migrate(path)
     engine = create_engine(f"sqlite:///{path}", echo=False)
     SQLModel.metadata.create_all(engine)
     return engine
@@ -122,6 +138,9 @@ def _record_run(
     repo_path: str | None,
     error: str | None,
     db_path: Path | None = None,
+    duration_s: float | None = None,
+    story_id: int | None = None,
+    model_tier: str | None = None,
 ) -> None:
     engine = _engine(db_path)
     with Session(engine) as session:
@@ -137,6 +156,9 @@ def _record_run(
             story_path=story_path,
             repo_path=repo_path,
             error=error,
+            duration_s=duration_s,
+            story_id=story_id,
+            model_tier=model_tier,
         )
         session.add(row)
         session.commit()
@@ -627,6 +649,9 @@ async def sandbox_run(
     software_factory_root: Path | None = None,
     test_command: str | None = None,
     prior_attempts: list[dict[str, Any]] | None = None,
+    story_id: int | None = None,
+    app: str | None = None,
+    direction_id: str | None = None,
 ) -> RunResult:
     """Run a persona inside an OpenHands SDK sandbox against ``repo_path``.
 
@@ -660,6 +685,11 @@ async def sandbox_run(
         prior_attempts=prior_attempts,
     )
 
+    _t0 = time.monotonic()
+
+    def _elapsed() -> float:
+        return round(time.monotonic() - _t0, 3)
+
     if dry_run:
         # Walk: did the prelude actually pull in project.md / navigation.md? Surface that.
         # Match the heading form ONLY — the dev persona prompt mentions
@@ -685,6 +715,9 @@ async def sandbox_run(
             repo_path=str(repo_path),
             error=None,
             db_path=db_path,
+            duration_s=_elapsed(),
+            story_id=story_id,
+            model_tier=difficulty,
         )
         summary = (
             f"[DRY-RUN] persona={persona} model={llm_config.model} difficulty={difficulty}\n"
@@ -725,6 +758,9 @@ async def sandbox_run(
             repo_path=str(repo_path),
             error=err,
             db_path=db_path,
+            duration_s=_elapsed(),
+            story_id=story_id,
+            model_tier=difficulty,
         )
         return RunResult(success=False, error=err, summary=err)
 
@@ -749,6 +785,9 @@ async def sandbox_run(
             repo_path=str(repo_path),
             error=err,
             db_path=db_path,
+            duration_s=_elapsed(),
+            story_id=story_id,
+            model_tier=difficulty,
         )
         return RunResult(success=False, error=err, summary=err)
 
@@ -842,14 +881,29 @@ async def sandbox_run(
         finally:
             conversation.close()
 
+    # Write a ``live_handlers`` heartbeat row so the TUI can see what's
+    # mid-flight. The context manager removes the row on exit regardless
+    # of success/failure; reaped on stale-pid scan if the process crashes.
+    from factory.observability.heartbeat import live_handler
+
+    _hb_db = db_path or _DEFAULT_DB_PATH
     try:
-        (
-            tokens_in,
-            tokens_out,
-            cost_usd,
-            last_assistant_message,
-            recent_tool_calls,
-        ) = await loop.run_in_executor(None, _do_run)
+        with live_handler(
+            _hb_db,
+            persona=persona,
+            model=llm_config.model,
+            mode="sandbox",
+            story_id=story_id,
+            app=app,
+            direction_id=direction_id,
+        ):
+            (
+                tokens_in,
+                tokens_out,
+                cost_usd,
+                last_assistant_message,
+                recent_tool_calls,
+            ) = await loop.run_in_executor(None, _do_run)
     except Exception as exc:
         err = f"sandbox run raised: {exc!r}"
         _record_run(
@@ -864,6 +918,9 @@ async def sandbox_run(
             repo_path=str(repo_path),
             error=err,
             db_path=db_path,
+            duration_s=_elapsed(),
+            story_id=story_id,
+            model_tier=difficulty,
         )
         return RunResult(
             success=False,
@@ -890,6 +947,9 @@ async def sandbox_run(
         repo_path=str(repo_path),
         error=None if test_passed else "tests not green after run",
         db_path=db_path,
+        duration_s=_elapsed(),
+        story_id=story_id,
+        model_tier=difficulty,
     )
 
     return RunResult(
@@ -923,6 +983,10 @@ def text_run(
     db_path: Path | None = None,
     dry_run: bool = False,
     max_tokens: int | None = None,
+    story_id: int | None = None,
+    app: str | None = None,
+    direction_id: str | None = None,
+    model_tier: str | None = None,
 ) -> str | dict[str, Any]:
     """Single ``litellm.completion()`` call. Returns text, or a dict if ``schema`` set.
 
@@ -933,6 +997,11 @@ def text_run(
     """
     cfg = LLMConfig(model=model_id, api_key=api_key, base_url=base_url)
     resolved_key = _resolve_api_key(cfg)
+
+    _t0 = time.monotonic()
+
+    def _elapsed() -> float:
+        return round(time.monotonic() - _t0, 3)
 
     if dry_run:
         _record_run(
@@ -947,6 +1016,9 @@ def text_run(
             repo_path=None,
             error=None,
             db_path=db_path,
+            duration_s=_elapsed(),
+            story_id=story_id,
+            model_tier=model_tier,
         )
         if schema is not None:
             return {"_dry_run": True, "persona": persona, "model": model_id}
@@ -966,6 +1038,9 @@ def text_run(
             repo_path=None,
             error=msg,
             db_path=db_path,
+            duration_s=_elapsed(),
+            story_id=story_id,
+            model_tier=model_tier,
         )
         raise RuntimeError(msg)
 
@@ -1024,6 +1099,25 @@ def text_run(
     parsed: dict[str, Any] | None = None
     last_finish_reason: str | None = None
 
+    # Heartbeat for the whole text_run call (potentially multi-attempt). The
+    # TUI sees this row while the LLM call is in flight, regardless of retry
+    # loops inside this function. Use manual start/end so we don't have to
+    # re-indent the multi-page retry block under a ``with`` clause.
+    from factory.observability.heartbeat import end_heartbeat, start_heartbeat
+
+    _hb_db = db_path or _DEFAULT_DB_PATH
+    _hb_id: int | None = None
+    with contextlib.suppress(Exception):
+        _hb_id = start_heartbeat(
+            _hb_db,
+            persona=persona,
+            model=model_id,
+            mode="text",
+            story_id=story_id,
+            app=app,
+            direction_id=direction_id,
+        )
+
     for attempt in range(1, _MAX_OUTPUT_RETRIES + 1):
         kwargs: dict[str, Any] = {
             "model": model_id,
@@ -1063,6 +1157,9 @@ def text_run(
             except Exception as parse_exc:
                 if current_max >= _MAX_OUTPUT_RETRY_CEILING or attempt == _MAX_OUTPUT_RETRIES:
                     # No more headroom — record and raise with full diagnostics.
+                    if _hb_id is not None:
+                        with contextlib.suppress(Exception):
+                            end_heartbeat(_hb_db, _hb_id)
                     _record_run(
                         persona=persona,
                         model=model_id,
@@ -1078,6 +1175,9 @@ def text_run(
                             f"finish_reason={last_finish_reason}: {parse_exc}"
                         ),
                         db_path=db_path,
+                        duration_s=_elapsed(),
+                        story_id=story_id,
+                        model_tier=model_tier,
                     )
                     raise RuntimeError(
                         f"JSON-mode response was not valid JSON after "
@@ -1087,6 +1187,10 @@ def text_run(
 
         # Double for next attempt; clamp to ceiling.
         current_max = min(current_max * 2, _MAX_OUTPUT_RETRY_CEILING)
+
+    if _hb_id is not None:
+        with contextlib.suppress(Exception):
+            end_heartbeat(_hb_db, _hb_id)
 
     success = True
 
@@ -1102,6 +1206,9 @@ def text_run(
         repo_path=None,
         error=None,
         db_path=db_path,
+        duration_s=_elapsed(),
+        story_id=story_id,
+        model_tier=model_tier,
     )
 
     if schema is not None:

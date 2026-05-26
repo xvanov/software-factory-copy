@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,16 +27,11 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.app_config import AppConfig
 from factory.chain.event_log import log_story_event
-from factory.chain.worktree import ensure_worktree_for_story
 from factory.chain.state_machine import (
     EVENT_DEV_EXHAUSTED,
     EVENT_DEV_STARTED,
     EVENT_DEV_TESTS_GREEN,
     EVENT_DEV_TESTS_RED,
-    EVENT_HARNESS_PRECHECK_FAIL,
-    EVENT_HARNESS_PRECHECK_PASS,
-    EVENT_HARNESS_PRECHECK_STARTED,
-    EVENT_TESTS_NEED_CLARIFICATION,
     EVENT_DOCS_ENFORCER_CHECK,
     EVENT_DOCS_ENFORCER_FAIL,
     EVENT_DOCS_ENFORCER_PASS,
@@ -45,6 +40,9 @@ from factory.chain.state_machine import (
     EVENT_DOCS_ONBOARDER_STARTED,
     EVENT_DOCS_SM_DONE,
     EVENT_DOCS_SM_STARTED,
+    EVENT_HARNESS_PRECHECK_FAIL,
+    EVENT_HARNESS_PRECHECK_PASS,
+    EVENT_HARNESS_PRECHECK_STARTED,
     EVENT_REVIEWER_APPROVE,
     EVENT_REVIEWER_REQUEST_CHANGES,
     EVENT_REVIEWER_STARTED,
@@ -56,11 +54,13 @@ from factory.chain.state_machine import (
     EVENT_TEST_DESIGN_STARTED,
     EVENT_TEST_IMPL_SLOP,
     EVENT_TEST_IMPL_STARTED,
+    EVENT_TESTS_NEED_CLARIFICATION,
     EVENT_TESTS_RED,
     StoryRecord,
     StoryState,
     advance,
 )
+from factory.chain.worktree import ensure_worktree_for_story
 from factory.context.enforcer import format_violation_comment, scan_pr_diff
 from factory.context.updater import ContextUpdate, apply_context_updates
 from factory.directions.parser import Direction, list_direction_dirs, parse_direction_dir
@@ -306,6 +306,20 @@ def handle_stories_spawned(
                 issue_number = int(issue.number)
                 story_file_path = f"stories/{issue_number}-{slug}.md"
 
+            # Dual-draft path: use the first child's points as a hint
+            # (interpretations share the same underlying work item).
+            dd_points_raw = first_child.get("points")
+            try:
+                dd_points = int(dd_points_raw) if dd_points_raw is not None else 3
+            except (TypeError, ValueError):
+                dd_points = 3
+            from factory.observability.estimator import (
+                estimate_story_seconds as _est_secs_dd,
+            )
+
+            dd_estimated_seconds = _est_secs_dd(
+                db_path=db, points=dd_points, chain_kind=chain_kind
+            )
             story = StoryRecord(
                 direction_id=direction.id or direction.slug,
                 app=direction.app,
@@ -317,6 +331,8 @@ def handle_stories_spawned(
                 github_issue_number=issue_number,
                 github_branch=f"story/{issue_number or 0}-{slug}",
                 story_file_path=story_file_path,
+                points=dd_points,
+                estimated_seconds=dd_estimated_seconds,
             )
             persist_story(story, db)
             out.append(story)
@@ -337,6 +353,12 @@ def handle_stories_spawned(
                 pass
         return out
 
+    # EBS: compute baselines lazily so the very first story spawn after a
+    # cold start still gets a usable ``estimated_seconds`` (None when no
+    # samples yet — the Monte Carlo simulator gates on N>=5 to keep cold
+    # starts from emitting bogus ETAs).
+    from factory.observability.estimator import estimate_story_seconds
+
     child_stories = pm_result.get("child_stories") or []
     for child in child_stories:
         slug = _slug_of(child.get("title") or "story")
@@ -346,6 +368,15 @@ def handle_stories_spawned(
         # PM emits ``"docs"`` for documentation-only deliverables (the new
         # docs chain) and ``"tdd"`` (default) for everything else.
         chain_kind = str(child.get("chain_kind") or "tdd")
+        # EBS: Fibonacci difficulty points from PM; default to 3 (median).
+        points_raw = child.get("points")
+        try:
+            points = int(points_raw) if points_raw is not None else 3
+        except (TypeError, ValueError):
+            points = 3
+        estimated_seconds = estimate_story_seconds(
+            db_path=db, points=points, chain_kind=chain_kind
+        )
         issue_number = None
         story_file_path = f"stories/0-{slug}.md"
 
@@ -376,6 +407,8 @@ def handle_stories_spawned(
             github_issue_number=issue_number,
             github_branch=f"story/{issue_number or 0}-{slug}",
             story_file_path=story_file_path,
+            points=points,
+            estimated_seconds=estimated_seconds,
         )
         persist_story(story, db)
         out.append(story)
@@ -627,6 +660,9 @@ def handle_sm(
             model_id=model_id,
             schema=_SM_SCHEMA,
             max_tokens=max_output_tokens_for(model_id),
+            story_id=story.id,
+            app=story.app,
+            direction_id=story.direction_id,
         )
         if not isinstance(result_any, dict):
             return HandlerResult(
@@ -814,6 +850,9 @@ def handle_test_design(
             model_id=model_id,
             schema=_TEST_DESIGN_SCHEMA,
             max_tokens=max_output_tokens_for(model_id),
+            story_id=story.id,
+            app=story.app,
+            direction_id=story.direction_id,
         )
         if not isinstance(result, dict):
             return HandlerResult(
@@ -876,8 +915,6 @@ def handle_test_implementation(
         # Real-run: invoke sandbox_run with the test_implementer persona
         # against the app repo's feature branch. The sandbox actually
         # writes the test files; we then ask it to run the test_command.
-        from factory.app_config import resolve_app_repo_path
-        from factory.chain.branch import ensure_feature_branch
         from factory.runner import LLMConfig, sandbox_run
 
         # Each in-flight story gets its own private git worktree under
@@ -918,6 +955,9 @@ def handle_test_implementation(
                 direction_chain=ti_chain,
                 software_factory_root=software_factory_root,
                 test_command=app_config.gates.test_command,
+                story_id=story.id,
+                app=story.app,
+                direction_id=story.direction_id,
             )
         )
 
@@ -1264,6 +1304,9 @@ def handle_dev(
                 software_factory_root=software_factory_root,
                 test_command=app_config.gates.test_command,
                 prior_attempts=prior_attempts,
+                story_id=story.id,
+                app=story.app,
+                direction_id=story.direction_id,
             )
         )
 
@@ -1660,6 +1703,9 @@ def handle_review(
             model_id=model_id,
             schema=None,  # reviewer output is JSON but we don't enforce schema here
             max_tokens=max_output_tokens_for(model_id),
+            story_id=story.id,
+            app=story.app,
+            direction_id=story.direction_id,
         )
         try:
             result = json.loads(result_any) if isinstance(result_any, str) else result_any
@@ -1782,6 +1828,9 @@ def handle_tech_writer(
             model_id=model_id,
             schema=None,
             max_tokens=_CHEAP_MAX_TOKENS,
+            story_id=story.id,
+            app=story.app,
+            direction_id=story.direction_id,
         )
         try:
             result = json.loads(result_any) if isinstance(result_any, str) else result_any
@@ -1938,6 +1987,9 @@ def handle_docs_sm(
             schema=schema,
             max_tokens=2048,
             db_path=db,
+            story_id=story.id,
+            app=story.app,
+            direction_id=story.direction_id,
         )
         result = result_any if isinstance(result_any, dict) else _dry_run_docs_sm(story)
 
@@ -2032,6 +2084,9 @@ def handle_docs_onboarder(
             repo_path=target_repo,
             llm_config=llm,
             dry_run=False,
+            story_id=story.id,
+            app=story.app,
+            direction_id=story.direction_id,
         )
     )
 

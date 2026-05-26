@@ -24,6 +24,7 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn>=0.30",
   "croniter>=2",
+  "textual>=0.79",
 ]
 
 [project.optional-dependencies]

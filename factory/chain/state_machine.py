@@ -144,6 +144,15 @@ class StoryRecord(SQLModel, table=True):
     # or skip ahead to ``dev``. Default ``False`` so existing stories
     # transparently get the precheck on their next visit.
     harness_precheck_passed: bool = False
+    # Phase 3 EBS (Evidence-Based Scheduling). PM assigns Fibonacci
+    # story points at split time (1, 2, 3, 5, 8, 13). The chain
+    # computes ``estimated_seconds`` from per-(persona, points)
+    # baselines at story-creation time; the Monte Carlo simulator
+    # uses points + persona velocities to project per-direction
+    # ETAs. Both columns are nullable — legacy stories spawned
+    # before this column existed keep ``None``.
+    points: int | None = None
+    estimated_seconds: float | None = None
 
 
 # Event names — strings the chain emits when a handler completes.

@@ -1184,6 +1184,69 @@ def settings_cmd() -> None:
     console.print(Panel(_json.dumps(settings.model_dump(), indent=2), title="factory settings"))
 
 
+@app.command("tui")
+def tui_cmd(
+    app_name: str | None = typer.Option(
+        None, "--app", help="Filter the dashboard to a single app; default: all apps"
+    ),
+    refresh: float = typer.Option(
+        1.0, "--refresh", help="Refresh interval in seconds (>= 0.25)"
+    ),
+    recompute_baselines: bool = typer.Option(
+        False,
+        "--recompute-baselines",
+        help="Recompute (persona, points) baselines from history before launching",
+    ),
+) -> None:
+    """Launch the live terminal dashboard (factory's ``nvidia-smi``).
+
+    Reads ``state/factory.db`` and refreshes every ``--refresh`` seconds.
+    Shows mode, 24h/7d spend, per-app stats, in-flight directions with
+    EBS Monte Carlo ETAs (P50/P75/P95), mid-flight personas, velocity
+    per (persona, model_tier), and a tail of recent runs.
+
+    Keys: ``q`` quit, ``r`` recompute baselines on demand.
+    """
+    from factory.settings.loader import load_settings
+    from factory.tui import run_tui
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    if recompute_baselines:
+        from factory.observability.estimator import recompute_baselines as _rb
+
+        n = _rb(db)
+        console.print(f"[dim]recomputed {n} (persona, points) baselines[/dim]")
+
+    spend_cap: float | None = None
+    try:
+        settings = load_settings(_FACTORY_ROOT)
+        spend_cap = float(settings.caps.daily_spend_usd) or None
+    except Exception:
+        spend_cap = None
+
+    run_tui(
+        software_factory_root=_FACTORY_ROOT,
+        db_path=db,
+        spend_cap_usd=spend_cap,
+        app_filter=app_name,
+        refresh_seconds=max(0.25, refresh),
+    )
+
+
+@app.command("baselines")
+def baselines_cmd() -> None:
+    """Recompute EBS handler baselines from the runs ⨝ stories history.
+
+    Refreshes ``handler_baselines`` (per-(persona, points) median seconds).
+    Safe to call any time; the TUI also exposes this on the ``r`` key.
+    """
+    from factory.observability.estimator import recompute_baselines
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    n = recompute_baselines(db)
+    console.print(f"recomputed [bold]{n}[/bold] (persona, points) baselines")
+
+
 @app.command("spend")
 def spend_cmd(
     days: int = typer.Option(7, "--days", help="Days of history to show"),
@@ -1667,8 +1730,8 @@ def improve_cmd(
         ok, hint = _has_any_llm_provider_key()
         if not ok:
             console.print(
-                f"[red]error:[/red] real `factory improve` requires an "
-                f"LLM provider key. " + hint
+                "[red]error:[/red] real `factory improve` requires an "
+                "LLM provider key. " + hint
             )
             raise typer.Exit(code=2)
 

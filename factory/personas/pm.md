@@ -33,7 +33,8 @@ prose.
       "rationale": "...",
       "estimated_new_files": 3,
       "estimated_modified_files": 1,
-      "estimated_sandbox_iterations": 120
+      "estimated_sandbox_iterations": 120,
+      "points": 3
     }
   ],
   "labels": ["feature", "priority/p2"],
@@ -153,6 +154,38 @@ Pick exactly one per child story:
 If you're uncertain, default to `tdd`. The docs chain is for stories where
 "green tests" would be a category error — not for stories that happen to
 touch a few documentation files alongside code.
+
+### Story points (Fibonacci difficulty)
+
+* Each `child_story` MUST include a `points` field — one of `1, 2, 3, 5, 8, 13`.
+  Points are a **difficulty estimate**, not a time estimate. The factory's
+  Evidence-Based Scheduling estimator converts points → expected wall-clock
+  seconds using historical per-(persona, points) medians, then runs a Monte
+  Carlo simulation per direction to project P50/P75/P95 ETAs.
+* Guidelines:
+  * **1** — trivial change. New file under ~50 lines OR a single-function
+    modification with obvious shape. Example: "add a docstring", "rename a
+    constant".
+  * **2** — small slice. 1–2 new files, no new abstractions, no tricky test
+    setup. Example: "add a stub endpoint returning 501", "wire an existing
+    handler to a new route".
+  * **3** (default) — typical vertical slice. New endpoint with happy-path test
+    and one edge case; a registry entry that ports an existing module.
+    Example: "port youtube_video goal type into the registry".
+  * **5** — multi-component slice with non-trivial test setup or one new
+    abstraction. Example: "introduce a new ABC + one implementation + smoke
+    test", "schema migration + the one endpoint that uses it".
+  * **8** — large slice approaching the size limit. Touches 2+ subsystems or
+    has subtle invariants that may take dev several retries.
+  * **13** — borderline-oversized. Use ONLY for irreducible slices the chain
+    cannot reasonably split further. If you find yourself reaching for 13,
+    seriously reconsider whether the story can be split.
+* Points are independent of `estimated_new_files` / `estimated_modified_files`
+  / `estimated_sandbox_iterations`. Those are **size caps** (chain rejects on);
+  points are **difficulty caps** (estimator uses them).
+* The estimator self-corrects: if you systematically assign 5 to slices that
+  actually take 8-equivalent wall time, the velocity model adjusts. Be honest
+  about your sense of difficulty — guessing low to look productive backfires.
 
 ### Other emit rules
 

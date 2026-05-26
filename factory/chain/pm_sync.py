@@ -100,6 +100,11 @@ _PM_SCHEMA: dict[str, Any] = {
                     "estimated_new_files": {"type": "integer", "minimum": 0},
                     "estimated_modified_files": {"type": "integer", "minimum": 0},
                     "estimated_sandbox_iterations": {"type": "integer", "minimum": 0},
+                    # Phase 3 EBS: Fibonacci difficulty points the
+                    # estimator uses to project ETA. Optional — when
+                    # absent, the chain defaults to 3 (median bucket)
+                    # and the estimator emits a wider error band.
+                    "points": {"type": "integer", "enum": [1, 2, 3, 5, 8, 13]},
                 },
             },
         },
@@ -181,6 +186,7 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
                     "scope": "docs",
                     "chain_kind": "docs",
                     "rationale": "Documentation-only direction; routed through the docs chain.",
+                    "points": 2,
                 }
             )
         else:
@@ -191,6 +197,7 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
                         "scope": "backend",
                         "chain_kind": "tdd",
                         "rationale": "Direction declares an API contract; one backend story to implement it.",
+                        "points": 3,
                     }
                 )
             if direction.has_flow:
@@ -200,6 +207,7 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
                         "scope": "frontend",
                         "chain_kind": "tdd",
                         "rationale": "Direction declares a user flow; one frontend story to implement it.",
+                        "points": 3,
                     }
                 )
         if not child_stories:
@@ -209,6 +217,7 @@ def _dry_run_pm_result(direction: Direction, validation: ValidationResult) -> di
                     "scope": "backend",
                     "chain_kind": "tdd",
                     "rationale": "Explore-tagged direction; single backend story as a starting point.",
+                    "points": 3,
                 }
             )
         return {
