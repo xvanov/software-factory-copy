@@ -169,7 +169,56 @@ def ensure_worktree_for_story(
     else:
         _run_git(repo, "worktree", "add", "-b", branch, str(wt), base_ref)
 
+    _replicate_uncommitted_runtime_files(repo, wt)
     return wt
+
+
+# Untracked-but-runtime-required files at the source repo root that the
+# chain replicates into each per-story worktree so the dev/test gate
+# matches the operator's local setup. Most apps gitignore ``.env`` (and
+# variants) and rely on pydantic-settings or python-dotenv to pick them
+# up — without these copied into the worktree, every ``pytest`` in the
+# worktree fails at conftest import (e.g. ``create_async_engine`` with
+# a missing ``DATABASE_URL``).
+_RUNTIME_FILES_TO_REPLICATE = (
+    ".env",
+    ".env.local",
+    ".env.test",
+    ".env.local.test",
+)
+
+
+def _replicate_uncommitted_runtime_files(source_repo: Path, worktree: Path) -> None:
+    """Copy gitignored runtime config files from ``source_repo`` into ``worktree``.
+
+    These files are intentionally untracked (they hold secrets / per-host
+    settings) so ``git worktree add`` doesn't carry them automatically.
+    The chain treats them as part of the runtime environment dev needs
+    to see, otherwise pytest can fail at conftest import and burn the
+    entire dev retry budget on a config problem.
+
+    Symlinks are preferred (cheap, kept in sync if the operator edits
+    the source) but we fall back to copy on platforms / filesystems
+    where symlink fails.
+    """
+    import shutil
+
+    for name in _RUNTIME_FILES_TO_REPLICATE:
+        src = source_repo / name
+        if not src.exists():
+            continue
+        dst = worktree / name
+        if dst.exists() or dst.is_symlink():
+            continue  # respect anything the worktree-creator put there
+        try:
+            dst.symlink_to(src.resolve())
+        except OSError:
+            try:
+                shutil.copy2(src, dst)
+            except OSError:
+                # Last-resort — don't fail worktree creation over a config
+                # file. Tests that need this will surface the issue.
+                pass
 
 
 def remove_worktree_for_story(

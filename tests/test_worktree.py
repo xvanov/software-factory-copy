@@ -248,6 +248,50 @@ def test_prune_skips_other_apps(tmp_path: Path) -> None:
     assert bar_wt.exists()
 
 
+def test_ensure_replicates_dotenv_into_worktree(tmp_path: Path) -> None:
+    """Untracked runtime files (``.env``, ``.env.local``, etc.) must be
+    present in the worktree or pytest in the worktree fails at conftest
+    import — pydantic-settings looks up ``.env`` relative to the working
+    directory and the worktree doesn't get it from git."""
+    src = tmp_path / "src"
+    factory_root = tmp_path / "factory"
+    factory_root.mkdir()
+    _init_repo(src)
+    # Operator's .env lives at the source-repo root and is gitignored.
+    (src / ".env").write_text("DATABASE_URL=postgres://x\n", encoding="utf-8")
+    (src / ".gitignore").write_text(".env\n", encoding="utf-8")  # not committed
+
+    wt = ensure_worktree_for_story(
+        src,
+        software_factory_root=factory_root,
+        app="sacrifice",
+        story_id=42,
+        slug="dotenv-required",
+    )
+
+    wt_env = wt / ".env"
+    assert wt_env.exists()
+    # Either symlink or copy — content must match the source.
+    assert "DATABASE_URL=postgres://x" in wt_env.read_text(encoding="utf-8")
+
+
+def test_ensure_skips_replication_when_source_has_no_env(tmp_path: Path) -> None:
+    """Apps that don't use ``.env`` shouldn't gain mysterious empty files."""
+    src = tmp_path / "src"
+    factory_root = tmp_path / "factory"
+    factory_root.mkdir()
+    _init_repo(src)
+
+    wt = ensure_worktree_for_story(
+        src,
+        software_factory_root=factory_root,
+        app="sacrifice",
+        story_id=1,
+        slug="no-env",
+    )
+    assert not (wt / ".env").exists()
+
+
 def test_ensure_rejects_non_git_directory(tmp_path: Path) -> None:
     not_a_repo = tmp_path / "not-a-repo"
     not_a_repo.mkdir()

@@ -6,9 +6,11 @@ caps:
   global_concurrent_agents: 10
   # Per-repo cap — now decoupled from working-tree contention thanks to
   # ``factory.chain.worktree``. Each in-flight story gets its own
-  # private worktree on disk so 5 stories can run in parallel against a
-  # single app without racing on ``ensure_feature_branch``.
-  per_repo_concurrent_agents: 5
+  # private worktree on disk so multiple stories can run in parallel
+  # against a single app without racing on ``ensure_feature_branch``.
+  # Set to 10 so non-active in-flight states (deploy_pending, dev_retry
+  # waiting on next tick, etc.) don't accidentally throttle dispatch.
+  per_repo_concurrent_agents: 10
   daily_spend_usd: 100
   hourly_spend_usd: 15
 queues:
