@@ -42,6 +42,15 @@ from factory.chain.event_log import read_story_events
 from factory.chain.state_machine import StoryRecord, StoryState, _TRANSITIONS
 
 
+# Upper bound on the assembled JSON bundle handed to the persona.
+# The personas/ tree alone is ~90KB; events + state machine round it
+# up. 250KB stays well inside cheap-model context budgets and gives
+# the persona room to write *applicable* unified diffs (the previous
+# 80KB cap was set when only the personas_index — names only — was
+# in the bundle).
+_PROMPT_BUNDLE_CHAR_LIMIT = 250_000
+
+
 # Schema the persona's JSON output is validated against. We use the
 # shape directly in text_run so litellm requests JSON mode.
 _IMPROVER_SCHEMA: dict[str, Any] = {
@@ -58,6 +67,7 @@ _IMPROVER_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "enum": [
                             "prompt_edit",
+                            "doc_update",
                             "new_state",
                             "new_handler",
                             "workflow_change",
@@ -345,6 +355,42 @@ def record_improver_fired(
     p.write_text(json.dumps(history), encoding="utf-8")
 
 
+_APPLY_PASS_LOG = "_factory_improver_apply.log"
+
+
+def _make_apply_log_event(software_factory_root: Path) -> Any:
+    """Return a ``log_event(kind, payload)`` callable that appends a
+    JSONL record to ``state/logs/_factory_improver_apply.log``.
+
+    Plain-text per-line JSON so ``factory why`` / ``grep`` work on it
+    just like any other event log. Pre-pended ``_`` keeps it out of the
+    per-story-log glob.
+    """
+    logs_dir = software_factory_root / "state" / "logs"
+    log_path = logs_dir / _APPLY_PASS_LOG
+
+    def _log(kind: str, payload: dict[str, Any]) -> None:
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "ts": datetime.now(UTC).isoformat(),
+                            "event": kind,
+                            **payload,
+                        }
+                    )
+                    + "\n"
+                )
+        except OSError:
+            # Best-effort — never fail the apply pass over a log
+            # write failure.
+            pass
+
+    return _log
+
+
 def _personas_index(personas_dir: Path) -> list[dict[str, Any]]:
     """Compose a lightweight index of every persona prompt.
 
@@ -366,6 +412,24 @@ def _personas_index(personas_dir: Path) -> list[dict[str, Any]]:
                 "sha256_prefix": digest,
             }
         )
+    return out
+
+
+def _personas_full_text(personas_dir: Path) -> dict[str, str]:
+    """Return ``{persona_name: full_markdown_text}`` for every persona.
+
+    Required for the improver to write *applicable* unified diffs —
+    without the actual line contents it can only hallucinate context.
+    Total cost is ~90KB; the prompt assembler truncates the bundle at
+    ``_PROMPT_BUNDLE_CHAR_LIMIT`` so a runaway personas/ doesn't blow
+    the context window.
+    """
+    out: dict[str, str] = {}
+    for p in sorted(personas_dir.glob("*.md")):
+        try:
+            out[p.stem] = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
     return out
 
 
@@ -537,12 +601,19 @@ def run_factory_improver(
     blocked = _terminally_blocked_stories(db_path=db, app=app, window_hours=window_hours)
     personas_dir = Path(__file__).resolve().parent.parent / "personas"
     personas = _personas_index(personas_dir)
+    personas_text = _personas_full_text(personas_dir)
     transitions = _state_machine_summary()
 
     bundle = {
         "events_window": events,
         "blocked_stories": blocked,
         "personas_index": personas,
+        # Full markdown for every persona — required so the improver
+        # can emit unified diffs whose context lines match the real
+        # file contents. Without these, ``git apply`` would reject
+        # every patch and the L2 apply pass would drop every proposal
+        # as ``invalid``.
+        "personas_full_text": personas_text,
         "state_machine_summary": transitions,
         "window_hours": window_hours,
         "app_filter": app,
@@ -560,7 +631,9 @@ def run_factory_improver(
             "---\n\n"
             "## Input bundle\n\n"
             "```json\n"
-            f"{json.dumps(bundle, indent=2)[:80000]}\n"
+            # 250KB cap: the personas/ tree is ~90KB; the rest is
+            # events + state machine. Cheap models handle this fine.
+            f"{json.dumps(bundle, indent=2)[:_PROMPT_BUNDLE_CHAR_LIMIT]}\n"
             "```\n\n"
             "Return ONLY the JSON object. No prose outside the JSON."
         )
@@ -612,6 +685,7 @@ def run_factory_improver(
             repo=apply_repo,
             runner=apply_runner,
             open_prs=apply_repo is not None,
+            log_event=_make_apply_log_event(root),
         )
 
     # Post on the pinned issue (real-run only). Skipped in dry-run so

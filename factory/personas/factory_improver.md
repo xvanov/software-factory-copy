@@ -32,10 +32,10 @@ proposal. No fluff, no philosophy.
 {
   "improvements": [
     {
-      "kind": "prompt_edit|new_state|new_handler|workflow_change",
+      "kind": "prompt_edit|doc_update|new_state|new_handler|workflow_change",
       "target": "<file_or_state_name>",
       "rationale": "<one sentence — why this change>",
-      "suggested_patch": "<concise diff sketch OR free-text recipe>",
+      "suggested_patch": "<UNIFIED DIFF — see below>",
       "evidence": "<event_id / story_slug / file:line>",
       "confidence": "low|medium|high"
     }
@@ -45,16 +45,65 @@ proposal. No fluff, no philosophy.
 }
 ```
 
+### `suggested_patch` MUST be a unified diff
+
+The L2 apply-pass takes your `suggested_patch` and runs it through
+`git apply`. **Free-text recipes are dropped as `invalid` and never
+become PRs** — your proposal is wasted if you describe the change in
+prose. The diff is the deliverable.
+
+Required form:
+
+```
+diff --git a/<path> b/<path>
+--- a/<path>
++++ b/<path>
+@@ -<old_start>,<old_lines> +<new_start>,<new_lines> @@
+ context line
+-line to remove
++line to add
+ context line
+```
+
+Rules:
+
+* Include the `diff --git a/… b/…` header line. `git apply` accepts
+  the bare `---`/`+++` form too, but the `diff --git` form is the
+  safe default for the auto-apply pipeline.
+* Use **real, current content** from the target file as your
+  context lines (the `personas_index` and `state_machine_summary`
+  inputs tell you which files exist; if you need to quote exact
+  lines, ask for a tighter prompt next iteration — never invent
+  context).
+* Touch exactly one logical change per proposal. Keep diffs small
+  (≤ 50 added, ≤ 30 deleted) so they can clear the safe-classification
+  gate.
+* Do NOT delete `#`/`##` section headings from persona prompts —
+  that's a load-bearing structural change and always classifies risky.
+* Do NOT create new persona files (`new file mode` / `--- /dev/null`)
+  — always edit existing ones.
+
+If you genuinely cannot produce a diff because the change spans the
+state machine or a handler (kinds `new_state` / `new_handler`), still
+write a unified diff against the relevant Python file (or against a
+new file path) describing the exact code to add. Those will
+classify as `risky` and become a PR for human review — that's still
+useful; a free-text recipe is not.
+
 * `kind`:
   * `prompt_edit` — a persona's `.md` needs a clarification (forbidden
-    paths, stricter contract, missing escape hatch, etc).
+    paths, stricter contract, missing escape hatch, etc). Auto-merge
+    eligible.
+  * `doc_update` — README / CLAUDE.md / persona docs that aren't
+    behavior-defining. Auto-merge eligible.
   * `new_state` — the state machine is missing a transition or a
     pre-check state. Cite the exact `(state, event) -> next_state` to
-    add.
+    add. Always risky → PR for human review.
   * `new_handler` — a state has no dispatcher in
     `factory.chain.orchestrator._DISPATCH`, or a handler is missing
-    entirely.
-  * `workflow_change` — settings/routes/cron tuning.
+    entirely. Always risky → PR for human review.
+  * `workflow_change` — settings/routes/cron tuning. Always risky →
+    PR for human review.
 * `confidence`:
   * `high` — repeated identical failure across distinct stories.
   * `medium` — recurring pattern but only 2-3 instances.
