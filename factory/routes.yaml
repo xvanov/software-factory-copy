@@ -43,6 +43,10 @@ routes:
   # Routed to deepseek-chat (same tier as factory_improver) — structured
   # JSON output, no code-generation, low latency requirement.
   manager_watcher: deepseek/deepseek-chat
+  # L2 Summarizer: mid-tier, runs every 3 minutes (or immediately on L1
+  # escalation). Consumes flagged L1 notes + underlying signals and
+  # emits structured concern documents. Sonnet-class for deeper analysis.
+  manager_summarizer: anthropic/claude-sonnet-4-6
 
 # Azure OpenAI / Cognitive Services deployments at mv-coding-agent-foundry.
 # Three deployments live there:
@@ -78,6 +82,9 @@ azure_routes:
   factory_improver: azure/gpt-5.4
   # L1 Watcher: same cheap-tier as factory_improver under Azure provider.
   manager_watcher: azure/gpt-5.4
+  # L2 Summarizer: mid-tier under Azure. Same gpt-5.4 tier as architect/reviewer
+  # for structured analysis with deeper reasoning than L1.
+  manager_summarizer: azure/gpt-5.4
 
   # Code-judgment work → intent is gpt-5.3-codex; falls back to gpt-5.4 today
   # (codex is Responses-API-only — see header note). reviewer ≠ dev still

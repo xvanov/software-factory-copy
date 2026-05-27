@@ -565,12 +565,17 @@ def run_watcher_daemon(
     interval_s: int = 60,
     max_iters: int | None = None,
     lookback: timedelta = timedelta(minutes=15),
+    trigger_l2: bool = True,
 ) -> None:
     """Loop ``run_watcher_once`` every ``interval_s`` seconds.
 
     Runs until interrupted by SIGINT (KeyboardInterrupt) or until
     ``max_iters`` iterations have completed (when provided — useful
     for tests).
+
+    When L1 produces a note with ``escalate_to_l2=true``, immediately
+    triggers one L2 summarizer iteration (``run_summarizer_once``) unless
+    ``trigger_l2=False`` (the ``--no-l2`` flag).
 
     Parameters
     ----------
@@ -583,11 +588,14 @@ def run_watcher_daemon(
         until KeyboardInterrupt.
     lookback:
         Maximum lookback window passed to each ``run_watcher_once`` call.
+    trigger_l2:
+        If True (default), immediately invoke L2 when L1 escalates.
+        Set to False to suppress L2 (useful for testing L1 in isolation).
     """
     import sys
 
     iterations = 0
-    print(f"[watcher] starting daemon (interval_s={interval_s})", file=sys.stderr)
+    print(f"[watcher] starting daemon (interval_s={interval_s}, trigger_l2={trigger_l2})", file=sys.stderr)
     try:
         while True:
             try:
@@ -600,6 +608,26 @@ def run_watcher_daemon(
                     f"[watcher] {result.get('ts', '?')}{esc_tag}: {summary[:120]}",
                     file=sys.stderr,
                 )
+                # Immediately trigger L2 if L1 escalated and trigger_l2 is enabled.
+                if escalated and trigger_l2:
+                    print("[watcher] triggering immediate L2 summarizer run...", file=sys.stderr)
+                    try:
+                        from factory.manager.summarizer import run_summarizer_once
+
+                        l2_result = run_summarizer_once(root=root)
+                        if l2_result is None:
+                            print("[watcher] L2: no flagged notes found (possible race).", file=sys.stderr)
+                        else:
+                            l2_title = l2_result.get("title", "?")
+                            l2_urgency = l2_result.get("urgency", "?")
+                            l2_esc = l2_result.get("escalate_to_l3", False)
+                            l2_esc_tag = " [ESCALATE→L3]" if l2_esc else ""
+                            print(
+                                f"[watcher] L2 concern={l2_title!r} urgency={l2_urgency}{l2_esc_tag}",
+                                file=sys.stderr,
+                            )
+                    except Exception as l2_exc:  # noqa: BLE001
+                        print(f"[watcher] L2 trigger failed: {l2_exc!r}", file=sys.stderr)
             except Exception as exc:  # noqa: BLE001
                 print(f"[watcher] run_watcher_once raised: {exc!r}", file=sys.stderr)
 

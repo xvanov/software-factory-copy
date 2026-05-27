@@ -2125,6 +2125,7 @@ def manager_watch_cmd(
     interval_s: int = typer.Option(60, "--interval-s", help="Seconds between watcher cycles (daemon mode)."),
     max_iters: int | None = typer.Option(None, "--max-iters", help="Stop after N iterations (useful for testing)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Assemble prompt but do NOT call the LLM; print the prompt."),
+    no_l2: bool = typer.Option(False, "--no-l2", help="Suppress the immediate L2 trigger on L1 escalation (useful for testing L1 in isolation)."),
 ) -> None:
     """Run the L1 Watcher agent.
 
@@ -2132,6 +2133,10 @@ def manager_watch_cmd(
     seconds until SIGINT.  With ``--once``, runs a single cycle and
     prints the result JSON.  With ``--once --dry-run``, assembles and
     prints the prompt without calling the LLM.
+
+    In daemon mode, when L1 escalates (``escalate_to_l2=true``), an
+    immediate L2 summarizer iteration is triggered unless ``--no-l2``
+    is passed.
     """
     from factory.manager.watcher import run_watcher_daemon, run_watcher_once
 
@@ -2146,4 +2151,56 @@ def manager_watch_cmd(
             console.print(
                 "[yellow]--dry-run has no effect in daemon mode; use --once --dry-run.[/yellow]"
             )
-        run_watcher_daemon(root=_FACTORY_ROOT, interval_s=interval_s, max_iters=max_iters)
+        run_watcher_daemon(
+            root=_FACTORY_ROOT,
+            interval_s=interval_s,
+            max_iters=max_iters,
+            trigger_l2=not no_l2,
+        )
+
+
+@manager_app.command("summarize")
+def manager_summarize_cmd(
+    once: bool = typer.Option(False, "--once", help="Run a single summarizer cycle and exit."),
+    interval_s: int = typer.Option(
+        180, "--interval-s", help="Seconds between summarizer cycles (daemon mode). Default: 180."
+    ),
+    max_iters: int | None = typer.Option(
+        None, "--max-iters", help="Stop after N iterations (useful for testing)."
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Assemble L2 prompt but do NOT call the LLM; print the prompt.",
+    ),
+) -> None:
+    """Run the L2 Summarizer agent.
+
+    Reads watcher notes flagged with ``escalate_to_l2=true`` and produces
+    structured concern documents under ``state/concerns/``.
+
+    Without ``--once``, runs as a daemon looping every ``--interval-s``
+    seconds (default: 180) until SIGINT.  With ``--once``, runs a single
+    cycle and prints the resulting concern JSON (or reports that no flagged
+    notes were found).  With ``--once --dry-run``, assembles and prints
+    the L2 prompt without calling the LLM.
+    """
+    from factory.manager.summarizer import run_summarizer_daemon, run_summarizer_once
+
+    if once:
+        result = run_summarizer_once(root=_FACTORY_ROOT, dry_run=dry_run)
+        if result is None:
+            console.print("[dim]No flagged watcher notes found — nothing to summarize.[/dim]")
+        elif not dry_run:
+            import json as _json
+            print(_json.dumps(result, indent=2, default=str))
+    else:
+        if dry_run:
+            console.print(
+                "[yellow]--dry-run has no effect in daemon mode; use --once --dry-run.[/yellow]"
+            )
+        run_summarizer_daemon(
+            root=_FACTORY_ROOT,
+            interval_s=interval_s,
+            max_iters=max_iters,
+        )
