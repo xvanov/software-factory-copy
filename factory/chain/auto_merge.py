@@ -483,5 +483,40 @@ def auto_merge_tick(
                     # queue entry still drives the work; the story will be
                     # reconciled by the orchestrator on a later tick.
                     pass
+        # Emit auto_merge_attempt signal — best-effort, never raises.
+        try:
+            from factory.manager.signals import write_git_event as _wge_am
+
+            _story_id_am: int | None = f.story.id if f.story is not None else None
+            _wge_am(
+                kind="auto_merge_attempt",
+                story_id=_story_id_am,
+                pr_number=action.pr_number,
+                result="ok" if action.merged else "error",
+                error=None if action.merged else action.reason,
+                software_factory_root=root,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        # Emit a dedicated pr_merge signal when the merge succeeded so L1
+        # agents can distinguish "merge happened" from the broader
+        # "auto_merge_attempt" record (which covers both attempts and
+        # no-ops). commit_sha is not known post-squash-merge without a
+        # GH API call; omit it here — the sha is derivable from git log
+        # against the base branch if needed.
+        if action.merged:
+            try:
+                from factory.manager.signals import write_git_event as _wge_pm
+
+                _story_id_pm: int | None = f.story.id if f.story is not None else None
+                _wge_pm(
+                    kind="pr_merge",
+                    story_id=_story_id_pm,
+                    pr_number=action.pr_number,
+                    result="ok",
+                    software_factory_root=root,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         actions.append(action)
     return actions

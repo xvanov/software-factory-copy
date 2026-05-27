@@ -39,6 +39,19 @@ routes:
   bug_hunter: deepseek/deepseek-chat
   security: anthropic/claude-opus-4-7
   factory_improver: deepseek/deepseek-chat
+  # L1 Watcher: cheap, runs every minute, summarises signals + escalates.
+  # Routed to deepseek-chat (same tier as factory_improver) — structured
+  # JSON output, no code-generation, low latency requirement.
+  manager_watcher: deepseek/deepseek-chat
+  # L2 Summarizer: mid-tier, runs every 3 minutes (or immediately on L1
+  # escalation). Consumes flagged L1 notes + underlying signals and
+  # emits structured concern documents. Sonnet-class for deeper analysis.
+  manager_summarizer: anthropic/claude-sonnet-4-6
+  # L3 Diagnostician: frontier-tier, runs only on L2 escalation.
+  # Reads a single concern + pre-loaded factory source and emits a
+  # concrete proposal with a unified-diff patch.  Opus-class reasoning
+  # for root-cause analysis and coherent patch generation.
+  manager_diagnostician: anthropic/claude-opus-4-7
 
 # Azure OpenAI / Cognitive Services deployments at mv-coding-agent-foundry.
 # Three deployments live there:
@@ -72,6 +85,15 @@ azure_routes:
   # the persona's pattern (structured JSON proposals, no code-judgment
   # heavy lifting). Direct routing per user spec.
   factory_improver: azure/gpt-5.4
+  # L1 Watcher: same cheap-tier as factory_improver under Azure provider.
+  manager_watcher: azure/gpt-5.4
+  # L2 Summarizer: mid-tier under Azure. Same gpt-5.4 tier as architect/reviewer
+  # for structured analysis with deeper reasoning than L1.
+  manager_summarizer: azure/gpt-5.4
+  # L3 Diagnostician: frontier-tier under Azure.  Same gpt-5.4 tier as
+  # architect/reviewer (the highest cost-tier deployed at this foundry).
+  # Frontier reasoning for root-cause diagnosis and patch generation.
+  manager_diagnostician: azure/gpt-5.4
 
   # Code-judgment work → intent is gpt-5.3-codex; falls back to gpt-5.4 today
   # (codex is Responses-API-only — see header note). reviewer ≠ dev still

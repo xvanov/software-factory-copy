@@ -386,6 +386,39 @@ def tick_cmd(
             console.print("[red]error:[/red] real tick requires an LLM provider key. " + hint)
             raise typer.Exit(code=2)
 
+    # Phase 8 (Phase 7 reviewer note): check halt state BEFORE the
+    # factory_improver and scheduled personas block so a halted factory
+    # exits cleanly without burning LLM calls.
+    try:
+        from factory.manager.halt import get_halt_state as _get_halt_state
+        from factory.manager.halt import is_halted as _is_halted
+
+        if _is_halted(root=_FACTORY_ROOT):
+            halt_state = _get_halt_state(root=_FACTORY_ROOT) or {}
+            console.print(
+                Panel.fit(
+                    f"[bold red]FACTORY HALTED[/bold red] — tick skipped.\n\n"
+                    f"set_at:        {halt_state.get('set_at', '?')}\n"
+                    f"concern_title: {halt_state.get('concern_title', '?')}\n"
+                    f"reason:        {halt_state.get('reason', '?')}\n\n"
+                    "Run [bold]factory resume[/bold] to clear the halt.",
+                    title="tick (halted)",
+                )
+            )
+            raise typer.Exit(code=0)
+    except typer.Exit:
+        raise
+    except Exception as _halt_check_exc:  # noqa: BLE001
+        # The halt module import or read failed — log visibly and continue.
+        # Fail-open: a broken halt module must not silently disable all ticks,
+        # but an operator MUST notice, so we print to stderr.
+        import sys as _sys
+        print(
+            f"[tick] WARNING: halt-check raised an exception: {_halt_check_exc!r}; "
+            "continuing with tick (fail-open). This may indicate a broken halt module.",
+            file=_sys.stderr,
+        )
+
     # Phase 6: drive the scheduler BEFORE the story chain so findings
     # filed by Ralph/etc become directions that this same tick can pick
     # up (PM-sync runs separately, but the next tick will spawn stories
@@ -412,9 +445,7 @@ def tick_cmd(
             from factory.settings.loader import load_settings
 
             settings = load_settings(_FACTORY_ROOT)
-            daily_cap_imp = int(
-                getattr(settings.rate_limits, "factory_improver_runs_per_day", 12)
-            )
+            daily_cap_imp = int(getattr(settings.rate_limits, "factory_improver_runs_per_day", 12))
         except Exception:
             daily_cap_imp = 12
         fire, reason = should_fire_improver(
@@ -452,9 +483,7 @@ def tick_cmd(
                     ("factory_improver (event)", f"errored:{exc!r}"[:60], 0, 0)
                 )
         else:
-            scheduled_results.append(
-                ("factory_improver (event)", f"skipped:{reason}", 0, 0)
-            )
+            scheduled_results.append(("factory_improver (event)", f"skipped:{reason}", 0, 0))
 
     for due in due_schedules(_FACTORY_ROOT, audit_app=app_name):
         if due.rate_limit_hit:
@@ -922,29 +951,97 @@ def pause_cmd() -> None:
 
 
 @app.command("resume")
-def resume_cmd() -> None:
-    """Restore normal operation: sets factory mode to ``normal``."""
-    from factory.settings.modes import set_mode
+def resume_cmd(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    reason: str | None = typer.Option(None, "--reason", help="Optional reason for clearing halt"),
+) -> None:
+    """Clear a factory halt and restore normal operation.
 
-    new = set_mode("normal", _FACTORY_ROOT)
-    console.print(Panel.fit(f"factory mode -> [bold green]{new}[/bold green]", title="resume"))
+    If the factory is in a halted state (set by the L3 Diagnostician), this
+    command clears it after operator confirmation.  If not halted, it falls
+    back to setting mode to ``normal`` (same as before Phase 7).
+
+    OPERATOR-ONLY — this command must never be invoked by any LLM pathway.
+    """
+    # Phase 7: check for halt state first.
+    from factory.manager.halt import clear_halt, get_halt_state, is_halted
+
+    if is_halted(root=_FACTORY_ROOT):
+        halt_state = get_halt_state(root=_FACTORY_ROOT) or {}
+        console.print(
+            Panel.fit(
+                f"[bold red]FACTORY HALTED[/bold red]\n\n"
+                f"set_at:        {halt_state.get('set_at', '?')}\n"
+                f"set_by:        {halt_state.get('set_by', '?')}\n"
+                f"concern_title: {halt_state.get('concern_title', '?')}\n"
+                f"reason:        {halt_state.get('reason', '?')}\n"
+                f"proposal_path: {halt_state.get('proposal_path', '?')}",
+                title="halt state",
+            )
+        )
+        if not yes:
+            confirmed = typer.confirm(
+                "Clear the halt and resume normal operation?", default=False
+            )
+            if not confirmed:
+                console.print("[yellow]Aborted.[/yellow]")
+                raise typer.Exit(code=0)
+        archived = clear_halt(
+            root=_FACTORY_ROOT,
+            cleared_by="operator",
+            reason=reason,
+        )
+        console.print(
+            Panel.fit(
+                f"[bold green]Halt cleared.[/bold green]\n"
+                f"Archived to state/.halt_history.json\n"
+                f"cleared_at: {archived.get('cleared_at', '?')}",
+                title="resume",
+            )
+        )
+    else:
+        # No halt active — fall back to setting mode to normal.
+        from factory.settings.modes import set_mode
+
+        new = set_mode("normal", _FACTORY_ROOT)
+        console.print(
+            Panel.fit(f"factory mode -> [bold green]{new}[/bold green]", title="resume")
+        )
 
 
 @app.command("mode")
 def mode_cmd(
     name: str | None = typer.Argument(None, help="Mode name; omit to print the current mode"),
 ) -> None:
-    """Show or set the factory mode."""
+    """Show or set the factory mode.
+
+    When the factory is halted (set by L3 Diagnostician), prints halt details
+    alongside the mode.  Use ``factory resume`` to clear a halt.
+    """
+    from factory.manager.halt import get_halt_state, is_halted
     from factory.settings.loader import is_valid_mode, load_settings
     from factory.settings.modes import get_mode, set_mode
 
     settings = load_settings(_FACTORY_ROOT)
     if name is None:
         current = get_mode(_FACTORY_ROOT)
-        console.print(
-            f"current mode: [bold]{current}[/bold]\n"
-            f"available: {', '.join(settings.modes.available)}"
-        )
+        halted = is_halted(root=_FACTORY_ROOT)
+        if halted:
+            halt_state = get_halt_state(root=_FACTORY_ROOT) or {}
+            console.print(
+                f"current mode: [bold red]halted[/bold red]\n"
+                f"  set_at:        {halt_state.get('set_at', '?')}\n"
+                f"  concern_title: {halt_state.get('concern_title', '?')}\n"
+                f"  reason:        {halt_state.get('reason', '?')}\n"
+                f"  (db mode: {current})\n"
+                f"available: {', '.join(settings.modes.available)}\n"
+                f"[yellow]Run 'factory resume' to clear the halt.[/yellow]"
+            )
+        else:
+            console.print(
+                f"current mode: [bold]{current}[/bold]\n"
+                f"available: {', '.join(settings.modes.available)}"
+            )
         return
     if not is_valid_mode(name, settings):
         console.print(
@@ -1189,9 +1286,7 @@ def tui_cmd(
     app_name: str | None = typer.Option(
         None, "--app", help="Filter the dashboard to a single app; default: all apps"
     ),
-    refresh: float = typer.Option(
-        1.0, "--refresh", help="Refresh interval in seconds (>= 0.25)"
-    ),
+    refresh: float = typer.Option(1.0, "--refresh", help="Refresh interval in seconds (>= 0.25)"),
     recompute_baselines: bool = typer.Option(
         False,
         "--recompute-baselines",
@@ -1730,8 +1825,7 @@ def improve_cmd(
         ok, hint = _has_any_llm_provider_key()
         if not ok:
             console.print(
-                "[red]error:[/red] real `factory improve` requires an "
-                "LLM provider key. " + hint
+                "[red]error:[/red] real `factory improve` requires an LLM provider key. " + hint
             )
             raise typer.Exit(code=2)
 
@@ -1988,3 +2082,634 @@ def webhook_serve(
         )
     )
     uvicorn.run("factory.webhook.github:app", host=host, port=port, log_level="info")
+
+
+# --------------------------------------------------------------------------- #
+# Phase FMS-1 commands: manager (signal inspection)
+# --------------------------------------------------------------------------- #
+
+
+manager_app = typer.Typer(help="FMS manager sub-commands.")
+app.add_typer(manager_app, name="manager")
+
+signals_app = typer.Typer(help="Inspect structured event streams.")
+manager_app.add_typer(signals_app, name="signals")
+
+
+def _parse_duration(s: str) -> float:
+    """Parse a simple duration string into seconds.
+
+    Accepted formats: ``30s``, ``15m``, ``2h``, ``1d``.
+    Falls back to treating the raw value as seconds if no suffix.
+    """
+    s = s.strip().lower()
+    if s.endswith("d"):
+        return float(s[:-1]) * 86400
+    if s.endswith("h"):
+        return float(s[:-1]) * 3600
+    if s.endswith("m"):
+        return float(s[:-1]) * 60
+    if s.endswith("s"):
+        return float(s[:-1])
+    return float(s)
+
+
+@signals_app.command("dump")
+def signals_dump_cmd(
+    since: str = typer.Option("1h", "--since", help="Duration to look back (e.g. 1h, 30m, 2d)"),
+    stream: str | None = typer.Option(
+        None, "--stream", help="Only show events from this stream (e.g. ticks, runs)"
+    ),
+    fmt: str = typer.Option("human", "--format", help="Output format: human | json"),
+) -> None:
+    """Print all events from the signal streams since ``--since``, interleaved by ts."""
+    import json as _json
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from factory.manager.signals import _events_dir
+
+    events_dir = _events_dir(_FACTORY_ROOT)
+    if not events_dir.exists():
+        console.print(
+            Panel.fit(
+                f"No events directory at [bold]{events_dir}[/bold]. "
+                "Run [bold]factory tick --app <app> --dry-run[/bold] first.",
+                title="signals dump",
+            )
+        )
+        return
+
+    try:
+        window_s = _parse_duration(since)
+    except ValueError:
+        console.print(f"[red]error:[/red] could not parse --since={since!r}")
+        raise typer.Exit(code=2) from None
+
+    cutoff = _dt.now(_UTC) - _td(seconds=window_s)
+
+    # Collect all .ndjson files in the events directory.
+    stream_files = sorted(events_dir.glob("*.ndjson"))
+    if stream:
+        stream_files = [f for f in stream_files if f.stem == stream]
+    if not stream_files:
+        console.print(f"[dim]No event streams found (stream={stream!r}).[/dim]")
+        return
+
+    all_events: list[tuple[str, str, dict[str, Any]]] = []  # (ts_str, stream_name, record)
+    for sf in stream_files:
+        try:
+            lines = sf.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            ts_str = rec.get("ts") or ""
+            try:
+                ts_dt = _dt.fromisoformat(ts_str)
+                if ts_dt.tzinfo is None:
+                    ts_dt = ts_dt.replace(tzinfo=_UTC)
+            except (TypeError, ValueError):
+                continue
+            if ts_dt < cutoff:
+                continue
+            all_events.append((ts_str, sf.stem, rec))
+
+    if not all_events:
+        console.print(f"[dim]No events in the last {since}.[/dim]")
+        return
+
+    # Sort by ts ascending.
+    all_events.sort(key=lambda x: x[0])
+
+    for ts_str, stream_name, rec in all_events:
+        if fmt == "json":
+            # Use plain print so Rich doesn't wrap or markup the JSON.
+            print(_json.dumps(rec))
+        else:
+            event = rec.get("event", "?")
+            ts_short = ts_str[:19].replace("T", " ") if ts_str else "?"
+            # Build a concise summary from the most useful fields.
+            highlights: list[str] = []
+            for key in (
+                "story_id",
+                "persona",
+                "success",
+                "duration_s",
+                "app",
+                "kind",
+                "result",
+                "tick_id",
+                "pr_number",
+            ):
+                if rec.get(key) is not None:
+                    highlights.append(f"{key}={rec[key]!r}")
+            summary = " ".join(highlights) if highlights else ""
+            console.print(f"[{ts_short}] {stream_name}/{event} {summary}")
+
+
+# --------------------------------------------------------------------------- #
+# Phase FMS-3 commands: manager watch (L1 Watcher agent)
+# --------------------------------------------------------------------------- #
+
+
+@manager_app.command("watch")
+def manager_watch_cmd(
+    once: bool = typer.Option(False, "--once", help="Run a single watcher cycle and exit."),
+    interval_s: int = typer.Option(60, "--interval-s", help="Seconds between watcher cycles (daemon mode)."),
+    max_iters: int | None = typer.Option(None, "--max-iters", help="Stop after N iterations (useful for testing)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Assemble prompt but do NOT call the LLM; print the prompt."),
+    no_l2: bool = typer.Option(False, "--no-l2", help="Suppress the immediate L2 trigger on L1 escalation (useful for testing L1 in isolation)."),
+    no_l3: bool = typer.Option(False, "--no-l3", help="Suppress the immediate L3 trigger on L2 escalation (useful for testing L2 in isolation)."),
+    no_auto_apply: bool = typer.Option(
+        False,
+        "--no-auto-apply",
+        help=(
+            "Suppress the automatic L4 apply run when L3 produces a proposal. "
+            "Default: auto-apply is ON (MVP default). Use this flag to disable "
+            "L4 and review proposals manually via 'factory manager apply'."
+        ),
+    ),
+    circuit_breaker_interval_min: int = typer.Option(
+        30,
+        "--circuit-breaker-interval-min",
+        help=(
+            "How often (minutes) to run circuit-breaker check_and_trip in daemon mode. "
+            "0 disables periodic circuit-breaker checks. Default: 30."
+        ),
+    ),
+) -> None:
+    """Run the L1 Watcher agent.
+
+    Without ``--once``, runs as a daemon looping every ``--interval-s``
+    seconds until SIGINT.  With ``--once``, runs a single cycle and
+    prints the result JSON.  With ``--once --dry-run``, assembles and
+    prints the prompt without calling the LLM.
+
+    In daemon mode, when L1 escalates (``escalate_to_l2=true``), an
+    immediate L2 summarizer iteration is triggered unless ``--no-l2``
+    is passed.  When L2 escalates (``escalate_to_l3=true``), an immediate
+    L3 diagnostician iteration is triggered unless ``--no-l3`` is passed.
+    When L3 produces a proposal, the L4 apply pipeline runs automatically
+    unless ``--no-auto-apply`` is passed.
+
+    NOTE: auto-apply is ON by default (MVP default). Pass ``--no-auto-apply``
+    to validate L3 proposal quality before enabling automated patching.
+    """
+    from factory.manager.watcher import run_watcher_daemon, run_watcher_once
+
+    if once:
+        result = run_watcher_once(root=_FACTORY_ROOT, dry_run=dry_run)
+        if not dry_run:
+            # Pretty-print the result envelope.
+            import json as _json
+            print(_json.dumps(result, indent=2, default=str))
+    else:
+        if dry_run:
+            console.print(
+                "[yellow]--dry-run has no effect in daemon mode; use --once --dry-run.[/yellow]"
+            )
+        run_watcher_daemon(
+            root=_FACTORY_ROOT,
+            interval_s=interval_s,
+            max_iters=max_iters,
+            trigger_l2=not no_l2,
+            trigger_l3=not no_l3,
+            auto_apply=not no_auto_apply,
+            circuit_breaker_interval_min=circuit_breaker_interval_min,
+        )
+
+
+@manager_app.command("summarize")
+def manager_summarize_cmd(
+    once: bool = typer.Option(False, "--once", help="Run a single summarizer cycle and exit."),
+    interval_s: int = typer.Option(
+        180, "--interval-s", help="Seconds between summarizer cycles (daemon mode). Default: 180."
+    ),
+    max_iters: int | None = typer.Option(
+        None, "--max-iters", help="Stop after N iterations (useful for testing)."
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Assemble L2 prompt but do NOT call the LLM; print the prompt.",
+    ),
+) -> None:
+    """Run the L2 Summarizer agent.
+
+    Reads watcher notes flagged with ``escalate_to_l2=true`` and produces
+    structured concern documents under ``state/concerns/``.
+
+    Without ``--once``, runs as a daemon looping every ``--interval-s``
+    seconds (default: 180) until SIGINT.  With ``--once``, runs a single
+    cycle and prints the resulting concern JSON (or reports that no flagged
+    notes were found).  With ``--once --dry-run``, assembles and prints
+    the L2 prompt without calling the LLM.
+    """
+    from factory.manager.summarizer import run_summarizer_daemon, run_summarizer_once
+
+    if once:
+        result = run_summarizer_once(root=_FACTORY_ROOT, dry_run=dry_run)
+        if result is None:
+            console.print("[dim]No flagged watcher notes found — nothing to summarize.[/dim]")
+        elif not dry_run:
+            import json as _json
+            print(_json.dumps(result, indent=2, default=str))
+    else:
+        if dry_run:
+            console.print(
+                "[yellow]--dry-run has no effect in daemon mode; use --once --dry-run.[/yellow]"
+            )
+        run_summarizer_daemon(
+            root=_FACTORY_ROOT,
+            interval_s=interval_s,
+            max_iters=max_iters,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Phase FMS-5 commands: manager diagnose (L3 Diagnostician agent)
+# --------------------------------------------------------------------------- #
+
+
+@manager_app.command("diagnose")
+def manager_diagnose_cmd(
+    once: bool = typer.Option(False, "--once", help="Run a single diagnostician cycle and exit."),
+    interval_s: int = typer.Option(
+        300, "--interval-s", help="Seconds between diagnostician cycles (daemon mode). Default: 300."
+    ),
+    max_iters: int | None = typer.Option(
+        None, "--max-iters", help="Stop after N iterations (useful for testing)."
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Assemble L3 prompt but do NOT call the LLM; print the prompt.",
+    ),
+    concern: str | None = typer.Option(
+        None, "--concern", help="Path to a specific concern JSON file to diagnose."
+    ),
+) -> None:
+    """Run the L3 Diagnostician agent.
+
+    Reads unprocessed concern documents from ``state/concerns/`` and
+    produces structured proposals under ``state/manager_proposals/``.
+
+    Without ``--once``, runs as a daemon looping every ``--interval-s``
+    seconds (default: 300) until SIGINT.  With ``--once``, runs a single
+    cycle and prints the resulting proposal JSON (or reports that no
+    unprocessed concerns were found).  With ``--once --dry-run``, assembles
+    and prints the L3 prompt without calling the LLM.
+
+    Use ``--concern <path>`` to diagnose a specific concern file instead of
+    picking the most-recent unprocessed one.
+    """
+    from factory.manager.diagnostician import run_diagnostician_daemon, run_diagnostician_once
+
+    concern_path = Path(concern) if concern else None
+
+    if once:
+        result = run_diagnostician_once(
+            root=_FACTORY_ROOT, concern_path=concern_path, dry_run=dry_run
+        )
+        if result is None:
+            console.print("[dim]No unprocessed concerns found — nothing to diagnose.[/dim]")
+        elif not dry_run:
+            import json as _json
+            print(_json.dumps(result, indent=2, default=str))
+    else:
+        if dry_run:
+            console.print(
+                "[yellow]--dry-run has no effect in daemon mode; use --once --dry-run.[/yellow]"
+            )
+        run_diagnostician_daemon(
+            root=_FACTORY_ROOT,
+            interval_s=interval_s,
+            max_iters=max_iters,
+        )
+
+
+# Phase FMS-6 commands: manager apply + classify (L4 Apply pipeline)
+# --------------------------------------------------------------------------- #
+
+
+@manager_app.command("apply")
+def manager_apply_cmd(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Classify proposals and log without applying any patches.",
+    ),
+    proposal: str | None = typer.Option(
+        None,
+        "--proposal",
+        help="Path to a specific proposal JSON file to apply. Default: all unprocessed.",
+    ),
+    repo: str | None = typer.Option(
+        None,
+        "--repo",
+        help="GitHub owner/repo slug for PR creation (e.g. acme/factory). Omit to skip PR creation.",
+    ),
+    no_push: bool = typer.Option(
+        False,
+        "--no-push",
+        help="Create branch and commit locally but do not git push.",
+    ),
+) -> None:
+    """Run the L4 Apply pipeline for manager proposals.
+
+    Reads unprocessed proposals from ``state/manager_proposals/*.json`` (L3
+    Diagnostician output) and applies them according to their safety class:
+
+    \\b
+    - safe (prompt_edit / persona_settings / detector_tool):
+      branch + apply + CI gate + PR with ``factory-self-improvement-safe`` label + auto-merge.
+    - risky (dispatch_code):
+      branch + apply + CI gate + PR with ``factory-self-improvement-review`` label (operator merges).
+    - forbidden (manager/*.py or self-editing):
+      recorded in history but never applied.
+    - escalate_to_human:
+      recorded in history as acknowledgement.
+
+    Use ``--proposal <path>`` to apply a single proposal. Use ``--dry-run``
+    to classify without making any git changes.
+
+    NOTE: The classifier is deterministic and contains no LLM calls — apply-safety
+    requires hard guarantees the upstream LLM layer cannot provide.
+    """
+    import json as _json
+
+    from factory.manager.apply import apply_manager_proposals
+
+    proposal_path = Path(proposal) if proposal else None
+
+    result = apply_manager_proposals(
+        root=_FACTORY_ROOT,
+        dry_run=dry_run,
+        proposal_path=proposal_path,
+        repo=repo,
+        open_prs=repo is not None,
+        push=not no_push,
+    )
+
+    console.print(
+        f"[bold]manager apply[/bold]: processed={result['processed']} "
+        f"safe_applied={result['safe_applied']} risky_opened={result['risky_opened']} "
+        f"forbidden={result['forbidden']} escalated_human={result['escalated_human']}"
+    )
+    if result.get("errors"):
+        console.print("[yellow]Errors:[/yellow]")
+        for err in result["errors"]:
+            console.print(f"  [red]{err}[/red]")
+    if not dry_run and result.get("results"):
+        print(_json.dumps(result, indent=2, default=str))
+
+
+@manager_app.command("classify")
+def manager_classify_cmd(
+    proposal_file: str = typer.Argument(..., help="Path to a manager proposal JSON file."),
+) -> None:
+    """Print the safety classification of a single manager proposal.
+
+    Runs the rule-based classifier without applying anything.  Useful for
+    inspecting what L4 would do before committing to an apply run.
+
+    Classification values:
+    \\b
+    - safe            — will be auto-applied + auto-merged on green CI
+    - risky           — PR opened for operator review; not auto-merged
+    - forbidden       — never applied; touches protected files
+    - escalate_to_human — proposal requests human review; not applied
+    """
+    import json as _json
+
+    from factory.manager.apply import _classify_manager_proposal
+
+    p = Path(proposal_file)
+    if not p.exists():
+        console.print(f"[red]File not found: {p}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        proposal = _json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError) as exc:
+        console.print(f"[red]Failed to parse {p}: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    classification = _classify_manager_proposal(proposal, _FACTORY_ROOT)
+    console.print(f"[bold]{p.name}[/bold] → [cyan]{classification}[/cyan]")
+
+
+# --------------------------------------------------------------------------- #
+# Phase 8 commands: manager circuit-breaker (circuit-breaker management)
+# --------------------------------------------------------------------------- #
+
+circuit_breaker_app = typer.Typer(help="Circuit-breaker management.")
+manager_app.add_typer(circuit_breaker_app, name="circuit-breaker")
+
+
+@circuit_breaker_app.command("status")
+def cb_status_cmd() -> None:
+    """Print current circuit-breaker state (tripped or not, halt_until, last trip)."""
+    from factory.manager.circuit_breaker import get_state, is_tripped
+
+    state = get_state(root=_FACTORY_ROOT)
+    tripped = is_tripped(root=_FACTORY_ROOT)
+    if state is None:
+        console.print("[green]Circuit breaker: not tripped[/green]")
+        return
+
+    halt_until_str = state.get("halt_until", "?")
+    regression_sha = state.get("regression_commit", "?")[:12]
+    regression_msg = state.get("regression_commit_message", "?")[:80]
+    revert_branch = state.get("revert_branch", "?")
+    pr_number = state.get("revert_pr_number")
+    tripped_at = state.get("tripped_at", "?")
+
+    status_color = "red" if tripped else "yellow"
+    status_label = "TRIPPED (halting apply pipeline)" if tripped else "TRIPPED (halt window expired)"
+
+    console.print(
+        Panel.fit(
+            f"[{status_color}]{status_label}[/{status_color}]\n\n"
+            f"tripped_at:   {tripped_at}\n"
+            f"halt_until:   {halt_until_str}\n"
+            f"regression:   {regression_sha}  {regression_msg}\n"
+            f"revert_branch: {revert_branch}\n"
+            f"revert_pr:    {f'#{pr_number}' if pr_number else '(none)'}",
+            title="circuit-breaker status",
+        )
+    )
+
+
+@circuit_breaker_app.command("check")
+def cb_check_cmd(
+    test_command: str = typer.Option(
+        "uv run pytest -q",
+        "--test-command",
+        help="Command to run the test suite.",
+    ),
+) -> None:
+    """Run check_and_trip once.  If tests fail and HEAD is a tracked manager commit, trip."""
+    from factory.manager.circuit_breaker import check_and_trip
+
+    result = check_and_trip(root=_FACTORY_ROOT, test_command=test_command)
+    if result is None:
+        console.print("[green]Circuit breaker check: tests passed (or no tracked manager commit at HEAD).[/green]")
+    else:
+        console.print(
+            Panel.fit(
+                f"[bold red]Circuit breaker TRIPPED[/bold red]\n\n"
+                f"regression_commit: {result.get('regression_commit', '?')[:12]}\n"
+                f"revert_branch:     {result.get('revert_branch', '?')}\n"
+                f"revert_pr_number:  {result.get('revert_pr_number')}\n"
+                f"halt_until:        {result.get('halt_until', '?')}",
+                title="circuit-breaker check",
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@circuit_breaker_app.command("reset")
+def cb_reset_cmd(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    reason: str | None = typer.Option(None, "--reason", help="Optional reason for reset"),
+) -> None:
+    """Operator-only: clear the circuit breaker after reviewing the revert PR.
+
+    Archives the current state to state/.circuit_breaker_history.json and
+    removes state/circuit_breaker.json.
+    """
+    from factory.manager.circuit_breaker import get_state, reset
+
+    state = get_state(root=_FACTORY_ROOT)
+    if state is None:
+        console.print("[green]Circuit breaker: not tripped — nothing to reset.[/green]")
+        return
+
+    regression_sha = state.get("regression_commit", "?")[:12]
+    console.print(
+        Panel.fit(
+            f"Circuit breaker is tripped for regression_commit=[bold]{regression_sha}[/bold].\n"
+            f"halt_until: {state.get('halt_until', '?')}\n\n"
+            "Ensure you have reviewed and merged (or closed) the revert PR before resetting.",
+            title="circuit-breaker reset",
+            style="yellow",
+        )
+    )
+    if not yes:
+        confirmed = typer.confirm("Clear the circuit breaker and resume the apply pipeline?", default=False)
+        if not confirmed:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(code=0)
+
+    archived = reset(root=_FACTORY_ROOT, cleared_by="operator", reason=reason)
+    console.print(
+        Panel.fit(
+            f"[bold green]Circuit breaker cleared.[/bold green]\n"
+            f"Archived to state/.circuit_breaker_history.json\n"
+            f"cleared_at: {archived.get('cleared_at', '?')}",
+            title="circuit-breaker reset",
+        )
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 9 commands: manager refresh-context (factory self-context refresh)
+# --------------------------------------------------------------------------- #
+
+
+@manager_app.command("refresh-context")
+def refresh_context_cmd(
+    module: str | None = typer.Option(
+        None,
+        "--module",
+        help=(
+            "Refresh only this module. Valid values: "
+            "orchestrator, personas, state-machine, observability, dispatch, manager. "
+            "Default: refresh all six."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Assemble LLM prompt but do NOT call the LLM or write any files.",
+    ),
+) -> None:
+    """Refresh factory self-context modules under apps/factory/context/modules/.
+
+    Generates (or refreshes) six Markdown modules that describe the factory's
+    own architecture. The L3 Diagnostician reads these when producing proposals
+    so its architectural understanding stays current.
+
+    Modules: orchestrator, personas, state-machine, observability, dispatch, manager.
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.manager.self_context import ALL_MODULES, refresh_factory_context
+
+    if module is not None and module not in ALL_MODULES:
+        console.print(
+            f"[red]error:[/red] unknown module {module!r}. "
+            f"Valid: {', '.join(ALL_MODULES)}"
+        )
+        raise typer.Exit(code=2)
+
+    if not dry_run:
+        ok, hint = _has_any_llm_provider_key()
+        if not ok:
+            console.print(
+                "[red]error:[/red] real refresh requires an LLM provider key. " + hint
+            )
+            raise typer.Exit(code=2)
+
+    mode_label = "[yellow]DRY-RUN[/yellow]" if dry_run else "[green]REAL RUN[/green]"
+    target_label = module or "all 6 modules"
+    console.print(
+        Panel.fit(
+            f"Refreshing factory context modules: [bold]{target_label}[/bold]\n"
+            f"mode={mode_label}\n"
+            f"output: apps/factory/context/modules/",
+            title="manager refresh-context",
+        )
+    )
+
+    result = refresh_factory_context(
+        root=_FACTORY_ROOT,
+        module=module,
+        dry_run=dry_run,
+    )
+
+    table = Table(title=f"refresh-context results (dry_run={dry_run})")
+    table.add_column("module")
+    table.add_column("status")
+    table.add_column("detail")
+    for r in result["results"]:
+        mod_name = r.get("module", "?")
+        if r.get("success"):
+            skipped = r.get("skipped_reason")
+            if skipped:
+                status = f"[yellow]skipped ({skipped})[/yellow]"
+                detail = ""
+            else:
+                status = "[green]ok[/green]"
+                detail = r.get("path", "")
+        else:
+            status = "[red]failed[/red]"
+            detail = (r.get("error") or "")[:80]
+        table.add_row(mod_name, status, detail)
+    console.print(table)
+
+    refreshed = result.get("refreshed", 0)
+    failed = result.get("failed", 0)
+    console.print(f"refreshed={refreshed} failed={failed}")
+    if failed:
+        raise typer.Exit(code=1)
