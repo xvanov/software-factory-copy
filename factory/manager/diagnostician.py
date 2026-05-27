@@ -172,7 +172,12 @@ def _proposals_event_path(root: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _pre_load_source(proposed_area: str, *, factory_dir: Path) -> dict[str, str]:
+def _pre_load_source(
+    proposed_area: str,
+    *,
+    factory_dir: Path,
+    root: Path | None = None,
+) -> dict[str, str]:
     """Return {relative_path: content} for source files relevant to proposed_area.
 
     Caps each file at ``_SOURCE_FILE_CAP`` chars.  Warns (to stderr) if the
@@ -187,6 +192,11 @@ def _pre_load_source(proposed_area: str, *, factory_dir: Path) -> dict[str, str]
         ``detector_tool``, ``observability``, ``unknown``.
     factory_dir:
         Absolute path to the ``factory/`` directory (the source root).
+    root:
+        Optional override for the software_factory_root used when locating
+        self-context modules under ``apps/factory/context/modules/``.  If
+        None, defaults to ``factory_dir.parent`` (the production layout where
+        ``factory/`` lives at the repo root).
     """
     files: dict[str, str] = {}
 
@@ -273,6 +283,42 @@ def _pre_load_source(proposed_area: str, *, factory_dir: Path) -> dict[str, str]
         if md_files:
             listing += "\n\nMarkdown files under factory/:\n" + "\n".join(md_files)
         files["[factory-file-listing]"] = listing
+
+    # ---------------------------------------------------------------------------
+    # Phase 9: augment with factory self-context modules when available.
+    # The mapping is deterministic (no LLM); the "intelligence" is the LLM
+    # consuming the loaded markdown.
+    # ---------------------------------------------------------------------------
+    _CONTEXT_MODULE_CAP = 16 * 1024  # 16 KB per module (per spec)
+
+    _AREA_TO_MODULES: dict[str, list[str]] = {
+        "prompt": ["personas"],
+        "prompt_edit": ["personas"],
+        "persona_settings": ["personas"],
+        "dispatch_code": ["orchestrator", "state-machine", "dispatch"],
+        "detector_tool": ["observability", "manager"],
+        "observability": ["observability", "manager"],
+    }
+
+    _context_root = root if root is not None else factory_dir.parent
+    context_modules_dir = _context_root / "apps" / "factory" / "context" / "modules"
+    if proposed_area in _AREA_TO_MODULES:
+        module_names = _AREA_TO_MODULES[proposed_area]
+    else:
+        # unknown / anything else → include all six
+        module_names = ["orchestrator", "personas", "state-machine", "observability", "dispatch", "manager"]
+
+    for mod_name in module_names:
+        mod_path = context_modules_dir / f"{mod_name}.md"
+        if not mod_path.exists():
+            continue  # not yet generated — skip silently
+        try:
+            text = mod_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if len(text) > _CONTEXT_MODULE_CAP:
+            text = text[:_CONTEXT_MODULE_CAP] + "\n...[truncated at 16KB]"
+        files[f"[context-module:{mod_name}]"] = text
 
     # Warn if bundle is too large.
     total = sum(len(v) for v in files.values())
@@ -676,7 +722,7 @@ def run_diagnostician_once(
 
     # Step 3: pre-load source files.
     proposed_area = concern.get("proposed_area", "unknown")
-    source_files = _pre_load_source(proposed_area, factory_dir=factory_dir)
+    source_files = _pre_load_source(proposed_area, factory_dir=factory_dir, root=root)
 
     # Step 4: build detector hint.
     detectors_dir = factory_dir / "manager" / "detectors"

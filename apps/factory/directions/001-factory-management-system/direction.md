@@ -482,3 +482,11 @@ Additional non-test acceptance:
 * Frontend / TUI changes. The existing `factory tui` already shows the
   data we need; concerns and proposals can surface there in a follow-up
   direction.
+
+## Implementation status (post-Phase-9)
+
+Phases 0-9 complete. MVP cutline (Phase 6) closed with the chained
+integration test. Recursion safety + circuit breaker live. The factory
+now reads context modules describing itself; the L3 Diagnostician's
+proposals are informed by the same architectural summaries the L4
+apply pipeline gates against. The loop closes.

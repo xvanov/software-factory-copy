@@ -2619,3 +2619,97 @@ def cb_reset_cmd(
             title="circuit-breaker reset",
         )
     )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 9 commands: manager refresh-context (factory self-context refresh)
+# --------------------------------------------------------------------------- #
+
+
+@manager_app.command("refresh-context")
+def refresh_context_cmd(
+    module: str | None = typer.Option(
+        None,
+        "--module",
+        help=(
+            "Refresh only this module. Valid values: "
+            "orchestrator, personas, state-machine, observability, dispatch, manager. "
+            "Default: refresh all six."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Assemble LLM prompt but do NOT call the LLM or write any files.",
+    ),
+) -> None:
+    """Refresh factory self-context modules under apps/factory/context/modules/.
+
+    Generates (or refreshes) six Markdown modules that describe the factory's
+    own architecture. The L3 Diagnostician reads these when producing proposals
+    so its architectural understanding stays current.
+
+    Modules: orchestrator, personas, state-machine, observability, dispatch, manager.
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.manager.self_context import ALL_MODULES, refresh_factory_context
+
+    if module is not None and module not in ALL_MODULES:
+        console.print(
+            f"[red]error:[/red] unknown module {module!r}. "
+            f"Valid: {', '.join(ALL_MODULES)}"
+        )
+        raise typer.Exit(code=2)
+
+    if not dry_run:
+        ok, hint = _has_any_llm_provider_key()
+        if not ok:
+            console.print(
+                "[red]error:[/red] real refresh requires an LLM provider key. " + hint
+            )
+            raise typer.Exit(code=2)
+
+    mode_label = "[yellow]DRY-RUN[/yellow]" if dry_run else "[green]REAL RUN[/green]"
+    target_label = module or "all 6 modules"
+    console.print(
+        Panel.fit(
+            f"Refreshing factory context modules: [bold]{target_label}[/bold]\n"
+            f"mode={mode_label}\n"
+            f"output: apps/factory/context/modules/",
+            title="manager refresh-context",
+        )
+    )
+
+    result = refresh_factory_context(
+        root=_FACTORY_ROOT,
+        module=module,
+        dry_run=dry_run,
+    )
+
+    table = Table(title=f"refresh-context results (dry_run={dry_run})")
+    table.add_column("module")
+    table.add_column("status")
+    table.add_column("detail")
+    for r in result["results"]:
+        mod_name = r.get("module", "?")
+        if r.get("success"):
+            skipped = r.get("skipped_reason")
+            if skipped:
+                status = f"[yellow]skipped ({skipped})[/yellow]"
+                detail = ""
+            else:
+                status = "[green]ok[/green]"
+                detail = r.get("path", "")
+        else:
+            status = "[red]failed[/red]"
+            detail = (r.get("error") or "")[:80]
+        table.add_row(mod_name, status, detail)
+    console.print(table)
+
+    refreshed = result.get("refreshed", 0)
+    failed = result.get("failed", 0)
+    console.print(f"refreshed={refreshed} failed={failed}")
+    if failed:
+        raise typer.Exit(code=1)

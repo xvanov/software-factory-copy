@@ -721,3 +721,157 @@ def test_circuit_breaker_trips_on_failing_manager_commit_and_halts_apply(
         f"apply should be halted by circuit breaker. Got: {apply_result}"
     )
     assert apply_result.get("processed", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 closure test: full chain with self-context modules present
+# ---------------------------------------------------------------------------
+
+
+def _plant_self_context_modules(root: Path) -> None:
+    """Write all 6 factory self-context modules to apps/factory/context/modules/."""
+    from factory.manager.self_context import ALL_MODULES
+
+    modules_dir = root / "apps" / "factory" / "context" / "modules"
+    modules_dir.mkdir(parents=True, exist_ok=True)
+
+    module_content = {
+        "orchestrator": (
+            "# orchestrator\n\n"
+            "The tick loop calls _dispatch_for_story for each in-flight story. "
+            "On success it advances state; on exception it logs and continues. "
+            "factory_architecture_keyword: dispatch_loop"
+        ),
+        "personas": (
+            "# personas\n\n"
+            "The SM persona runs at model tier gpt-5.4/deepseek-chat. "
+            "It consumes story markdown and produces sprint plan JSON. "
+            "factory_architecture_keyword: persona_sm_overflow"
+        ),
+        "state-machine": (
+            "# state-machine\n\n"
+            "States: story_created → sm_in_progress → dev_in_progress → … → released. "
+            "Rollback: any persona failure returns to the previous state. "
+            "factory_architecture_keyword: state_transitions"
+        ),
+        "observability": (
+            "# observability\n\n"
+            "Signal sources: runs.ndjson, ticks.ndjson, watcher_notes.ndjson. "
+            "factory_architecture_keyword: signal_streams"
+        ),
+        "dispatch": (
+            "# dispatch\n\n"
+            "can_dispatch checks: daily spend cap, mode gate, story slot cap. "
+            "factory_architecture_keyword: cap_enforcement"
+        ),
+        "manager": (
+            "# manager\n\n"
+            "The FMS loop: L1 Watcher → L2 Summarizer → L3 Diagnostician → L4 Apply. "
+            "Circuit breaker trips on test regression. Halt authority lives in L3. "
+            "factory_architecture_keyword: fms_loop_closure"
+        ),
+    }
+
+    for mod_name in ALL_MODULES:
+        content = module_content.get(mod_name, f"# {mod_name}\n\nContent.\n")
+        (modules_dir / f"{mod_name}.md").write_text(content, encoding="utf-8")
+
+
+def test_full_chain_with_self_context_modules_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 9 closure test: L1 → L2 → L3 with self-context modules planted.
+
+    Verifies:
+    1. All 6 self-context modules are present before the chain runs.
+    2. When L3 runs with proposed_area='persona_settings', the diagnostician
+       prompt includes the 'personas' context module (the relevant one) and
+       NOT the 'orchestrator' module (irrelevant for persona_settings).
+    3. The L3 mock response references factory architecture concepts
+       (validated by checking prompt contents via the capturing mock).
+    4. The full chain still produces a valid proposal.
+    """
+    # ------------------------------------------------------------------
+    # Setup: temp repo + planted signals + self-context modules
+    # ------------------------------------------------------------------
+    repo = _make_repo(tmp_path)
+    _plant_run_failures(repo)
+    _plant_self_context_modules(repo)
+
+    # Verify all 6 modules exist before the chain runs.
+    from factory.manager.self_context import ALL_MODULES
+    modules_dir = repo / "apps" / "factory" / "context" / "modules"
+    for mod_name in ALL_MODULES:
+        assert (modules_dir / f"{mod_name}.md").exists(), (
+            f"Self-context module missing: {mod_name}.md"
+        )
+
+    # ------------------------------------------------------------------
+    # Capturing mock for L3 — records the prompt it receives
+    # ------------------------------------------------------------------
+    captured_l3_prompts: list[str] = []
+    text_run_call_count = [0]
+
+    def _make_l3_capturing_mock():
+        def _mock(persona, prompt, model_id, schema=None, **kwargs):
+            text_run_call_count[0] += 1
+            if persona == "manager_diagnostician":
+                captured_l3_prompts.append(prompt)
+            return _L3_RESPONSE
+        return _mock
+
+    monkeypatch.setattr("factory.manager.watcher.text_run", lambda p, pr, m, schema=None, **kw: _L1_RESPONSE)
+    monkeypatch.setattr("factory.manager.watcher._read_persona_prompt", lambda p: "# L1 mock")
+    monkeypatch.setattr("factory.manager.summarizer.text_run", lambda p, pr, m, schema=None, **kw: _L2_RESPONSE)
+    monkeypatch.setattr("factory.manager.summarizer._read_persona_prompt", lambda p: "# L2 mock")
+    monkeypatch.setattr("factory.manager.diagnostician.text_run", _make_l3_capturing_mock())
+    monkeypatch.setattr("factory.manager.diagnostician._read_persona_prompt", lambda p: "# L3 mock")
+
+    # ------------------------------------------------------------------
+    # Step 1: L1 Watcher
+    # ------------------------------------------------------------------
+    l1_result = run_watcher_once(root=repo, now=NOW, lookback=timedelta(hours=2))
+    assert l1_result.get("note", {}).get("escalate_to_l2") is True
+
+    # ------------------------------------------------------------------
+    # Step 2: L2 Summarizer → produces persona_settings concern
+    # ------------------------------------------------------------------
+    l2_result = run_summarizer_once(root=repo, now=NOW + timedelta(seconds=1))
+    assert l2_result is not None
+    assert l2_result.get("proposed_area") == "persona_settings"
+
+    # ------------------------------------------------------------------
+    # Step 3: L3 Diagnostician — reads self-context modules
+    # ------------------------------------------------------------------
+    concern_path = Path(l2_result["concern_path"])
+    l3_result = run_diagnostician_once(
+        root=repo,
+        concern_path=concern_path,
+        now=NOW + timedelta(seconds=2),
+    )
+    assert l3_result is not None, "L3 must produce a proposal"
+
+    # ------------------------------------------------------------------
+    # Assert: the L3 prompt contained the 'personas' context module
+    # ------------------------------------------------------------------
+    assert captured_l3_prompts, "L3 mock must have captured at least one prompt"
+    l3_prompt = captured_l3_prompts[0]
+
+    assert "[context-module:personas]" in l3_prompt, (
+        "L3 prompt should reference the personas context module key"
+    )
+    assert "factory_architecture_keyword: persona_sm_overflow" in l3_prompt, (
+        "L3 prompt should contain the content of the personas context module"
+    )
+
+    # 'orchestrator' is not relevant for persona_settings — must be absent.
+    assert "[context-module:orchestrator]" not in l3_prompt, (
+        "L3 prompt must NOT include orchestrator module for persona_settings area"
+    )
+
+    # ------------------------------------------------------------------
+    # Assert: the proposal is still valid (the context modules don't break anything)
+    # ------------------------------------------------------------------
+    assert l3_result.get("target_class") == "persona_settings"
+    proposals_dir = repo / "state" / "manager_proposals"
+    assert list(proposals_dir.glob("*.json")), "Proposal file must exist"
