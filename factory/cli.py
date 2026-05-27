@@ -2112,3 +2112,38 @@ def signals_dump_cmd(
                     highlights.append(f"{key}={rec[key]!r}")
             summary = " ".join(highlights) if highlights else ""
             console.print(f"[{ts_short}] {stream_name}/{event} {summary}")
+
+
+# --------------------------------------------------------------------------- #
+# Phase FMS-3 commands: manager watch (L1 Watcher agent)
+# --------------------------------------------------------------------------- #
+
+
+@manager_app.command("watch")
+def manager_watch_cmd(
+    once: bool = typer.Option(False, "--once", help="Run a single watcher cycle and exit."),
+    interval_s: int = typer.Option(60, "--interval-s", help="Seconds between watcher cycles (daemon mode)."),
+    max_iters: int | None = typer.Option(None, "--max-iters", help="Stop after N iterations (useful for testing)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Assemble prompt but do NOT call the LLM; print the prompt."),
+) -> None:
+    """Run the L1 Watcher agent.
+
+    Without ``--once``, runs as a daemon looping every ``--interval-s``
+    seconds until SIGINT.  With ``--once``, runs a single cycle and
+    prints the result JSON.  With ``--once --dry-run``, assembles and
+    prints the prompt without calling the LLM.
+    """
+    from factory.manager.watcher import run_watcher_daemon, run_watcher_once
+
+    if once:
+        result = run_watcher_once(root=_FACTORY_ROOT, dry_run=dry_run)
+        if not dry_run:
+            # Pretty-print the result envelope.
+            import json as _json
+            print(_json.dumps(result, indent=2, default=str))
+    else:
+        if dry_run:
+            console.print(
+                "[yellow]--dry-run has no effect in daemon mode; use --once --dry-run.[/yellow]"
+            )
+        run_watcher_daemon(root=_FACTORY_ROOT, interval_s=interval_s, max_iters=max_iters)

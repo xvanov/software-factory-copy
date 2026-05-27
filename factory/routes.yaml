@@ -39,6 +39,10 @@ routes:
   bug_hunter: deepseek/deepseek-chat
   security: anthropic/claude-opus-4-7
   factory_improver: deepseek/deepseek-chat
+  # L1 Watcher: cheap, runs every minute, summarises signals + escalates.
+  # Routed to deepseek-chat (same tier as factory_improver) — structured
+  # JSON output, no code-generation, low latency requirement.
+  manager_watcher: deepseek/deepseek-chat
 
 # Azure OpenAI / Cognitive Services deployments at mv-coding-agent-foundry.
 # Three deployments live there:
@@ -72,6 +76,8 @@ azure_routes:
   # the persona's pattern (structured JSON proposals, no code-judgment
   # heavy lifting). Direct routing per user spec.
   factory_improver: azure/gpt-5.4
+  # L1 Watcher: same cheap-tier as factory_improver under Azure provider.
+  manager_watcher: azure/gpt-5.4
 
   # Code-judgment work → intent is gpt-5.3-codex; falls back to gpt-5.4 today
   # (codex is Responses-API-only — see header note). reviewer ≠ dev still
