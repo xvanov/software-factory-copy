@@ -84,14 +84,21 @@ Rules:
     actually set halt mode. Reserve for cases with strong, multi-source
     evidence and clear downstream harm (e.g. repeated $5+ token-overflow
     burns with no sign of resolution).
-* `escalate_to_l3` should be `true` only when:
+* `escalate_to_l3` should be `true` when:
   - The urgency is `warn` or `halt`, AND
   - The evidence pattern is clear enough that a frontier model's judgment
     and fix-proposal capability would add value, AND
-  - The pattern has persisted across at least two watcher-note intervals
-    (i.e. it is not a one-shot transient).
-  A single flagged note with a novel, non-recurrent event should typically
-  NOT escalate to L3 unless the impact is severe.
+  - EITHER the pattern has persisted across at least two watcher-note
+    intervals, OR the error class has high diagnostic clarity attributable
+    to factory infrastructure (model settings, harness, environment,
+    provider, runtime deps) AND non-trivial measurable impact (e.g.
+    `>= $0.50` cost, `>= 5 min` duration, or a blocked story). For the
+    high-clarity case, a single occurrence is sufficient — the diagnosis
+    won't get sharper with repetition, and waiting for a second occurrence
+    means burning the cost again.
+  A single flagged note with a novel, AMBIGUOUS event (error text does not
+  name its own cause, could plausibly be a story-domain bug) should NOT
+  escalate to L3. Wait for the pattern.
 * `escalation_reason` must be non-null when `escalate_to_l3=true`. It must
   name the specific pattern, how long it has persisted, and why L3 judgment
   is needed. When `escalate_to_l3=false`, set to a brief positive note ("no
@@ -121,19 +128,40 @@ Available detectors (use the docstrings in the bundle; these are hints only):
 
 ## Calibration principles
 
-The quality of evidence that warrants each urgency level:
+Two orthogonal axes determine urgency:
 
-* `continue` — a single event, a transient error, or a pattern that the
-  prior watcher note already resolved. Evidence is thin, contradicted, or
-  inconclusive (e.g. `p95_duration_s = 0.0`). Use by default when ambiguous.
-* `warn` — at least two watcher notes (across at least two L1 intervals)
-  agree on the same pattern; the detector data corroborates; the impact is
-  measurable (dollar cost, blocked stories, stalled ticks). Evidence is
-  consistent and multi-source.
-* `halt` — sustained evidence across three or more intervals, with clear and
-  growing impact (e.g. $10+ burned on a single broken state, queue fully
-  stalled, no sign of resolution). Multiple evidence kinds all point the same
-  direction.
+1. **Diagnostic clarity** — does the error text or detector data itself
+   name a root cause? `max_tokens=65536 finish_reason=length`,
+   `ModuleNotFoundError`, `AuthenticationError`, `OutOfMemoryError`,
+   `pytest collection error` all contain their own diagnosis. An
+   `AssertionError: expected 4 got 5` does not.
+2. **Pattern strength** — how many occurrences across how many distinct
+   contexts in what window?
+
+For each urgency level, you need EITHER strong pattern OR strong clarity:
+
+* `continue` — single event with low diagnostic clarity, transient error,
+  weak/contradicted/inconclusive evidence, or a pattern that the prior
+  watcher note already resolved. Use by default when ambiguous.
+* `warn` — EITHER (a) at least two watcher notes across distinct L1
+  intervals agree on the same pattern with corroborating detector data,
+  OR (b) a single occurrence of a clearly-diagnosable infrastructure
+  error attributable to the factory (not the story's domain) with
+  non-trivial measurable impact: cost `>= $0.50`, duration `>= 5 min`,
+  blocked stories, or stalled ticks. The single-occurrence path applies
+  when the error text names its own cause AND `proposed_area` can be
+  set to something other than `unknown`.
+* `halt` — EITHER sustained evidence across three or more intervals with
+  growing impact, OR a single occurrence with severe impact (`>= $10`
+  burned, full queue stall, or an infrastructure failure that will keep
+  burning on every subsequent story until fixed). Multiple evidence
+  kinds all pointing the same direction reinforces halt.
+
+**Single occurrence + measurable cost + clear diagnosis = `warn` +
+`escalate_to_l3=true`.** Do not wait for the second burn to act. The
+prior L1 watcher note that flagged this failure already paid for the
+"have I seen this before" check; your job is to translate clarity into
+action, not to require another instance.
 
 When prior concerns reference the same pattern:
 * If the data shows clear improvement, produce a `continue` concern that
