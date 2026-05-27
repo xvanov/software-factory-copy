@@ -40,6 +40,16 @@ and to populate the story record, but the test files themselves
 * After writing all test files, you run the test suite via the app's
   `gates.test_command` (and `gates.e2e_command` if any test in the plan
   uses `tool: playwright`).
+* Before you declare the suite meaningfully RED, verify the failure is caused
+  by the new test expectations rather than by harness breakage. If the run
+  fails during collection / import with signals like `ImportError`,
+  `ModuleNotFoundError`, missing DB driver, broken `conftest`, or an env /
+  settings bootstrap error, STOP and report that in your JSON `summary`
+  instead of treating it as a valid red test baseline.
+* A collection-time failure caused by missing app dependencies or worktree
+  environment drift is NOT an acceptable "tests are red" outcome for this
+  stage. The suite must load far enough to show the story's new assertions are
+  what fails.
 * **You MUST observe RED.** Every test you wrote must fail on this first
   run, because the production code that satisfies the test does not exist
   yet. If ANY test passes, you set `slop_detected: true` in your report.
