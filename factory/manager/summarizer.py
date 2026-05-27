@@ -401,6 +401,7 @@ _SUMMARIZER_SCHEMA: dict[str, Any] = {
 
 def _sentinel_concern(*, error: str) -> dict[str, Any]:
     return {
+        "schema_version": _SCHEMA_VERSION,
         "title": "l2-parse-failure",
         "description": f"L2 LLM failed to produce parseable output: {error}",
         "evidence": [],
@@ -414,6 +415,7 @@ def _sentinel_concern(*, error: str) -> dict[str, Any]:
 
 def _dry_run_concern() -> dict[str, Any]:
     return {
+        "schema_version": _SCHEMA_VERSION,
         "title": "dry-run-sentinel",
         "description": "<dry-run — LLM not called>",
         "evidence": [],
@@ -522,7 +524,8 @@ def _write_concern(root: Path, concern: dict[str, Any], now: datetime) -> Path:
     try:
         concerns_dir.mkdir(parents=True, exist_ok=True)
         concern_path = concerns_dir / filename
-        concern_path.write_text(json.dumps(concern, indent=2, default=str), encoding="utf-8")
+        concern_doc = {"schema_version": _SCHEMA_VERSION, **concern}
+        concern_path.write_text(json.dumps(concern_doc, indent=2, default=str), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         print(f"[summarizer] failed to write concern file: {exc}", file=sys.stderr)
         concern_path = concerns_dir / filename  # still return the intended path

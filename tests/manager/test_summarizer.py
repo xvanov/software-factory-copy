@@ -868,15 +868,20 @@ class TestSmOverflowSyntheticProducesConcernWithWarnUrgency:
             ),
         }
 
-    def test_concern_written_with_warn_urgency(
+    def _setup(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    ) -> tuple[dict, list[str]]:
+        """Shared setup: inject fixtures, install capturing LLM, run summarizer.
+
+        Returns (result, captured_prompts).
+        """
         self._inject_sm_failures(tmp_path)
         self._inject_flagged_watcher_note(tmp_path)
 
+        captured: list[str] = []
         monkeypatch.setattr(
             "factory.manager.summarizer.text_run",
-            _make_mock_llm(self._make_l2_response()),
+            _make_capturing_llm(self._make_l2_response(), captured),
         )
         monkeypatch.setattr(
             "factory.manager.summarizer._read_persona_prompt",
@@ -884,6 +889,12 @@ class TestSmOverflowSyntheticProducesConcernWithWarnUrgency:
         )
 
         result = run_summarizer_once(root=tmp_path, now=NOW)
+        return result, captured  # type: ignore[return-value]
+
+    def test_concern_written_with_warn_urgency(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, _captured = self._setup(tmp_path, monkeypatch)
 
         assert result is not None
         assert result["urgency"] == "warn"
@@ -892,19 +903,7 @@ class TestSmOverflowSyntheticProducesConcernWithWarnUrgency:
     def test_concern_file_written(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._inject_sm_failures(tmp_path)
-        self._inject_flagged_watcher_note(tmp_path)
-
-        monkeypatch.setattr(
-            "factory.manager.summarizer.text_run",
-            _make_mock_llm(self._make_l2_response()),
-        )
-        monkeypatch.setattr(
-            "factory.manager.summarizer._read_persona_prompt",
-            lambda persona: "# L2 persona mock",
-        )
-
-        result = run_summarizer_once(root=tmp_path, now=NOW)
+        result, _captured = self._setup(tmp_path, monkeypatch)
 
         assert result is not None
         concern_path = Path(result["concern_path"])
@@ -917,19 +916,7 @@ class TestSmOverflowSyntheticProducesConcernWithWarnUrgency:
     def test_concerns_ndjson_appended(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._inject_sm_failures(tmp_path)
-        self._inject_flagged_watcher_note(tmp_path)
-
-        monkeypatch.setattr(
-            "factory.manager.summarizer.text_run",
-            _make_mock_llm(self._make_l2_response()),
-        )
-        monkeypatch.setattr(
-            "factory.manager.summarizer._read_persona_prompt",
-            lambda persona: "# L2 persona mock",
-        )
-
-        run_summarizer_once(root=tmp_path, now=NOW)
+        _result, _captured = self._setup(tmp_path, monkeypatch)
 
         ndjson = _events_path(tmp_path, "concerns")
         assert ndjson.exists()
@@ -944,19 +931,7 @@ class TestSmOverflowSyntheticProducesConcernWithWarnUrgency:
     def test_evidence_references_three_run_ids(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._inject_sm_failures(tmp_path)
-        self._inject_flagged_watcher_note(tmp_path)
-
-        monkeypatch.setattr(
-            "factory.manager.summarizer.text_run",
-            _make_mock_llm(self._make_l2_response()),
-        )
-        monkeypatch.setattr(
-            "factory.manager.summarizer._read_persona_prompt",
-            lambda persona: "# L2 persona mock",
-        )
-
-        result = run_summarizer_once(root=tmp_path, now=NOW)
+        result, _captured = self._setup(tmp_path, monkeypatch)
 
         assert result is not None
         evidence = result.get("evidence", [])
@@ -967,6 +942,77 @@ class TestSmOverflowSyntheticProducesConcernWithWarnUrgency:
             assert expected_id in run_evidence_ids, (
                 f"Run ID {expected_id} not found in evidence: {evidence}"
             )
+
+    def test_prompt_contains_underlying_signals(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The L2 prompt must faithfully forward the planted signals.
+
+        This is the load-bearing regression guard: if a future refactor drops
+        the underlying-signals section from the prompt, this test must fail.
+        """
+        _result, captured = self._setup(tmp_path, monkeypatch)
+
+        assert len(captured) == 1, "LLM should have been called exactly once"
+        prompt = captured[0]
+
+        # Watcher note content forwarded to the LLM.
+        assert "max_tokens=65536" in prompt, (
+            "Prompt must contain the SM-overflow watcher note's escalation_reason / summary text"
+        )
+
+        # All three planted run IDs must appear in the prompt.
+        for run_id in self._RUN_IDS:
+            assert str(run_id) in prompt, (
+                f"Prompt must contain planted run ID {run_id}; "
+                "a refactor may have dropped the underlying-signals section"
+            )
+
+        # The exact error excerpt from the failure events must be in the prompt.
+        assert self._SM_ERROR in prompt, (
+            f"Prompt must contain the error excerpt '{self._SM_ERROR}' "
+            "from the planted SM failure events"
+        )
+
+
+# ---------------------------------------------------------------------------
+# schema_version in concern file
+# ---------------------------------------------------------------------------
+
+
+class TestConcernFileHasSchemaVersion:
+    """Concern JSON files written to disk must carry schema_version=1."""
+
+    def test_concern_file_has_schema_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_watcher_note(
+            tmp_path,
+            ts=(NOW - timedelta(minutes=5)).isoformat(),
+            summary="SM overflow",
+            escalated=True,
+            escalation_reason="SM token overflow",
+        )
+
+        monkeypatch.setattr(
+            "factory.manager.summarizer.text_run",
+            _make_mock_llm(_CANNED_CONCERN),
+        )
+        monkeypatch.setattr(
+            "factory.manager.summarizer._read_persona_prompt",
+            lambda persona: "# L2 persona mock",
+        )
+
+        result = run_summarizer_once(root=tmp_path, now=NOW)
+
+        assert result is not None
+        concern_path = Path(result["concern_path"])
+        assert concern_path.exists()
+
+        written = json.loads(concern_path.read_text())
+        assert written["schema_version"] == 1, (
+            f"Concern file must have schema_version=1; got: {written.get('schema_version')!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
