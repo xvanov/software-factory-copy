@@ -566,6 +566,7 @@ def run_watcher_daemon(
     max_iters: int | None = None,
     lookback: timedelta = timedelta(minutes=15),
     trigger_l2: bool = True,
+    trigger_l3: bool = True,
 ) -> None:
     """Loop ``run_watcher_once`` every ``interval_s`` seconds.
 
@@ -576,6 +577,10 @@ def run_watcher_daemon(
     When L1 produces a note with ``escalate_to_l2=true``, immediately
     triggers one L2 summarizer iteration (``run_summarizer_once``) unless
     ``trigger_l2=False`` (the ``--no-l2`` flag).
+
+    When L2 produces a concern with ``escalate_to_l3=true``, immediately
+    triggers one L3 diagnostician iteration (``run_diagnostician_once``)
+    unless ``trigger_l3=False`` (the ``--no-l3`` flag).
 
     Parameters
     ----------
@@ -591,11 +596,18 @@ def run_watcher_daemon(
     trigger_l2:
         If True (default), immediately invoke L2 when L1 escalates.
         Set to False to suppress L2 (useful for testing L1 in isolation).
+    trigger_l3:
+        If True (default), immediately invoke L3 when L2 escalates.
+        Set to False to suppress L3 (useful for testing L2 in isolation).
     """
     import sys
 
     iterations = 0
-    print(f"[watcher] starting daemon (interval_s={interval_s}, trigger_l2={trigger_l2})", file=sys.stderr)
+    print(
+        f"[watcher] starting daemon (interval_s={interval_s}, "
+        f"trigger_l2={trigger_l2}, trigger_l3={trigger_l3})",
+        file=sys.stderr,
+    )
     try:
         while True:
             try:
@@ -611,6 +623,7 @@ def run_watcher_daemon(
                 # Immediately trigger L2 if L1 escalated and trigger_l2 is enabled.
                 if escalated and trigger_l2:
                     print("[watcher] triggering immediate L2 summarizer run...", file=sys.stderr)
+                    l2_concern_path: str | None = None
                     try:
                         from factory.manager.summarizer import run_summarizer_once
 
@@ -626,6 +639,43 @@ def run_watcher_daemon(
                                 f"[watcher] L2 concern={l2_title!r} urgency={l2_urgency}{l2_esc_tag}",
                                 file=sys.stderr,
                             )
+                            # Store the concern path for L3 trigger below.
+                            l2_concern_path = l2_result.get("concern_path")
+                            # Immediately trigger L3 if L2 escalated and trigger_l3 is enabled.
+                            if l2_esc and trigger_l3 and l2_concern_path:
+                                print(
+                                    "[watcher] triggering immediate L3 diagnostician run...",
+                                    file=sys.stderr,
+                                )
+                                try:
+                                    from factory.manager.diagnostician import (
+                                        run_diagnostician_once,
+                                    )
+
+                                    l3_result = run_diagnostician_once(
+                                        root=root,
+                                        concern_path=Path(l2_concern_path),
+                                    )
+                                    if l3_result is None:
+                                        print(
+                                            "[watcher] L3: no proposal produced.",
+                                            file=sys.stderr,
+                                        )
+                                    else:
+                                        l3_title = l3_result.get("concern_title", "?")
+                                        l3_class = l3_result.get("target_class", "?")
+                                        l3_esc = l3_result.get("escalate_to_human", False)
+                                        l3_esc_tag = " [ESCALATE→HUMAN]" if l3_esc else ""
+                                        print(
+                                            f"[watcher] L3 concern={l3_title!r} "
+                                            f"target_class={l3_class}{l3_esc_tag}",
+                                            file=sys.stderr,
+                                        )
+                                except Exception as l3_exc:  # noqa: BLE001
+                                    print(
+                                        f"[watcher] L3 trigger failed: {l3_exc!r}",
+                                        file=sys.stderr,
+                                    )
                     except Exception as l2_exc:  # noqa: BLE001
                         print(f"[watcher] L2 trigger failed: {l2_exc!r}", file=sys.stderr)
             except Exception as exc:  # noqa: BLE001

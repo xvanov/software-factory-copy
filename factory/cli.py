@@ -2126,6 +2126,7 @@ def manager_watch_cmd(
     max_iters: int | None = typer.Option(None, "--max-iters", help="Stop after N iterations (useful for testing)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Assemble prompt but do NOT call the LLM; print the prompt."),
     no_l2: bool = typer.Option(False, "--no-l2", help="Suppress the immediate L2 trigger on L1 escalation (useful for testing L1 in isolation)."),
+    no_l3: bool = typer.Option(False, "--no-l3", help="Suppress the immediate L3 trigger on L2 escalation (useful for testing L2 in isolation)."),
 ) -> None:
     """Run the L1 Watcher agent.
 
@@ -2136,7 +2137,8 @@ def manager_watch_cmd(
 
     In daemon mode, when L1 escalates (``escalate_to_l2=true``), an
     immediate L2 summarizer iteration is triggered unless ``--no-l2``
-    is passed.
+    is passed.  When L2 escalates (``escalate_to_l3=true``), an immediate
+    L3 diagnostician iteration is triggered unless ``--no-l3`` is passed.
     """
     from factory.manager.watcher import run_watcher_daemon, run_watcher_once
 
@@ -2156,6 +2158,7 @@ def manager_watch_cmd(
             interval_s=interval_s,
             max_iters=max_iters,
             trigger_l2=not no_l2,
+            trigger_l3=not no_l3,
         )
 
 
@@ -2200,6 +2203,68 @@ def manager_summarize_cmd(
                 "[yellow]--dry-run has no effect in daemon mode; use --once --dry-run.[/yellow]"
             )
         run_summarizer_daemon(
+            root=_FACTORY_ROOT,
+            interval_s=interval_s,
+            max_iters=max_iters,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Phase FMS-5 commands: manager diagnose (L3 Diagnostician agent)
+# --------------------------------------------------------------------------- #
+
+
+@manager_app.command("diagnose")
+def manager_diagnose_cmd(
+    once: bool = typer.Option(False, "--once", help="Run a single diagnostician cycle and exit."),
+    interval_s: int = typer.Option(
+        300, "--interval-s", help="Seconds between diagnostician cycles (daemon mode). Default: 300."
+    ),
+    max_iters: int | None = typer.Option(
+        None, "--max-iters", help="Stop after N iterations (useful for testing)."
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Assemble L3 prompt but do NOT call the LLM; print the prompt.",
+    ),
+    concern: str | None = typer.Option(
+        None, "--concern", help="Path to a specific concern JSON file to diagnose."
+    ),
+) -> None:
+    """Run the L3 Diagnostician agent.
+
+    Reads unprocessed concern documents from ``state/concerns/`` and
+    produces structured proposals under ``state/manager_proposals/``.
+
+    Without ``--once``, runs as a daemon looping every ``--interval-s``
+    seconds (default: 300) until SIGINT.  With ``--once``, runs a single
+    cycle and prints the resulting proposal JSON (or reports that no
+    unprocessed concerns were found).  With ``--once --dry-run``, assembles
+    and prints the L3 prompt without calling the LLM.
+
+    Use ``--concern <path>`` to diagnose a specific concern file instead of
+    picking the most-recent unprocessed one.
+    """
+    from factory.manager.diagnostician import run_diagnostician_daemon, run_diagnostician_once
+
+    concern_path = Path(concern) if concern else None
+
+    if once:
+        result = run_diagnostician_once(
+            root=_FACTORY_ROOT, concern_path=concern_path, dry_run=dry_run
+        )
+        if result is None:
+            console.print("[dim]No unprocessed concerns found — nothing to diagnose.[/dim]")
+        elif not dry_run:
+            import json as _json
+            print(_json.dumps(result, indent=2, default=str))
+    else:
+        if dry_run:
+            console.print(
+                "[yellow]--dry-run has no effect in daemon mode; use --once --dry-run.[/yellow]"
+            )
+        run_diagnostician_daemon(
             root=_FACTORY_ROOT,
             interval_s=interval_s,
             max_iters=max_iters,
