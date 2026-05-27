@@ -2127,6 +2127,15 @@ def manager_watch_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Assemble prompt but do NOT call the LLM; print the prompt."),
     no_l2: bool = typer.Option(False, "--no-l2", help="Suppress the immediate L2 trigger on L1 escalation (useful for testing L1 in isolation)."),
     no_l3: bool = typer.Option(False, "--no-l3", help="Suppress the immediate L3 trigger on L2 escalation (useful for testing L2 in isolation)."),
+    no_auto_apply: bool = typer.Option(
+        False,
+        "--no-auto-apply",
+        help=(
+            "Suppress the automatic L4 apply run when L3 produces a proposal. "
+            "Default: auto-apply is ON (MVP default). Use this flag to disable "
+            "L4 and review proposals manually via 'factory manager apply'."
+        ),
+    ),
 ) -> None:
     """Run the L1 Watcher agent.
 
@@ -2139,6 +2148,11 @@ def manager_watch_cmd(
     immediate L2 summarizer iteration is triggered unless ``--no-l2``
     is passed.  When L2 escalates (``escalate_to_l3=true``), an immediate
     L3 diagnostician iteration is triggered unless ``--no-l3`` is passed.
+    When L3 produces a proposal, the L4 apply pipeline runs automatically
+    unless ``--no-auto-apply`` is passed.
+
+    NOTE: auto-apply is ON by default (MVP default). Pass ``--no-auto-apply``
+    to validate L3 proposal quality before enabling automated patching.
     """
     from factory.manager.watcher import run_watcher_daemon, run_watcher_once
 
@@ -2159,6 +2173,7 @@ def manager_watch_cmd(
             max_iters=max_iters,
             trigger_l2=not no_l2,
             trigger_l3=not no_l3,
+            auto_apply=not no_auto_apply,
         )
 
 
@@ -2269,3 +2284,114 @@ def manager_diagnose_cmd(
             interval_s=interval_s,
             max_iters=max_iters,
         )
+
+
+# Phase FMS-6 commands: manager apply + classify (L4 Apply pipeline)
+# --------------------------------------------------------------------------- #
+
+
+@manager_app.command("apply")
+def manager_apply_cmd(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Classify proposals and log without applying any patches.",
+    ),
+    proposal: str | None = typer.Option(
+        None,
+        "--proposal",
+        help="Path to a specific proposal JSON file to apply. Default: all unprocessed.",
+    ),
+    repo: str | None = typer.Option(
+        None,
+        "--repo",
+        help="GitHub owner/repo slug for PR creation (e.g. acme/factory). Omit to skip PR creation.",
+    ),
+    no_push: bool = typer.Option(
+        False,
+        "--no-push",
+        help="Create branch and commit locally but do not git push.",
+    ),
+) -> None:
+    """Run the L4 Apply pipeline for manager proposals.
+
+    Reads unprocessed proposals from ``state/manager_proposals/*.json`` (L3
+    Diagnostician output) and applies them according to their safety class:
+
+    \\b
+    - safe (prompt_edit / persona_settings / detector_tool):
+      branch + apply + CI gate + PR with ``factory-self-improvement-safe`` label + auto-merge.
+    - risky (dispatch_code):
+      branch + apply + CI gate + PR with ``factory-self-improvement-review`` label (operator merges).
+    - forbidden (manager/*.py or self-editing):
+      recorded in history but never applied.
+    - escalate_to_human:
+      recorded in history as acknowledgement.
+
+    Use ``--proposal <path>`` to apply a single proposal. Use ``--dry-run``
+    to classify without making any git changes.
+
+    NOTE: The classifier is deterministic and contains no LLM calls — apply-safety
+    requires hard guarantees the upstream LLM layer cannot provide.
+    """
+    import json as _json
+
+    from factory.manager.apply import apply_manager_proposals
+
+    proposal_path = Path(proposal) if proposal else None
+
+    result = apply_manager_proposals(
+        root=_FACTORY_ROOT,
+        dry_run=dry_run,
+        proposal_path=proposal_path,
+        repo=repo,
+        open_prs=repo is not None,
+        push=not no_push,
+    )
+
+    console.print(
+        f"[bold]manager apply[/bold]: processed={result['processed']} "
+        f"safe_applied={result['safe_applied']} risky_opened={result['risky_opened']} "
+        f"forbidden={result['forbidden']} escalated_human={result['escalated_human']}"
+    )
+    if result.get("errors"):
+        console.print("[yellow]Errors:[/yellow]")
+        for err in result["errors"]:
+            console.print(f"  [red]{err}[/red]")
+    if not dry_run and result.get("results"):
+        print(_json.dumps(result, indent=2, default=str))
+
+
+@manager_app.command("classify")
+def manager_classify_cmd(
+    proposal_file: str = typer.Argument(..., help="Path to a manager proposal JSON file."),
+) -> None:
+    """Print the safety classification of a single manager proposal.
+
+    Runs the rule-based classifier without applying anything.  Useful for
+    inspecting what L4 would do before committing to an apply run.
+
+    Classification values:
+    \\b
+    - safe            — will be auto-applied + auto-merged on green CI
+    - risky           — PR opened for operator review; not auto-merged
+    - forbidden       — never applied; touches protected files
+    - escalate_to_human — proposal requests human review; not applied
+    """
+    import json as _json
+
+    from factory.manager.apply import _classify_manager_proposal
+
+    p = Path(proposal_file)
+    if not p.exists():
+        console.print(f"[red]File not found: {p}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        proposal = _json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError) as exc:
+        console.print(f"[red]Failed to parse {p}: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    classification = _classify_manager_proposal(proposal, _FACTORY_ROOT)
+    console.print(f"[bold]{p.name}[/bold] → [cyan]{classification}[/cyan]")

@@ -567,6 +567,7 @@ def run_watcher_daemon(
     lookback: timedelta = timedelta(minutes=15),
     trigger_l2: bool = True,
     trigger_l3: bool = True,
+    auto_apply: bool = True,
 ) -> None:
     """Loop ``run_watcher_once`` every ``interval_s`` seconds.
 
@@ -599,15 +600,26 @@ def run_watcher_daemon(
     trigger_l3:
         If True (default), immediately invoke L3 when L2 escalates.
         Set to False to suppress L3 (useful for testing L2 in isolation).
+    auto_apply:
+        If True (default -- MVP ON), immediately invoke the L4 apply pipeline
+        when L3 produces a proposal.  Set to False (``--no-auto-apply``) to
+        skip L4 and let the operator run ``factory manager apply`` manually.
     """
     import sys
 
     iterations = 0
     print(
         f"[watcher] starting daemon (interval_s={interval_s}, "
-        f"trigger_l2={trigger_l2}, trigger_l3={trigger_l3})",
+        f"trigger_l2={trigger_l2}, trigger_l3={trigger_l3}, "
+        f"auto_apply={auto_apply})",
         file=sys.stderr,
     )
+    if auto_apply:
+        print(
+            "[watcher] auto_apply=ON -- L4 will automatically apply safe proposals. "
+            "Pass --no-auto-apply to disable.",
+            file=sys.stderr,
+        )
     try:
         while True:
             try:
@@ -665,12 +677,43 @@ def run_watcher_daemon(
                                         l3_title = l3_result.get("concern_title", "?")
                                         l3_class = l3_result.get("target_class", "?")
                                         l3_esc = l3_result.get("escalate_to_human", False)
-                                        l3_esc_tag = " [ESCALATE→HUMAN]" if l3_esc else ""
+                                        l3_esc_tag = " [ESCALATE->HUMAN]" if l3_esc else ""
                                         print(
                                             f"[watcher] L3 concern={l3_title!r} "
                                             f"target_class={l3_class}{l3_esc_tag}",
                                             file=sys.stderr,
                                         )
+                                        # Immediately trigger L4 if auto_apply is enabled.
+                                        if auto_apply:
+                                            l3_proposal_path = l3_result.get("proposal_path")
+                                            print(
+                                                "[watcher] triggering immediate L4 apply run...",
+                                                file=sys.stderr,
+                                            )
+                                            try:
+                                                from factory.manager.apply import (
+                                                    apply_manager_proposals,
+                                                )
+
+                                                l4_result = apply_manager_proposals(
+                                                    root=root,
+                                                    proposal_path=Path(l3_proposal_path)
+                                                    if l3_proposal_path
+                                                    else None,
+                                                )
+                                                print(
+                                                    f"[watcher] L4 apply: "
+                                                    f"processed={l4_result.get('processed', 0)} "
+                                                    f"safe_applied={l4_result.get('safe_applied', 0)} "
+                                                    f"risky_opened={l4_result.get('risky_opened', 0)} "
+                                                    f"forbidden={l4_result.get('forbidden', 0)}",
+                                                    file=sys.stderr,
+                                                )
+                                            except Exception as l4_exc:  # noqa: BLE001
+                                                print(
+                                                    f"[watcher] L4 apply trigger failed: {l4_exc!r}",
+                                                    file=sys.stderr,
+                                                )
                                 except Exception as l3_exc:  # noqa: BLE001
                                     print(
                                         f"[watcher] L3 trigger failed: {l3_exc!r}",
