@@ -716,7 +716,10 @@ def test_circuit_breaker_trips_on_failing_manager_commit_and_halts_apply(
     assert state["regression_commit"] == head_sha
 
     # Now run apply — it should return halted_by_circuit_breaker.
-    apply_result = _apply(root=repo)
+    # Pass NOW so the time-window check sees the freshly-set halt as still active
+    # (decouples the test from wall-clock — without this the test is flaky once
+    # real time advances past halt_until = NOW + 24h).
+    apply_result = _apply(root=repo, now=NOW)
     assert apply_result.get("halted_by_circuit_breaker") is True, (
         f"apply should be halted by circuit breaker. Got: {apply_result}"
     )

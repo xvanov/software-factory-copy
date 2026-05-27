@@ -850,6 +850,7 @@ def apply_manager_proposals(
     repo: str | None = None,
     open_prs: bool = True,
     push: bool = True,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Apply manager proposals from ``state/manager_proposals/*.json``.
 
@@ -889,7 +890,7 @@ def apply_manager_proposals(
         from factory.manager.circuit_breaker import get_state as _cb_get_state
         from factory.manager.circuit_breaker import is_tripped as _cb_is_tripped
 
-        if _cb_is_tripped(root=root):
+        if _cb_is_tripped(root=root, now=now):
             cb_state = _cb_get_state(root=root) or {}
             return {
                 "halted_by_circuit_breaker": True,
