@@ -26,6 +26,32 @@ DAILY_LIMIT_USD="${DAILY_LIMIT_USD:-180}"  # default guard: 90% of $200 cap
 emit() { printf '[drive %s app=%s] %s\n' "$(date -u +%H:%M:%S)" "$APP" "$*"; }
 
 while :; do
+  # Phase 7: halt check — read state/factory_mode.json before each iteration.
+  # The L3 Diagnostician may write this file between ticks; if it's present
+  # and mode=="halted" we exit cleanly without burning any more LLM calls.
+  if [ -f "state/factory_mode.json" ]; then
+    halt_mode=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('state/factory_mode.json'))
+    sys.exit(0 if d.get('mode') == 'halted' else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null && echo "halted" || echo "normal")
+    if [ "$halt_mode" = "halted" ]; then
+      halt_reason=$(python3 -c "
+import json
+try:
+    d = json.load(open('state/factory_mode.json'))
+    print(d.get('reason', 'no reason provided'))
+except Exception:
+    print('could not read halt reason')
+" 2>/dev/null)
+      emit "halted: ${halt_reason}" >&2
+      exit 0
+    fi
+  fi
+
   budget_out=$(uv run factory budget 2>/dev/null)
   spend=$(printf '%s\n' "$budget_out" | awk -F'│' '/today_spend_usd/ {gsub(/[^0-9.]/,"",$3); print $3}')
   hour=$(printf '%s\n' "$budget_out" | awk -F'│' '/hour_spend_usd/ {gsub(/[^0-9.]/,"",$3); print $3}')

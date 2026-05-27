@@ -492,3 +492,139 @@ def test_sm_overflow_full_chain_l1_l2_l3_l4(
         f"Expected exactly 3 text_run calls (L1×1 + L2×1 + L3×1). "
         f"Got {text_run_call_count}. Something is retrying unexpectedly."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 integration: L3 halt request → persists → blocks tick
+# ---------------------------------------------------------------------------
+
+_L3_HALT_REASON = (
+    "Three consecutive SM failures across 3 distinct stories; cost spiralling; "
+    "no self-healing path available."
+)
+
+_L3_RESPONSE_WITH_HALT = {
+    "concern_title": "sm-max-tokens-overflow",
+    "diagnosis": (
+        "Runaway SM token overflow; daily cap will be exceeded by >150%. "
+        "No patch can stop this without a halt."
+    ),
+    "proposal": {
+        "kind": "persona_settings",
+        "target": "factory/routes.yaml",
+        "rationale": "Lower max_tokens to stop the overflow.",
+        "suggested_patch": "",
+        "verification": "uv run pytest -q",
+        "confidence": "low",
+    },
+    "target_class": "escalate_to_human",
+    "escalate_to_human": True,
+    "escalation_reason": "Cost spiral; halting to stop burn.",
+    "request_halt": True,
+    "halt_reason": _L3_HALT_REASON,
+}
+
+
+def test_l3_halt_request_persists_and_blocks_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 7 chained test: L3 halt request persists and subsequent tick skips dispatch.
+
+    Verifies:
+    1. After L3 produces a halt-request response, state/factory_mode.json exists
+       with mode=halted.
+    2. A subsequent tick() invocation returns TickSummary(halted=True) without
+       dispatching any handlers.
+    3. clear_halt() clears the halt and tick proceeds normally again.
+    """
+    # ------------------------------------------------------------------
+    # Setup: minimal repo + planted signals
+    # ------------------------------------------------------------------
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    _plant_run_failures(repo)
+
+    # Patch L3 to return the halt response.
+    monkeypatch.setattr(
+        "factory.manager.diagnostician.text_run",
+        lambda persona, prompt, model_id, schema=None, **kw: _L3_RESPONSE_WITH_HALT,
+    )
+    monkeypatch.setattr(
+        "factory.manager.diagnostician._read_persona_prompt",
+        lambda p: "# L3 mock",
+    )
+    import factory.model_router as mr
+
+    monkeypatch.setattr(mr, "route", lambda *a, **kw: "anthropic/claude-opus-4-7")
+    monkeypatch.setattr(mr, "max_output_tokens_for", lambda *a, **kw: 32768)
+
+    # ------------------------------------------------------------------
+    # Step 1: Write a concern and run L3
+    # ------------------------------------------------------------------
+    concern = {
+        "schema_version": 1,
+        "title": "sm-max-tokens-overflow",
+        "description": "Three SM failures, cost spiralling.",
+        "evidence": [
+            {"kind": "run", "id": RUN_STORY_IDS[0], "ts": T0.isoformat(), "excerpt": "sm failure"},
+        ],
+        "proposed_area": "persona_settings",
+        "urgency": "halt",
+        "escalate_to_l3": True,
+        "escalation_reason": "Sustained cost spiral.",
+    }
+    concerns_dir = repo / "state" / "concerns"
+    concerns_dir.mkdir(parents=True)
+    concern_path = concerns_dir / "20260526T120000-sm-max-tokens-overflow.json"
+    concern_path.write_text(json.dumps(concern, indent=2), encoding="utf-8")
+
+    l3_result = run_diagnostician_once(root=repo, now=NOW + timedelta(seconds=2))
+    assert l3_result is not None, "L3 must produce a result"
+    assert l3_result.get("halt_requested") is True, "Proposal must record halt_requested=True"
+
+    # ------------------------------------------------------------------
+    # Step 2: Verify halt state file exists
+    # ------------------------------------------------------------------
+    from factory.manager.halt import clear_halt, get_halt_state, is_halted
+
+    assert is_halted(root=repo), "state/factory_mode.json must be set after L3 halt request"
+    halt_state = get_halt_state(root=repo)
+    assert halt_state is not None
+    assert halt_state["mode"] == "halted"
+    assert halt_state["reason"] == _L3_HALT_REASON
+    assert halt_state["set_by"] == "manager_diagnostician"
+
+    # ------------------------------------------------------------------
+    # Step 3: Subsequent tick should skip dispatch
+    # ------------------------------------------------------------------
+    # Set up a minimal app config so tick can load.
+    app_dir = repo / "apps" / "sacrifice"
+    app_dir.mkdir(parents=True)
+    (app_dir / "config.yaml").write_text(
+        "name: sacrifice\nrepo: https://github.com/test/sacrifice\ndefault_branch: main\n",
+        encoding="utf-8",
+    )
+    db_path = repo / "state" / "factory.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    from factory.chain.orchestrator import tick
+
+    summary = tick(repo, "sacrifice", dry_run=True, db_path=db_path)
+    assert summary.halted is True, "tick must return halted=True when halt state is set"
+    assert summary.stories_advanced == 0, "No stories should advance when halted"
+
+    # ------------------------------------------------------------------
+    # Step 4: clear_halt clears it; is_halted returns False
+    # ------------------------------------------------------------------
+    archived = clear_halt(
+        root=repo,
+        cleared_by="operator",
+        reason="manual override in integration test",
+    )
+    assert archived["cleared_by"] == "operator"
+    assert not is_halted(root=repo), "is_halted must be False after clear_halt"
+
+    # Tick after clear should no longer be halted.
+    summary2 = tick(repo, "sacrifice", dry_run=True, db_path=db_path)
+    assert summary2.halted is False, "tick should not be halted after clear_halt"

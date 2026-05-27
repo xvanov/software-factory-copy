@@ -79,6 +79,9 @@ class TickSummary:
     # End-of-tick auto-merge decisions (one entry per PR evaluated).
     # Empty when ``auto_merge.enabled=false`` or no PRs are eligible.
     merges: list[MergeAction] = field(default_factory=list)
+    # Phase 7: set to True when tick exits early due to factory halt.
+    halted: bool = False
+    halt_reason: str | None = None
 
 
 # Per-state handler dispatch — what to run when a story is in this state.
@@ -467,6 +470,27 @@ def tick(
             _dry_run_db_temp.unlink(missing_ok=True)
         return TickSummary(app=app, dry_run=dry_run, errors=[(app, f"app config missing: {exc}")])
 
+    # Phase 7 — halt check (double defence: also enforced in drive_chain.sh).
+    # If the L3 Diagnostician has written a halt state file, skip all dispatch
+    # and return a halted TickSummary so even direct ``factory tick`` calls
+    # honour the halt without burning LLM credits.
+    try:
+        from factory.manager.halt import get_halt_state, is_halted
+
+        if is_halted(root=root):
+            halt_state = get_halt_state(root=root) or {}
+            _halt_reason = halt_state.get("reason", "unknown")
+            if _dry_run_db_temp is not None:
+                _dry_run_db_temp.unlink(missing_ok=True)
+            return TickSummary(
+                app=app,
+                dry_run=dry_run,
+                halted=True,
+                halt_reason=_halt_reason,
+            )
+    except Exception:  # noqa: BLE001
+        pass  # Halt-check failures must never prevent a tick
+
     settings = load_settings(root)
     summary = TickSummary(app=app, dry_run=dry_run)
 
@@ -764,6 +788,8 @@ def tick_summary_as_dict(summary: TickSummary) -> dict[str, Any]:
     return {
         "app": summary.app,
         "dry_run": summary.dry_run,
+        "halted": summary.halted,
+        "halt_reason": summary.halt_reason,
         "stories_advanced": summary.stories_advanced,
         "blocked_by_caps": summary.blocked_by_caps,
         "stories_blocked": summary.stories_blocked,

@@ -142,6 +142,10 @@ _DIAGNOSTICIAN_SCHEMA: dict[str, Any] = {
         },
         "escalate_to_human": {"type": "boolean"},
         "escalation_reason": {"type": ["string", "null"]},
+        # Phase 7: halt-request fields (optional).  Only L3 may set these.
+        # When request_halt=true, halt_reason MUST be a non-empty string.
+        "request_halt": {"type": "boolean", "default": False},
+        "halt_reason": {"type": ["string", "null"]},
     },
 }
 
@@ -726,6 +730,56 @@ def run_diagnostician_once(
     # Step 7: write proposal.
     proposal_path = _write_proposal(root, proposal, now)
     proposal["proposal_path"] = str(proposal_path)
+
+    # Step 8 (Phase 7): handle halt request.
+    # Only L3 (this module) can set the halt state.  L1 and L2 have no
+    # halt authority — they never touch factory.manager.halt.
+    halt_requested = False
+    if not dry_run and proposal.get("request_halt") is True:
+        halt_reason = proposal.get("halt_reason")
+        if halt_reason and isinstance(halt_reason, str) and halt_reason.strip():
+            try:
+                from factory.manager.halt import request_halt as _request_halt
+
+                _request_halt(
+                    root=root,
+                    concern_title=concern_title,
+                    proposal_path=str(proposal_path),
+                    reason=halt_reason.strip(),
+                )
+                halt_requested = True
+                print(
+                    f"[diagnostician] HALT requested: concern={concern_title!r} "
+                    f"reason={halt_reason!r}",
+                    file=sys.stderr,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[diagnostician] WARNING: halt request failed: {exc!r}",
+                    file=sys.stderr,
+                )
+        else:
+            # request_halt=true but no valid halt_reason — silently drop.
+            print(
+                "[diagnostician] WARNING: request_halt=true but halt_reason is "
+                "null or empty — halt NOT triggered.",
+                file=sys.stderr,
+            )
+
+    # Record whether this proposal triggered a halt in the proposal output.
+    proposal["halt_requested"] = halt_requested
+
+    # Rewrite the proposal file with the halt_requested annotation.
+    try:
+        proposal_doc = {"schema_version": _SCHEMA_VERSION, **proposal}
+        proposal_path.write_text(
+            json.dumps(proposal_doc, indent=2, default=str), encoding="utf-8"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[diagnostician] WARNING: failed to re-write proposal with halt annotation: {exc}",
+            file=sys.stderr,
+        )
 
     return proposal
 

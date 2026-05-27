@@ -918,29 +918,97 @@ def pause_cmd() -> None:
 
 
 @app.command("resume")
-def resume_cmd() -> None:
-    """Restore normal operation: sets factory mode to ``normal``."""
-    from factory.settings.modes import set_mode
+def resume_cmd(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    reason: str | None = typer.Option(None, "--reason", help="Optional reason for clearing halt"),
+) -> None:
+    """Clear a factory halt and restore normal operation.
 
-    new = set_mode("normal", _FACTORY_ROOT)
-    console.print(Panel.fit(f"factory mode -> [bold green]{new}[/bold green]", title="resume"))
+    If the factory is in a halted state (set by the L3 Diagnostician), this
+    command clears it after operator confirmation.  If not halted, it falls
+    back to setting mode to ``normal`` (same as before Phase 7).
+
+    OPERATOR-ONLY — this command must never be invoked by any LLM pathway.
+    """
+    # Phase 7: check for halt state first.
+    from factory.manager.halt import clear_halt, get_halt_state, is_halted
+
+    if is_halted(root=_FACTORY_ROOT):
+        halt_state = get_halt_state(root=_FACTORY_ROOT) or {}
+        console.print(
+            Panel.fit(
+                f"[bold red]FACTORY HALTED[/bold red]\n\n"
+                f"set_at:        {halt_state.get('set_at', '?')}\n"
+                f"set_by:        {halt_state.get('set_by', '?')}\n"
+                f"concern_title: {halt_state.get('concern_title', '?')}\n"
+                f"reason:        {halt_state.get('reason', '?')}\n"
+                f"proposal_path: {halt_state.get('proposal_path', '?')}",
+                title="halt state",
+            )
+        )
+        if not yes:
+            confirmed = typer.confirm(
+                "Clear the halt and resume normal operation?", default=False
+            )
+            if not confirmed:
+                console.print("[yellow]Aborted.[/yellow]")
+                raise typer.Exit(code=0)
+        archived = clear_halt(
+            root=_FACTORY_ROOT,
+            cleared_by="operator",
+            reason=reason,
+        )
+        console.print(
+            Panel.fit(
+                f"[bold green]Halt cleared.[/bold green]\n"
+                f"Archived to state/.halt_history.json\n"
+                f"cleared_at: {archived.get('cleared_at', '?')}",
+                title="resume",
+            )
+        )
+    else:
+        # No halt active — fall back to setting mode to normal.
+        from factory.settings.modes import set_mode
+
+        new = set_mode("normal", _FACTORY_ROOT)
+        console.print(
+            Panel.fit(f"factory mode -> [bold green]{new}[/bold green]", title="resume")
+        )
 
 
 @app.command("mode")
 def mode_cmd(
     name: str | None = typer.Argument(None, help="Mode name; omit to print the current mode"),
 ) -> None:
-    """Show or set the factory mode."""
+    """Show or set the factory mode.
+
+    When the factory is halted (set by L3 Diagnostician), prints halt details
+    alongside the mode.  Use ``factory resume`` to clear a halt.
+    """
+    from factory.manager.halt import get_halt_state, is_halted
     from factory.settings.loader import is_valid_mode, load_settings
     from factory.settings.modes import get_mode, set_mode
 
     settings = load_settings(_FACTORY_ROOT)
     if name is None:
         current = get_mode(_FACTORY_ROOT)
-        console.print(
-            f"current mode: [bold]{current}[/bold]\n"
-            f"available: {', '.join(settings.modes.available)}"
-        )
+        halted = is_halted(root=_FACTORY_ROOT)
+        if halted:
+            halt_state = get_halt_state(root=_FACTORY_ROOT) or {}
+            console.print(
+                f"current mode: [bold red]halted[/bold red]\n"
+                f"  set_at:        {halt_state.get('set_at', '?')}\n"
+                f"  concern_title: {halt_state.get('concern_title', '?')}\n"
+                f"  reason:        {halt_state.get('reason', '?')}\n"
+                f"  (db mode: {current})\n"
+                f"available: {', '.join(settings.modes.available)}\n"
+                f"[yellow]Run 'factory resume' to clear the halt.[/yellow]"
+            )
+        else:
+            console.print(
+                f"current mode: [bold]{current}[/bold]\n"
+                f"available: {', '.join(settings.modes.available)}"
+            )
         return
     if not is_valid_mode(name, settings):
         console.print(
