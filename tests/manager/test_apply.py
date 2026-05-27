@@ -374,8 +374,13 @@ def test_classify_detector_tool_new_file_safe(tmp_path: Path) -> None:
     assert _classify_manager_proposal(proposal, repo) == "safe"
 
 
-def test_classify_detector_tool_modifying_existing_risky(tmp_path: Path) -> None:
-    """detector_tool modifying an existing detector (not __init__.py) → risky."""
+def test_classify_detector_tool_modifying_existing_forbidden(tmp_path: Path) -> None:
+    """Phase 8: detector_tool modifying an existing detector (not __init__.py) → forbidden.
+
+    Phase 8 extended the forbidden-path check to cover factory/manager/**/*.py at any
+    depth. Modifying an existing detector is now forbidden (defence-in-depth).
+    The carve-out only applies to NEW detector files (--- /dev/null diffs).
+    """
     repo = _make_repo(
         tmp_path,
         {
@@ -393,7 +398,7 @@ def test_classify_detector_tool_modifying_existing_risky(tmp_path: Path) -> None
     proposal = _minimal_proposal(
         target_class="detector_tool", patch=patch, kind="detector_tool"
     )
-    assert _classify_manager_proposal(proposal, repo) == "risky"
+    assert _classify_manager_proposal(proposal, repo) == "forbidden"
 
 
 # ---------------------------------------------------------------------------

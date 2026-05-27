@@ -386,6 +386,39 @@ def tick_cmd(
             console.print("[red]error:[/red] real tick requires an LLM provider key. " + hint)
             raise typer.Exit(code=2)
 
+    # Phase 8 (Phase 7 reviewer note): check halt state BEFORE the
+    # factory_improver and scheduled personas block so a halted factory
+    # exits cleanly without burning LLM calls.
+    try:
+        from factory.manager.halt import get_halt_state as _get_halt_state
+        from factory.manager.halt import is_halted as _is_halted
+
+        if _is_halted(root=_FACTORY_ROOT):
+            halt_state = _get_halt_state(root=_FACTORY_ROOT) or {}
+            console.print(
+                Panel.fit(
+                    f"[bold red]FACTORY HALTED[/bold red] — tick skipped.\n\n"
+                    f"set_at:        {halt_state.get('set_at', '?')}\n"
+                    f"concern_title: {halt_state.get('concern_title', '?')}\n"
+                    f"reason:        {halt_state.get('reason', '?')}\n\n"
+                    "Run [bold]factory resume[/bold] to clear the halt.",
+                    title="tick (halted)",
+                )
+            )
+            raise typer.Exit(code=0)
+    except typer.Exit:
+        raise
+    except Exception as _halt_check_exc:  # noqa: BLE001
+        # The halt module import or read failed — log visibly and continue.
+        # Fail-open: a broken halt module must not silently disable all ticks,
+        # but an operator MUST notice, so we print to stderr.
+        import sys as _sys
+        print(
+            f"[tick] WARNING: halt-check raised an exception: {_halt_check_exc!r}; "
+            "continuing with tick (fail-open). This may indicate a broken halt module.",
+            file=_sys.stderr,
+        )
+
     # Phase 6: drive the scheduler BEFORE the story chain so findings
     # filed by Ralph/etc become directions that this same tick can pick
     # up (PM-sync runs separately, but the next tick will spawn stories
@@ -2204,6 +2237,14 @@ def manager_watch_cmd(
             "L4 and review proposals manually via 'factory manager apply'."
         ),
     ),
+    circuit_breaker_interval_min: int = typer.Option(
+        30,
+        "--circuit-breaker-interval-min",
+        help=(
+            "How often (minutes) to run circuit-breaker check_and_trip in daemon mode. "
+            "0 disables periodic circuit-breaker checks. Default: 30."
+        ),
+    ),
 ) -> None:
     """Run the L1 Watcher agent.
 
@@ -2242,6 +2283,7 @@ def manager_watch_cmd(
             trigger_l2=not no_l2,
             trigger_l3=not no_l3,
             auto_apply=not no_auto_apply,
+            circuit_breaker_interval_min=circuit_breaker_interval_min,
         )
 
 
@@ -2463,3 +2505,117 @@ def manager_classify_cmd(
 
     classification = _classify_manager_proposal(proposal, _FACTORY_ROOT)
     console.print(f"[bold]{p.name}[/bold] → [cyan]{classification}[/cyan]")
+
+
+# --------------------------------------------------------------------------- #
+# Phase 8 commands: manager circuit-breaker (circuit-breaker management)
+# --------------------------------------------------------------------------- #
+
+circuit_breaker_app = typer.Typer(help="Circuit-breaker management.")
+manager_app.add_typer(circuit_breaker_app, name="circuit-breaker")
+
+
+@circuit_breaker_app.command("status")
+def cb_status_cmd() -> None:
+    """Print current circuit-breaker state (tripped or not, halt_until, last trip)."""
+    from factory.manager.circuit_breaker import get_state, is_tripped
+
+    state = get_state(root=_FACTORY_ROOT)
+    tripped = is_tripped(root=_FACTORY_ROOT)
+    if state is None:
+        console.print("[green]Circuit breaker: not tripped[/green]")
+        return
+
+    halt_until_str = state.get("halt_until", "?")
+    regression_sha = state.get("regression_commit", "?")[:12]
+    regression_msg = state.get("regression_commit_message", "?")[:80]
+    revert_branch = state.get("revert_branch", "?")
+    pr_number = state.get("revert_pr_number")
+    tripped_at = state.get("tripped_at", "?")
+
+    status_color = "red" if tripped else "yellow"
+    status_label = "TRIPPED (halting apply pipeline)" if tripped else "TRIPPED (halt window expired)"
+
+    console.print(
+        Panel.fit(
+            f"[{status_color}]{status_label}[/{status_color}]\n\n"
+            f"tripped_at:   {tripped_at}\n"
+            f"halt_until:   {halt_until_str}\n"
+            f"regression:   {regression_sha}  {regression_msg}\n"
+            f"revert_branch: {revert_branch}\n"
+            f"revert_pr:    {f'#{pr_number}' if pr_number else '(none)'}",
+            title="circuit-breaker status",
+        )
+    )
+
+
+@circuit_breaker_app.command("check")
+def cb_check_cmd(
+    test_command: str = typer.Option(
+        "uv run pytest -q",
+        "--test-command",
+        help="Command to run the test suite.",
+    ),
+) -> None:
+    """Run check_and_trip once.  If tests fail and HEAD is a tracked manager commit, trip."""
+    from factory.manager.circuit_breaker import check_and_trip
+
+    result = check_and_trip(root=_FACTORY_ROOT, test_command=test_command)
+    if result is None:
+        console.print("[green]Circuit breaker check: tests passed (or no tracked manager commit at HEAD).[/green]")
+    else:
+        console.print(
+            Panel.fit(
+                f"[bold red]Circuit breaker TRIPPED[/bold red]\n\n"
+                f"regression_commit: {result.get('regression_commit', '?')[:12]}\n"
+                f"revert_branch:     {result.get('revert_branch', '?')}\n"
+                f"revert_pr_number:  {result.get('revert_pr_number')}\n"
+                f"halt_until:        {result.get('halt_until', '?')}",
+                title="circuit-breaker check",
+            )
+        )
+        raise typer.Exit(code=1)
+
+
+@circuit_breaker_app.command("reset")
+def cb_reset_cmd(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    reason: str | None = typer.Option(None, "--reason", help="Optional reason for reset"),
+) -> None:
+    """Operator-only: clear the circuit breaker after reviewing the revert PR.
+
+    Archives the current state to state/.circuit_breaker_history.json and
+    removes state/circuit_breaker.json.
+    """
+    from factory.manager.circuit_breaker import get_state, reset
+
+    state = get_state(root=_FACTORY_ROOT)
+    if state is None:
+        console.print("[green]Circuit breaker: not tripped — nothing to reset.[/green]")
+        return
+
+    regression_sha = state.get("regression_commit", "?")[:12]
+    console.print(
+        Panel.fit(
+            f"Circuit breaker is tripped for regression_commit=[bold]{regression_sha}[/bold].\n"
+            f"halt_until: {state.get('halt_until', '?')}\n\n"
+            "Ensure you have reviewed and merged (or closed) the revert PR before resetting.",
+            title="circuit-breaker reset",
+            style="yellow",
+        )
+    )
+    if not yes:
+        confirmed = typer.confirm("Clear the circuit breaker and resume the apply pipeline?", default=False)
+        if not confirmed:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(code=0)
+
+    archived = reset(root=_FACTORY_ROOT, cleared_by="operator", reason=reason)
+    console.print(
+        Panel.fit(
+            f"[bold green]Circuit breaker cleared.[/bold green]\n"
+            f"Archived to state/.circuit_breaker_history.json\n"
+            f"cleared_at: {archived.get('cleared_at', '?')}",
+            title="circuit-breaker reset",
+        )
+    )

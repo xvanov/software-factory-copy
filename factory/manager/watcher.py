@@ -568,6 +568,7 @@ def run_watcher_daemon(
     trigger_l2: bool = True,
     trigger_l3: bool = True,
     auto_apply: bool = True,
+    circuit_breaker_interval_min: int = 30,
 ) -> None:
     """Loop ``run_watcher_once`` every ``interval_s`` seconds.
 
@@ -604,14 +605,20 @@ def run_watcher_daemon(
         If True (default -- MVP ON), immediately invoke the L4 apply pipeline
         when L3 produces a proposal.  Set to False (``--no-auto-apply``) to
         skip L4 and let the operator run ``factory manager apply`` manually.
+    circuit_breaker_interval_min:
+        How often (minutes) to run circuit-breaker ``check_and_trip`` if there
+        are tracked manager commits.  0 disables periodic checks.  Default: 30.
     """
     import sys
 
     iterations = 0
+    _last_cb_check: datetime | None = None
+    _cb_interval = timedelta(minutes=circuit_breaker_interval_min) if circuit_breaker_interval_min > 0 else None
     print(
         f"[watcher] starting daemon (interval_s={interval_s}, "
         f"trigger_l2={trigger_l2}, trigger_l3={trigger_l3}, "
-        f"auto_apply={auto_apply})",
+        f"auto_apply={auto_apply}, "
+        f"circuit_breaker_interval_min={circuit_breaker_interval_min})",
         file=sys.stderr,
     )
     if auto_apply:
@@ -622,6 +629,45 @@ def run_watcher_daemon(
         )
     try:
         while True:
+            # Phase 8 (Phase 7 reviewer note): check halt state before each
+            # iteration so the daemon skips LLM work while the factory is
+            # halted.  The circuit breaker is also checked, but daemons still
+            # RUN when the breaker is tripped — detection and proposal
+            # generation are still useful; only the L4 apply pipeline is halted.
+            try:
+                from factory.manager.halt import is_halted as _is_halted
+                if _is_halted(root=root):
+                    print(
+                        "[watcher] factory halted: skipping iteration",
+                        file=sys.stderr,
+                    )
+                    iterations += 1
+                    if max_iters is not None and iterations >= max_iters:
+                        print(
+                            f"[watcher] reached max_iters={max_iters}, stopping.",
+                            file=sys.stderr,
+                        )
+                        break
+                    time.sleep(interval_s)
+                    continue
+            except Exception as _halt_exc:  # noqa: BLE001
+                print(
+                    f"[watcher] WARNING: halt-check failed: {_halt_exc!r}; continuing (fail-open)",
+                    file=sys.stderr,
+                )
+
+            # Log circuit-breaker state if tripped (informational only — daemons keep running).
+            try:
+                from factory.manager.circuit_breaker import is_tripped as _cb_is_tripped
+                if _cb_is_tripped(root=root):
+                    print(
+                        "[watcher] NOTE: circuit breaker is tripped; L4 apply is halted. "
+                        "Detection and proposals continue.",
+                        file=sys.stderr,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
             try:
                 result = run_watcher_once(root=root, lookback=lookback)
                 note = result.get("note", {})
@@ -731,6 +777,38 @@ def run_watcher_daemon(
                     file=sys.stderr,
                 )
                 break
+
+            # Phase 8: periodic circuit-breaker check (if enabled and due).
+            if _cb_interval is not None:
+                _cb_now = datetime.now(UTC)
+                if _last_cb_check is None or (_cb_now - _last_cb_check) >= _cb_interval:
+                    _last_cb_check = _cb_now
+                    try:
+                        from factory.manager.circuit_breaker import (
+                            _load_manager_commits as _cb_load_commits,
+                        )
+                        from factory.manager.circuit_breaker import (
+                            check_and_trip as _cb_check,
+                        )
+
+                        if _cb_load_commits(root):  # only run if there are tracked commits
+                            print(
+                                "[watcher] running periodic circuit-breaker check...",
+                                file=sys.stderr,
+                            )
+                            _cb_result = _cb_check(root=root)
+                            if _cb_result is not None:
+                                print(
+                                    f"[watcher] circuit breaker TRIPPED: "
+                                    f"regression={_cb_result.get('regression_commit', '?')[:12]!r} "
+                                    f"halt_until={_cb_result.get('halt_until', '?')}",
+                                    file=sys.stderr,
+                                )
+                    except Exception as _cb_exc:  # noqa: BLE001
+                        print(
+                            f"[watcher] WARNING: circuit-breaker check failed: {_cb_exc!r}",
+                            file=sys.stderr,
+                        )
 
             time.sleep(interval_s)
     except KeyboardInterrupt:

@@ -92,11 +92,35 @@ _MANAGER_APPLY_HISTORY = ".manager_apply_history.json"
 _SAFE_TARGET_CLASSES = {"prompt_edit", "persona_settings", "detector_tool"}
 
 # Forbidden file patterns: any match → classified forbidden.
+#
+# Recursion safety (Phase 8):
+# The first pattern was extended from ``^factory/manager/[^/]+\.py$`` (flat
+# match only) to ``^factory/manager/.+\.py$`` (any depth).  This covers
+# sub-directory files such as ``factory/manager/detectors/cost_spike.py``.
+#
+# CARVE-OUT for new detector files:
+# The `_validate_detector_tool` validator allows the L3 Diagnostician to ADD
+# new files under ``factory/manager/detectors/`` (the detector authorship
+# loop).  The forbidden check below is applied BEFORE the class-specific
+# validators, which would short-circuit new-detector proposals.  To preserve
+# the carve-out, ``_any_path_is_forbidden`` explicitly skips the broad
+# manager-subdir pattern for paths whose diffs are creating NEW files
+# (--- /dev/null header).  This keeps the defence-in-depth against
+# *modifying* existing sub-directory files while still allowing new detector
+# additions.  See ``_path_is_forbidden_for_patch`` for the full logic.
 _FORBIDDEN_PATH_PATTERNS = (
-    re.compile(r"^factory/manager/[^/]+\.py$"),       # manager/*.py
+    re.compile(r"^factory/manager/.+\.py$"),           # manager/**/*.py (any depth)
     re.compile(r"^factory/chain/factory_improver_apply\.py$"),  # the old apply module
-    re.compile(r"^factory/manager/apply\.py$"),        # this module itself
+    re.compile(r"^factory/manager/apply\.py$"),        # this module itself (redundant with above, explicit)
 )
+
+# Sub-pattern that matches *only* manager sub-directory .py files (not the
+# flat manager/*.py files which are ALWAYS forbidden regardless of new/modify).
+# Used by the new-detector carve-out logic.
+_MANAGER_SUBDIR_PATTERN = re.compile(r"^factory/manager/[^/]+/[^/]+\.py$")
+
+# The flat manager/*.py pattern (always forbidden, no carve-out).
+_MANAGER_FLAT_PATTERN = re.compile(r"^factory/manager/[^/]+\.py$")
 
 # persona_settings: allowed numeric field names + their (min, max) clamps.
 _PERSONA_NUMERIC_CLAMPS: dict[str, tuple[float, float]] = {
@@ -158,7 +182,47 @@ def _is_already_processed(root: Path, proposal_path: Path) -> bool:
 
 
 def _path_is_forbidden(path: str) -> bool:
-    """Return True if the given relative path matches any forbidden pattern."""
+    """Return True if the given relative path matches any forbidden pattern.
+
+    Use ``_path_is_forbidden_for_patch`` when you have a full patch available,
+    because the new-detector carve-out requires inspecting the diff header.
+    This simpler form is retained for backward compatibility; it treats all
+    factory/manager/**/*.py as forbidden (no carve-out).
+    """
+    for pat in _FORBIDDEN_PATH_PATTERNS:
+        if pat.match(path):
+            return True
+    return False
+
+
+def _path_is_forbidden_in_patch(path: str, patch: str) -> bool:
+    """Return True if *path* is forbidden given the context of *patch*.
+
+    This implements the Phase 8 carve-out:
+    - flat ``factory/manager/*.py`` → ALWAYS forbidden (no carve-out).
+    - ``factory/manager/detectors/*.py`` (subdirectory) → forbidden UNLESS
+      the diff for this path is creating a NEW file (--- /dev/null header).
+      New detector files are handled by ``_validate_detector_tool``; modifying
+      existing ones is forbidden as defence-in-depth.
+    - Any other ``factory/manager/**/*.py`` sub-dir file → forbidden.
+    - Everything else falls through to the standard forbidden-pattern check.
+    """
+    # Flat manager/*.py is always forbidden.
+    if _MANAGER_FLAT_PATTERN.match(path):
+        return True
+
+    # Sub-directory manager file — apply carve-out for new detector files.
+    if _MANAGER_SUBDIR_PATTERN.match(path):
+        # Only carve out new files under factory/manager/detectors/.
+        if re.match(r"^factory/manager/detectors/[^/]+\.py$", path):
+            # If the patch CREATES this file (--- /dev/null), it goes through
+            # _validate_detector_tool instead of being blocked here.
+            if _file_is_created(patch, path):
+                return False
+        # All other subdirectory modifications → forbidden.
+        return True
+
+    # Check remaining forbidden patterns (e.g. factory_improver_apply.py).
     for pat in _FORBIDDEN_PATH_PATTERNS:
         if pat.match(path):
             return True
@@ -166,7 +230,13 @@ def _path_is_forbidden(path: str) -> bool:
 
 
 def _any_path_is_forbidden(paths: list[str]) -> bool:
+    """Check forbidden without patch context (no carve-out)."""
     return any(_path_is_forbidden(p) for p in paths)
+
+
+def _any_path_is_forbidden_in_patch(paths: list[str], patch: str) -> bool:
+    """Check forbidden with patch context (supports new-detector carve-out)."""
+    return any(_path_is_forbidden_in_patch(p, patch) for p in paths)
 
 
 # ---------------------------------------------------------------------------
@@ -459,11 +529,19 @@ def _classify_manager_proposal(proposal: dict[str, Any], repo_root: Path) -> str
     # Forbidden check: any path matching forbidden patterns → forbidden.
     # This is checked BEFORE target_class, so a "safe" target_class cannot
     # sneak in a patch that touches forbidden files.
-    if _any_path_is_forbidden(paths):
+    # Phase 8: use patch-context check so the new-detector carve-out applies.
+    if _any_path_is_forbidden_in_patch(paths, patch):
         return "forbidden"
 
     # dispatch_code is always risky — operator must review any chain changes.
     if target_class == "dispatch_code":
+        return "risky"
+
+    # Phase 8: Manager persona file edits are risky (not safe), even when the
+    # proposal claims a safe target_class.  The manager modifying its own persona
+    # prompts is recursion bait — an operator should review these changes.
+    # Pattern: factory/personas/manager_*.md
+    if any(re.match(r"^factory/personas/manager_[^/]+\.md$", p) for p in paths):
         return "risky"
 
     # Safe-class validation.
@@ -667,6 +745,30 @@ def _apply_one_manager_proposal(
             result["error"] = f"git_commit_failed: {(proc.stderr or '').strip()[:200]}"
             return result
 
+        # Phase 8: record the manager-authored commit for circuit-breaker
+        # tracking.  We use the branch HEAD SHA (the squash SHA isn't known
+        # until after CI completes; branch HEAD is the canonical tracking key).
+        try:
+            sha_proc = _run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                runner=runner,
+                timeout=10,
+            )
+            if sha_proc.returncode == 0:
+                commit_sha = (sha_proc.stdout or "").strip()
+                if commit_sha:
+                    from factory.manager.circuit_breaker import record_manager_commit as _record_cb
+
+                    _record_cb(root=root, sha=commit_sha, proposal_path=str(proposal_path))
+        except Exception as _cb_record_exc:  # noqa: BLE001
+            import sys
+            print(
+                f"[manager.apply] WARNING: failed to record manager commit for "
+                f"circuit-breaker: {_cb_record_exc!r}",
+                file=sys.stderr,
+            )
+
         # 5. Push.
         if push:
             proc = _run(["git", "push", "-u", "origin", branch], cwd=root, runner=runner, timeout=120)
@@ -779,6 +881,35 @@ def apply_manager_proposals(
     """
     root = Path(root)
     proposals_dir = root / "state" / "manager_proposals"
+
+    # Phase 8: circuit-breaker guard — if the breaker is tripped, skip all
+    # safe proposals until the operator resets it.  The halt_until window
+    # gives the operator 24h to review and merge/discard the auto-revert PR.
+    try:
+        from factory.manager.circuit_breaker import get_state as _cb_get_state
+        from factory.manager.circuit_breaker import is_tripped as _cb_is_tripped
+
+        if _cb_is_tripped(root=root):
+            cb_state = _cb_get_state(root=root) or {}
+            return {
+                "halted_by_circuit_breaker": True,
+                "halt_until": cb_state.get("halt_until"),
+                "regression_commit": cb_state.get("regression_commit"),
+                "processed": 0,
+                "safe_applied": 0,
+                "risky_opened": 0,
+                "forbidden": 0,
+                "escalated_human": 0,
+                "errors": [],
+                "results": [],
+            }
+    except Exception as _cb_exc:  # noqa: BLE001
+        import sys
+        print(
+            f"[manager.apply] WARNING: circuit-breaker check failed: {_cb_exc!r}; "
+            "continuing with apply (fail-open).",
+            file=sys.stderr,
+        )
 
     summary: dict[str, Any] = {
         "processed": 0,

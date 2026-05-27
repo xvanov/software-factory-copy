@@ -488,8 +488,16 @@ def tick(
                 halted=True,
                 halt_reason=_halt_reason,
             )
-    except Exception:  # noqa: BLE001
-        pass  # Halt-check failures must never prevent a tick
+    except Exception as _halt_exc:  # noqa: BLE001
+        # Phase 8 (Phase 7 reviewer note): log the exception to stderr so an
+        # operator notices the broken halt module.  Continue with halt=False
+        # (fail-open: a broken halt module must not silently prevent all ticks).
+        import sys as _sys
+        print(
+            f"[orchestrator] WARNING: halt-check raised an exception: {_halt_exc!r}; "
+            "continuing with tick (fail-open). This may indicate a broken halt module.",
+            file=_sys.stderr,
+        )
 
     settings = load_settings(root)
     summary = TickSummary(app=app, dry_run=dry_run)

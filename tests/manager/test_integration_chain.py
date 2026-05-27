@@ -628,3 +628,96 @@ def test_l3_halt_request_persists_and_blocks_tick(
     # Tick after clear should no longer be halted.
     summary2 = tick(repo, "sacrifice", dry_run=True, db_path=db_path)
     assert summary2.halted is False, "tick should not be halted after clear_halt"
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 integration: circuit-breaker trips → apply halted
+# ---------------------------------------------------------------------------
+
+
+def test_circuit_breaker_trips_on_failing_manager_commit_and_halts_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Integration: manager commit ndjson entry + test failure → breaker trips → apply halted.
+
+    Steps:
+    1. Record a manager commit SHA matching the repo HEAD.
+    2. Mock check_and_trip's test command to fail.
+    3. Run check_and_trip → breaker should trip.
+    4. Run apply_manager_proposals → should report halted_by_circuit_breaker.
+    """
+    from factory.manager.apply import apply_manager_proposals as _apply
+    from factory.manager.circuit_breaker import (
+        _load_manager_commits,
+        check_and_trip,
+        get_state,
+        is_tripped,
+        record_manager_commit,
+    )
+
+    # Create a git repo.
+    repo = _make_repo(tmp_path)
+
+    # Get HEAD sha.
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    # Record it as a manager commit.
+    record_manager_commit(root=repo, sha=head_sha, proposal_path="/p.json")
+
+    # Verify it's tracked.
+    commits = _load_manager_commits(repo)
+    assert any(c["sha"] == head_sha for c in commits), "HEAD SHA must be tracked"
+
+    # Mock subprocess.run so tests "fail" and git/gh operations succeed.
+    from dataclasses import dataclass
+
+    @dataclass
+    class _CP:
+        returncode: int
+        stdout: str = ""
+        stderr: str = ""
+
+    def _mock_run(cmd, **kwargs):
+        # Test command (shell=True) → fails.
+        if kwargs.get("shell"):
+            return _CP(returncode=1, stderr="3 failed")
+        if not isinstance(cmd, list):
+            return _CP(returncode=0)
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return _CP(returncode=0, stdout=head_sha)
+        if cmd[:3] == ["git", "log", "-1"]:
+            return _CP(returncode=0, stdout="test commit")
+        if cmd[:3] == ["git", "checkout", "-b"]:
+            return _CP(returncode=0)
+        if cmd[:3] == ["git", "revert", "--no-edit"]:
+            return _CP(returncode=0)
+        if cmd[:2] == ["git", "push"]:
+            return _CP(returncode=0)
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return _CP(returncode=0, stdout="https://github.com/x/y/pull/55\n")
+        return _CP(returncode=0)
+
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "factory.manager.circuit_breaker.subprocess.run",
+        side_effect=_mock_run,
+    ):
+        cb_result = check_and_trip(root=repo, now=NOW)
+
+    assert cb_result is not None, "Circuit breaker should have tripped"
+    assert is_tripped(root=repo, now=NOW), "is_tripped should be True"
+    state = get_state(root=repo)
+    assert state is not None
+    assert state["regression_commit"] == head_sha
+
+    # Now run apply — it should return halted_by_circuit_breaker.
+    apply_result = _apply(root=repo)
+    assert apply_result.get("halted_by_circuit_breaker") is True, (
+        f"apply should be halted by circuit breaker. Got: {apply_result}"
+    )
+    assert apply_result.get("processed", 0) == 0

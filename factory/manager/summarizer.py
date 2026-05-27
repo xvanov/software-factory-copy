@@ -731,6 +731,42 @@ def run_summarizer_daemon(
     print(f"[summarizer] starting daemon (interval_s={interval_s})", file=sys.stderr)
     try:
         while True:
+            # Phase 8 (Phase 7 reviewer note): check halt state before each
+            # iteration so the daemon skips LLM work while halted.
+            # Circuit-breaker: log if tripped but keep running (detection still useful).
+            try:
+                from factory.manager.halt import is_halted as _is_halted
+                if _is_halted(root=root):
+                    print(
+                        "[summarizer] factory halted: skipping iteration",
+                        file=sys.stderr,
+                    )
+                    iterations += 1
+                    if max_iters is not None and iterations >= max_iters:
+                        print(
+                            f"[summarizer] reached max_iters={max_iters}, stopping.",
+                            file=sys.stderr,
+                        )
+                        break
+                    time.sleep(interval_s)
+                    continue
+            except Exception as _halt_exc:  # noqa: BLE001
+                print(
+                    f"[summarizer] WARNING: halt-check failed: {_halt_exc!r}; continuing (fail-open)",
+                    file=sys.stderr,
+                )
+
+            try:
+                from factory.manager.circuit_breaker import is_tripped as _cb_is_tripped
+                if _cb_is_tripped(root=root):
+                    print(
+                        "[summarizer] NOTE: circuit breaker is tripped; L4 apply is halted. "
+                        "Detection and proposals continue.",
+                        file=sys.stderr,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
             try:
                 result = run_summarizer_once(root=root, lookback=lookback)
                 if result is None:
