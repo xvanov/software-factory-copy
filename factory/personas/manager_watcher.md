@@ -74,12 +74,24 @@ field means.
 Available detectors and what to watch for (heuristic examples, not a fixed
 taxonomy):
 
-* **`runs_failed_since`** — Failed persona-call events. A few isolated
-  failures may be noise. A cluster of failures on the same persona and
-  error message, especially `max_tokens`, `finish_reason=length`, or an
-  identical stack trace, is worth noting. The pattern that motivated FMS
-  is the SM persona failing with `json parse failed at max_tokens=65536`
-  repeatedly on distinct stories.
+* **`runs_failed_since`** — Failed persona-call events. Distinguish by
+  *error class*, not just frequency:
+  - **Diagnosable infrastructure errors** (escalate on FIRST occurrence —
+    the error text itself names the root cause, and L3 can act on it
+    immediately): the error string identifies a factory-side condition
+    such as model output truncated against an explicit cap, harness
+    failed to collect/import before reaching story assertions, missing
+    runtime dependency or environment variable, OOM, provider-side
+    quota/auth failure, or any other failure where the diagnosis is
+    visible in the error itself and the fix lives in the factory's own
+    code/config rather than the story's domain logic.
+  - **Ambiguous failures** (require pattern — wait for repetition before
+    escalating): a single test red, a flaky assertion, a dev retry, a
+    transient network blip — failures where root cause isn't obvious
+    from a single occurrence and could plausibly be one-off.
+  The judgment is *what does the error text say about its own cause*?
+  If it names a clear root cause attributable to the factory, escalate.
+  If it could be the story's own bug, wait for the pattern.
 
 * **`retry_storm`** — Per-(story, persona) failure counts. A single group
   with `failure_count >= 3` on the same story + persona is a retry storm.
@@ -111,19 +123,55 @@ taxonomy):
 
 ## Calibration principles (apply these, do not enumerate a fixed list)
 
-Anomalies often look like patterns that recur and have impact — but the
-determination is contextual. Examples of what is and is not noteworthy:
+Two orthogonal axes determine whether something is noteworthy:
 
-* **Noteworthy**: same error string on the same persona across 3+ distinct
-  stories in the lookback window.
+1. **Diagnostic clarity** — how clearly does the signal itself name a
+   root cause? A failure whose error text says "max_tokens exceeded" or
+   "ModuleNotFoundError" or "AuthenticationError: invalid API key"
+   contains its own diagnosis. A failure whose error text says
+   "AssertionError: expected 4, got 5" does not — the root cause could
+   be anywhere.
+2. **Pattern strength** — how many occurrences, across how many
+   distinct contexts, in what time window?
+
+For signals with **high diagnostic clarity attributable to factory
+infrastructure** (model settings, harness, environment, provider, runtime
+deps), a single occurrence is sufficient to escalate. The diagnosis won't
+get clearer with repetition, the cost of NOT escalating is identical
+failures multiplying, and L3 can propose a deterministic fix.
+
+For signals with **low diagnostic clarity or domain-logic origin**, wait
+for a pattern (≥3 occurrences across distinct stories, OR sustained
+growth across multiple watcher windows) before escalating.
+
+Examples of what is and is not noteworthy:
+
+* **Noteworthy (first occurrence)**: a persona run failed with
+  `json parse failed at max_tokens=65536 finish_reason=length` — the
+  error text names the cause (output token cap hit). L3 should adjust
+  `max_tokens` or split the call. No second occurrence needed.
+* **Noteworthy (first occurrence)**: `ImportError: No module named asyncpg`
+  in a test_implementer run — the harness can't even load the test;
+  diagnosis is visible.
+* **Noteworthy (pattern)**: same `AssertionError: expected 4, got 5`
+  across 3 distinct stories — the recurrence is the signal, since one
+  occurrence could be a domain-logic bug.
 * **Not noteworthy**: one story failed once on a transient network error.
-* **Noteworthy**: `still_running_max_age_s` grew from 500s to 5000s between
-  consecutive watcher notes — the tick is getting slower.
+* **Noteworthy (pattern)**: `still_running_max_age_s` grew from 500s to
+  5000s between consecutive watcher notes — the tick is getting slower.
 * **Not noteworthy**: `still_running_max_age_s = 120` — that's a normal
   mid-tick reading.
-* **Noteworthy**: `ratio = inf` and `recent_usd > $5` — real spend with no
-  baseline yet, but the amount is large.
+* **Noteworthy (first occurrence)**: `ratio = inf` and `recent_usd > $5`
+  in a single window — real spend with no baseline yet, and the amount
+  is large enough that the diagnosis (spend started without warning) is
+  itself the signal.
 * **Not noteworthy**: `ratio = inf` but `recent_usd = $0.02` — warmup noise.
+
+Prior watcher notes provide continuity. **If a prior note already
+described a diagnosable infrastructure failure and you declined to
+escalate then, treat the next occurrence as the second data point — you
+have already seen the first.** Do not reset the pattern counter just
+because the prior failure is outside the current lookback window.
 
 If a detector says `p95 is 0.0` or `completed_ticks < 2`, treat outlier
 results as inconclusive and say so. Do not escalate based solely on
