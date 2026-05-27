@@ -218,7 +218,7 @@ def _validate_persona_settings(patch: str, repo_root: Path) -> bool:  # noqa: AR
         if line.startswith("+++"):
             continue
         # Look for yaml key: value patterns on added lines.
-        m = re.match(r"^\+\s+(\w+):\s+([0-9]+(?:\.[0-9]+)?)\s*$", line)
+        m = re.match(r"^\+\s*(\w+):\s+([0-9]+(?:\.[0-9]+)?)\s*$", line)
         if m:
             field_name = m.group(1)
             value = float(m.group(2))
@@ -594,127 +594,143 @@ def _apply_one_manager_proposal(
         result["error"] = f"branch_create_failed: {(proc.stderr or '').strip()[:200]}"
         return result
 
-    # 2. Apply patch.
-    patch_for_apply = patch if patch.endswith("\n") else patch + "\n"
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False, encoding="utf-8")
+    # Wrap the rest of the apply steps in try/finally so that an unexpected
+    # exception (e.g. subprocess.TimeoutExpired from _run) cannot leave the
+    # working tree dirty or the branch dangling.
+    _branch_created = True
     try:
-        tmp.write(patch_for_apply)
-        tmp.flush()
-        tmp.close()
-        proc = _run(
-            ["git", "apply", "--whitespace=nowarn", tmp.name],
-            cwd=root,
-            runner=runner,
-            timeout=30,
-        )
-    finally:
-        Path(tmp.name).unlink(missing_ok=True)
+        # 2. Apply patch.
+        patch_for_apply = patch if patch.endswith("\n") else patch + "\n"
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False, encoding="utf-8")
+        try:
+            tmp.write(patch_for_apply)
+            tmp.flush()
+            tmp.close()
+            proc = _run(
+                ["git", "apply", "--whitespace=nowarn", tmp.name],
+                cwd=root,
+                runner=runner,
+                timeout=30,
+            )
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
 
-    if proc.returncode != 0:
-        _cleanup()
-        result["status"] = "abandoned"
-        result["error"] = f"patch_apply_failed: {(proc.stderr or '').strip()[:300]}"
-        return result
-
-    # 3. Run test suite.
-    cmd = test_command or ["uv", "run", "pytest", "-q", "--tb=no"]
-    proc = _run(cmd, cwd=root, runner=runner, timeout=600)
-    tests_passed = proc.returncode == 0
-    result["tests_passed"] = tests_passed
-
-    if not tests_passed:
-        _cleanup()
-        result["status"] = "test_failed"
-        result["error"] = "self_test_regression"
-        return result
-
-    # 4. Commit.
-    kind = inner.get("kind", "improvement") if isinstance(inner, dict) else "improvement"
-    rationale = inner.get("rationale", "") if isinstance(inner, dict) else ""
-    commit_msg = (
-        f"apply(fms): {kind} for {concern_title}\n\n"
-        f"{rationale.strip()}\n\n"
-        f"classification: {classification}\n"
-        f"proposal_path: {proposal_path}\n\n"
-        "Co-Authored-By: Factory Management System <noreply@factory>"
-    )
-
-    paths = _diff_target_paths(patch)
-    if paths:
-        proc = _run(["git", "add", *paths], cwd=root, runner=runner, timeout=15)
-    else:
-        proc = _run(["git", "add", "-u"], cwd=root, runner=runner, timeout=15)
-
-    if proc.returncode != 0:
-        _cleanup()
-        result["status"] = "abandoned"
-        result["error"] = f"git_add_failed: {(proc.stderr or '').strip()[:200]}"
-        return result
-
-    proc = _run(["git", "commit", "-m", commit_msg], cwd=root, runner=runner, timeout=30)
-    if proc.returncode != 0:
-        _cleanup()
-        result["status"] = "abandoned"
-        result["error"] = f"git_commit_failed: {(proc.stderr or '').strip()[:200]}"
-        return result
-
-    # 5. Push.
-    if push:
-        proc = _run(["git", "push", "-u", "origin", branch], cwd=root, runner=runner, timeout=120)
         if proc.returncode != 0:
+            _cleanup()
+            _branch_created = False
             result["status"] = "abandoned"
-            result["error"] = f"git_push_failed: {(proc.stderr or '').strip()[:200]}"
+            result["error"] = f"patch_apply_failed: {(proc.stderr or '').strip()[:300]}"
             return result
 
-    # Restore starting branch.
-    if starting_branch:
-        _run(["git", "checkout", starting_branch], cwd=root, runner=runner, timeout=15)
+        # 3. Run test suite.
+        cmd = test_command or ["uv", "run", "pytest", "-q", "--tb=no"]
+        proc = _run(cmd, cwd=root, runner=runner, timeout=600)
+        tests_passed = proc.returncode == 0
+        result["tests_passed"] = tests_passed
 
-    # 6. Open PR.
-    if open_prs and repo and push:
-        label = SAFE_LABEL if classification == "safe" else REVIEW_LABEL
-        auto_merge = classification == "safe"
-
-        # Build an apply_result-like object for open_pr_for_proposal.
-        fake_result = ApplyResult(
-            proposal_index=0,
-            classification="safe" if classification == "safe" else "risky",  # type: ignore[arg-type]
-            status="applied",
-            branch=branch,
-            tests_passed=tests_passed,
-            title=f"[fms] {kind}: {concern_title[:60]}",
-            label=label,
-        )
-        # Build a proposal-like dict for open_pr_for_proposal.
-        proxy_proposal = {
-            "kind": kind,
-            "target": inner.get("target", "") if isinstance(inner, dict) else "",
-            "rationale": rationale,
-            "suggested_patch": patch,
-            "confidence": inner.get("confidence", "") if isinstance(inner, dict) else "",
-            "evidence": proposal.get("diagnosis", ""),
-        }
-
-        pr_number = open_pr_for_proposal(
-            proxy_proposal,
-            fake_result,
-            repo,
-            label=label,
-            runner=runner,
-            auto_merge=auto_merge,
-        )
-
-        if pr_number is None:
-            result["status"] = "abandoned"
-            result["error"] = "pr_create_failed"
+        if not tests_passed:
+            _cleanup()
+            _branch_created = False
+            result["status"] = "test_failed"
+            result["error"] = "self_test_regression"
             return result
 
-        result["pr_number"] = pr_number
-        result["status"] = "opened_pr"
-    else:
-        result["status"] = "applied" if classification == "safe" else "queued_for_review"
+        # 4. Commit.
+        kind = inner.get("kind", "improvement") if isinstance(inner, dict) else "improvement"
+        rationale = inner.get("rationale", "") if isinstance(inner, dict) else ""
+        commit_msg = (
+            f"apply(fms): {kind} for {concern_title}\n\n"
+            f"{rationale.strip()}\n\n"
+            f"classification: {classification}\n"
+            f"proposal_path: {proposal_path}\n\n"
+            "Co-Authored-By: Factory Management System <noreply@factory>"
+        )
 
-    return result
+        paths = _diff_target_paths(patch)
+        if paths:
+            proc = _run(["git", "add", *paths], cwd=root, runner=runner, timeout=15)
+        else:
+            proc = _run(["git", "add", "-u"], cwd=root, runner=runner, timeout=15)
+
+        if proc.returncode != 0:
+            _cleanup()
+            _branch_created = False
+            result["status"] = "abandoned"
+            result["error"] = f"git_add_failed: {(proc.stderr or '').strip()[:200]}"
+            return result
+
+        proc = _run(["git", "commit", "-m", commit_msg], cwd=root, runner=runner, timeout=30)
+        if proc.returncode != 0:
+            _cleanup()
+            _branch_created = False
+            result["status"] = "abandoned"
+            result["error"] = f"git_commit_failed: {(proc.stderr or '').strip()[:200]}"
+            return result
+
+        # 5. Push.
+        if push:
+            proc = _run(["git", "push", "-u", "origin", branch], cwd=root, runner=runner, timeout=120)
+            if proc.returncode != 0:
+                result["status"] = "abandoned"
+                result["error"] = f"git_push_failed: {(proc.stderr or '').strip()[:200]}"
+                return result
+
+        # Restore starting branch.
+        if starting_branch:
+            _run(["git", "checkout", starting_branch], cwd=root, runner=runner, timeout=15)
+
+        # 6. Open PR.
+        if open_prs and repo and push:
+            label = SAFE_LABEL if classification == "safe" else REVIEW_LABEL
+            auto_merge = classification == "safe"
+
+            # Build an apply_result-like object for open_pr_for_proposal.
+            fake_result = ApplyResult(
+                proposal_index=0,
+                classification="safe" if classification == "safe" else "risky",  # type: ignore[arg-type]
+                status="applied",
+                branch=branch,
+                tests_passed=tests_passed,
+                title=f"[fms] {kind}: {concern_title[:60]}",
+                label=label,
+            )
+            # Build a proposal-like dict for open_pr_for_proposal.
+            proxy_proposal = {
+                "kind": kind,
+                "target": inner.get("target", "") if isinstance(inner, dict) else "",
+                "rationale": rationale,
+                "suggested_patch": patch,
+                "confidence": inner.get("confidence", "") if isinstance(inner, dict) else "",
+                "evidence": proposal.get("diagnosis", ""),
+            }
+
+            pr_number = open_pr_for_proposal(
+                proxy_proposal,
+                fake_result,
+                repo,
+                label=label,
+                runner=runner,
+                auto_merge=auto_merge,
+            )
+
+            if pr_number is None:
+                result["status"] = "abandoned"
+                result["error"] = "pr_create_failed"
+                return result
+
+            result["pr_number"] = pr_number
+            result["status"] = "opened_pr"
+        else:
+            result["status"] = "applied" if classification == "safe" else "queued_for_review"
+
+        return result
+
+    except Exception:
+        # Unexpected exception (e.g. subprocess.TimeoutExpired): clean up the
+        # branch so the working tree is left in a known-good state, then re-raise.
+        if _branch_created:
+            _cleanup()
+        raise
 
 
 # ---------------------------------------------------------------------------

@@ -2391,7 +2391,7 @@ def manager_classify_cmd(
         proposal = _json.loads(p.read_text(encoding="utf-8"))
     except (OSError, _json.JSONDecodeError) as exc:
         console.print(f"[red]Failed to parse {p}: {exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     classification = _classify_manager_proposal(proposal, _FACTORY_ROOT)
     console.print(f"[bold]{p.name}[/bold] → [cyan]{classification}[/cyan]")

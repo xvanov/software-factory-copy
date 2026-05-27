@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from factory.manager.apply import (
     _classify_manager_proposal,
     _is_already_processed,
@@ -952,3 +954,123 @@ def test_is_already_processed_true_after_run(tmp_path: Path) -> None:
     subprocess.run(["git", "checkout", "main"], cwd=str(repo), capture_output=True)
 
     assert _is_already_processed(repo, p), "Should be marked processed after first run"
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: Regex clamp bypass — unindented max_tokens line must be caught
+# ---------------------------------------------------------------------------
+
+
+def test_classify_persona_settings_risky_unindented_max_tokens_out_of_clamp(
+    tmp_path: Path,
+) -> None:
+    """persona_settings: unindented '+max_tokens: 200000' (no leading space)
+    must be classified as 'risky', not 'safe'.
+
+    Prior to Fix 3, the regex used \\s+ (one-or-more whitespace after '+'),
+    which silently bypassed the clamp check for lines without leading
+    indentation.  After Fix 3 the regex uses \\s* (zero-or-more), so even an
+    unindented numeric line is matched and checked.
+    """
+    repo = _make_repo(
+        tmp_path,
+        {
+            "factory/routes.yaml": "default_provider: azure\nroutes:\n  sm: deepseek/deepseek-chat\n"
+        },
+    )
+    # Construct a patch where the added line has NO leading whitespace (no indent).
+    patch = (
+        "diff --git a/factory/routes.yaml b/factory/routes.yaml\n"
+        "--- a/factory/routes.yaml\n"
+        "+++ b/factory/routes.yaml\n"
+        "@@ -1,3 +1,4 @@\n"
+        " default_provider: azure\n"
+        " routes:\n"
+        "   sm: deepseek/deepseek-chat\n"
+        "+max_tokens: 200000\n"
+    )
+    proposal = _minimal_proposal(
+        target_class="persona_settings", patch=patch, kind="persona_settings"
+    )
+    assert _classify_manager_proposal(proposal, repo) == "risky", (
+        "Unindented max_tokens: 200000 should be classified as risky (exceeds clamp 65000)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: Branch cleanup on unexpected exception
+# ---------------------------------------------------------------------------
+
+
+def test_apply_branch_cleaned_up_on_unexpected_exception(tmp_path: Path) -> None:
+    """When _run() raises unexpectedly during git apply, the branch should be
+    deleted and no dangling factory-manager/* branch should remain.
+
+    The try/finally in _apply_one_manager_proposal must call _cleanup() even
+    when the exception is not a normal returncode-based failure.
+    """
+    from factory.manager.apply import _apply_one_manager_proposal
+
+    repo = _make_repo(tmp_path, {"factory/routes.yaml": "default_provider: azure\n"})
+
+    patch = (
+        "diff --git a/factory/routes.yaml b/factory/routes.yaml\n"
+        "--- a/factory/routes.yaml\n"
+        "+++ b/factory/routes.yaml\n"
+        "@@ -1,1 +1,2 @@\n"
+        " default_provider: azure\n"
+        "+  max_tokens: 32000\n"
+    )
+    proposal = {
+        "schema_version": 1,
+        "concern_title": "test-unexpected-exc",
+        "diagnosis": "testing cleanup on exception",
+        "proposal": {
+            "kind": "persona_settings",
+            "target": "factory/routes.yaml",
+            "rationale": "test",
+            "suggested_patch": patch,
+            "verification": "pytest",
+            "confidence": "medium",
+        },
+        "target_class": "persona_settings",
+        "escalate_to_human": False,
+        "escalation_reason": None,
+    }
+
+    # Count how many times _run is called.  Raise on the git-apply call
+    # (third call: checkout -b, diff --quiet HEAD, git apply).
+    call_count = 0
+
+    def _raising_runner(args: list[str], **kwargs: Any) -> Any:
+        nonlocal call_count
+        call_count += 1
+        # The third _run call is the git-apply invocation.
+        if call_count == 3:
+            raise subprocess.TimeoutExpired(cmd=args, timeout=30)
+        kwargs.pop("check", None)
+        return subprocess.run(args, **kwargs)
+
+    # The function should re-raise the exception.
+    with pytest.raises(subprocess.TimeoutExpired):
+        _apply_one_manager_proposal(
+            proposal,
+            repo / "state" / "manager_proposals" / "test.json",
+            repo,
+            classification="safe",
+            dry_run=False,
+            runner=_raising_runner,
+            push=False,
+        )
+
+    # (b) No factory-manager/* branches should remain.
+    branches = subprocess.run(
+        ["git", "branch", "--list", "factory-manager/*"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert branches.stdout.strip() == "", (
+        f"Branch should be deleted after unexpected exception. Got: {branches.stdout!r}"
+    )
