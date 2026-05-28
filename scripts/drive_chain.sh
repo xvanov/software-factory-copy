@@ -63,10 +63,21 @@ except Exception:
     exit 2
   fi
 
-  remaining=$(uv run factory queue --app "$APP" 2>/dev/null | grep -c "story_created" || true)
-  emit "story_created remaining=${remaining}"
+  # Count any non-terminal, dispatchable story — not just story_created.
+  # Stories reset out of a blocked state by an operator (e.g. after a
+  # harness fix) land back in tests_red or test_design_done, both of
+  # which the orchestrator can advance on the next tick. The previous
+  # gate ("story_created remaining=0 → DONE") exited too early when the
+  # only remaining work was in flight elsewhere in the state machine.
+  remaining=$(uv run python -c "
+import sqlite3, sys
+c = sqlite3.connect('state/factory.db')
+n = c.execute(\"SELECT COUNT(*) FROM stories WHERE app=? AND state NOT IN ('deployed','blocked_tests_need_clarification','blocked_deployment_skipped','blocked_deploy_failed')\", (sys.argv[1],)).fetchone()[0]
+print(n)
+" "$APP" 2>/dev/null || echo 0)
+  emit "dispatchable remaining=${remaining}"
   if [ "${remaining}" -eq 0 ]; then
-    emit "DONE: no story_created rows left"
+    emit "DONE: no dispatchable rows left"
     break
   fi
 
