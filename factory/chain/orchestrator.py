@@ -229,6 +229,22 @@ _NON_CAP_COUNTING_STATES = {
     StoryState.DEPLOYED.value,
     StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
     StoryState.BLOCKED_DEPLOY_FAILED.value,
+    # Passive transition states — no agent is actively running; the story
+    # is simply waiting for the orchestrator to dispatch the next handler
+    # on the next tick. Counting these against the cap deadlocks any
+    # operator-reset batch (e.g. 31 stories moved out of
+    # blocked_tests_need_clarification back to tests_red), and more
+    # generally inflates the "in-flight" count beyond the number of
+    # actually-running agents. The cap exists to limit concurrent agents;
+    # idle queue states should not consume slots. Same rationale as
+    # STORY_CREATED above (PM-sync spawning N children at once).
+    StoryState.SM_DONE.value,
+    StoryState.TEST_DESIGN_DONE.value,
+    StoryState.TESTS_RED.value,
+    StoryState.TESTS_GREEN.value,
+    StoryState.DEV_RETRY.value,
+    StoryState.DOCS_ONBOARDER_DONE.value,
+    StoryState.DEPLOY_PENDING.value,
 }
 
 
