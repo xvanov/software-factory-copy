@@ -72,7 +72,7 @@ def text_run(
 _SCHEMA_VERSION = 1
 
 # Per-file content cap when pre-loading source files (bytes → chars).
-_SOURCE_FILE_CAP = 8 * 1024  # 8 KB per file
+_SOURCE_FILE_CAP = 16 * 1024  # 16 KB per file
 
 # Total bundle cap before we warn (chars).
 _BUNDLE_TOTAL_CAP = 100 * 1024  # 100 KB
@@ -206,7 +206,7 @@ def _pre_load_source(
         except OSError:
             return ""
         if len(text) > _SOURCE_FILE_CAP:
-            text = text[:_SOURCE_FILE_CAP] + "\n...[truncated at 8KB]"
+            text = text[:_SOURCE_FILE_CAP] + "\n...[truncated at 16KB]"
         return text
 
     def _rel(abs_path: Path) -> str:

@@ -441,10 +441,10 @@ class TestPreLoadSourceRespectsProposedArea:
         assert any("factory-file-listing" in k or "orchestrator.py" in k for k in files)
 
     def test_file_cap_applied(self) -> None:
-        """Each file should be capped at 8KB (8192 chars)."""
+        """Each file should be capped at 16KB (16384 chars)."""
         files = _pre_load_source("dispatch_code", factory_dir=self._factory_dir)
         for content in files.values():
-            assert len(content) <= 8192 + 50  # small buffer for the truncation notice
+            assert len(content) <= 16384 + 50  # small buffer for the truncation notice
 
 
 # ---------------------------------------------------------------------------

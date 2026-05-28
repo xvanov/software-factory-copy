@@ -21,7 +21,7 @@ def test_sacrifice_config_yaml_has_gates_section() -> None:
     # Run from backend/ — sacrifice's pytest config lives there, not at
     # the repo root. Restricted to tests/ so e2e_test.py (which needs a
     # live stack) doesn't false-fail the dev gate.
-    assert cfg.gates.test_command == "cd backend && python -m pytest -q tests/"
+    assert cfg.gates.test_command == "cd backend && uv run --extra dev pytest -q tests/"
     assert cfg.gates.coverage_command and "--cov-fail-under=70" in cfg.gates.coverage_command
     assert cfg.gates.e2e_command == "npx playwright test"
     assert cfg.gates.mutation_testing is False
