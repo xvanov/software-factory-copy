@@ -16,14 +16,18 @@ EXPECTED_NAMES = {
     "tick_duration_outliers",
     "state_distribution_skew",
     "worktree_orphans",
+    "placeholder_prompts",
 }
 
 NOW = datetime(2026, 5, 26, 12, 0, 0, tzinfo=UTC)
 SINCE = NOW - timedelta(hours=1)
 
 
-def test_detectors_has_exactly_six_entries() -> None:
-    assert len(DETECTORS) == 6, f"Expected 6 detectors, got {len(DETECTORS)}: {list(DETECTORS)}"
+def test_detectors_has_expected_entries() -> None:
+    assert len(DETECTORS) == len(EXPECTED_NAMES), (
+        f"Expected {len(EXPECTED_NAMES)} detectors, got "
+        f"{len(DETECTORS)}: {list(DETECTORS)}"
+    )
 
 
 def test_detector_names_match_expected() -> None:
@@ -51,7 +55,13 @@ def test_detector_runs_on_empty_root(name: str, tmp_path: Path) -> None:
     fn = DETECTORS[name]
     kwargs: dict = {"root": tmp_path}
     # Detectors requiring 'since' need that arg
-    if name in ("runs_failed_since", "retry_storm", "tick_duration_outliers", "state_distribution_skew"):
+    if name in (
+        "runs_failed_since",
+        "retry_storm",
+        "tick_duration_outliers",
+        "state_distribution_skew",
+        "placeholder_prompts",
+    ):
         kwargs["since"] = SINCE
     result = fn(**kwargs)
     # Should return an empty-ish sensible value

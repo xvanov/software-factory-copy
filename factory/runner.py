@@ -36,6 +36,81 @@ _DEFAULT_DB_PATH = Path(__file__).parent.parent / "state" / "factory.db"
 _PERSONAS_DIR = Path(__file__).parent / "personas"
 
 
+# Markers that indicate a persona prompt was assembled with literal
+# placeholders instead of real fetched data. Kept in sync with
+# ``factory.chain.handlers._BROKEN_PROMPT_MARKERS`` — duplicated here so
+# the logger has no chain->runner dependency. New markers should be added
+# in BOTH places, and ideally added with a corresponding contract test.
+_BROKEN_PROMPT_MARKERS: tuple[str, ...] = (
+    "(fetched from GitHub by the chain",
+    "placeholder for real-run",
+    "(see {",
+)
+
+
+def _summarize_prompt_sections(prompt: str) -> dict[str, int]:
+    """Return ``{section_header: char_count}`` for ``## `` headed sections.
+
+    Lightweight markdown-style parser: every line starting with ``"## "`` is
+    a section start; content until the next ``"## "`` (or end-of-string) is
+    that section's body. Header lines themselves are excluded from the count.
+    """
+    sections: dict[str, int] = {}
+    current_header: str | None = None
+    current_chars = 0
+    for line in prompt.splitlines():
+        if line.startswith("## "):
+            if current_header is not None:
+                sections[current_header] = sections.get(current_header, 0) + current_chars
+            current_header = line[3:].strip() or "(unnamed)"
+            current_chars = 0
+        elif current_header is not None:
+            current_chars += len(line) + 1  # +1 for the newline
+    if current_header is not None:
+        sections[current_header] = sections.get(current_header, 0) + current_chars
+    return sections
+
+
+def _log_prompt_metadata(
+    *,
+    persona: str,
+    prompt: str,
+    model_id: str,
+    story_id: int | None,
+    software_factory_root: Path | None,
+) -> None:
+    """Best-effort: append one record to ``state/events/prompts.ndjson``.
+
+    Records ONLY metadata (lengths, section header names, placeholder
+    markers found, sha256 prefix) — never the prompt content itself.
+    A failure here MUST NOT break the LLM call.
+    """
+    try:
+        import hashlib
+
+        from factory.manager.signals import write_event
+
+        markers_found = [m for m in _BROKEN_PROMPT_MARKERS if m in prompt]
+        section_lengths = _summarize_prompt_sections(prompt)
+        digest = hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()[:16]
+        write_event(
+            "prompts",
+            {
+                "event": "prompt",
+                "persona": persona,
+                "story_id": story_id,
+                "model_id": model_id,
+                "prompt_length_total": len(prompt),
+                "prompt_section_lengths": section_lengths,
+                "placeholder_markers_found": markers_found,
+                "prompt_hash": digest,
+            },
+            software_factory_root=software_factory_root,
+        )
+    except Exception:  # noqa: BLE001 — logging must never break the call
+        pass
+
+
 # --------------------------------------------------------------------------- #
 # Public dataclasses
 # --------------------------------------------------------------------------- #
@@ -1057,6 +1132,19 @@ def text_run(
     """
     cfg = LLMConfig(model=model_id, api_key=api_key, base_url=base_url)
     resolved_key = _resolve_api_key(cfg)
+
+    # Log prompt metadata (length, section headers, placeholder markers, hash)
+    # to ``state/events/prompts.ndjson`` BEFORE any failure path so a failed
+    # API key check, a missing litellm, or a parse-retry storm still leaves
+    # an audit trail for the L1 watcher / placeholder_prompts detector to
+    # consume. NEVER logs prompt content — only metadata.
+    _log_prompt_metadata(
+        persona=persona,
+        prompt=prompt,
+        model_id=model_id,
+        story_id=story_id,
+        software_factory_root=software_factory_root,
+    )
 
     _t0 = time.monotonic()
     _started_at = datetime.now(UTC).isoformat()
