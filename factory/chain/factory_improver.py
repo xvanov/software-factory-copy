@@ -182,6 +182,7 @@ def _terminally_blocked_stories(
     blocked_states = (
         StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
         StoryState.BLOCKED_DEPLOY_FAILED.value,
+        StoryState.BLOCKED_REVIEW_NONCONVERGENT.value,
     )
     with Session(eng) as session:
         query = select(StoryRecord).where(

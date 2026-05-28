@@ -234,6 +234,7 @@ _NON_CAP_COUNTING_STATES = {
     StoryState.DEPLOYED.value,
     StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
     StoryState.BLOCKED_DEPLOY_FAILED.value,
+    StoryState.BLOCKED_REVIEW_NONCONVERGENT.value,
     # Passive transition states — no agent is actively running; the story
     # is simply waiting for the orchestrator to dispatch the next handler
     # on the next tick. Counting these against the cap deadlocks any

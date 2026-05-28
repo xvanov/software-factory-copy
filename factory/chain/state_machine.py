@@ -82,6 +82,12 @@ class StoryState(StrEnum):
     DEPLOYED = "deployed"
     BLOCKED_TESTS_NEED_CLARIFICATION = "blocked_tests_need_clarification"
     BLOCKED_DEPLOY_FAILED = "blocked_deploy_failed"
+    # Hard convergence guard: when the dev<->reviewer loop fails to converge
+    # within _MAX_REVIEW_CYCLES reviewer passes, the reviewer handler routes
+    # here instead of bouncing back to REVIEWER_REQUESTED_CHANGES. Terminal
+    # (no outgoing transition) so the orchestrator stops dispatching the
+    # story and it surfaces for human review instead of looping indefinitely.
+    BLOCKED_REVIEW_NONCONVERGENT = "blocked_review_nonconvergent"
 
 
 class StoryRecord(SQLModel, table=True):
@@ -122,6 +128,12 @@ class StoryRecord(SQLModel, table=True):
     # the next dev sandbox's initial message so the LLM sees what it tried
     # and what failed instead of re-discovering dead ends from scratch.
     dev_attempts_json: str | None = None
+    # Hard convergence guard counter: incremented each time the reviewer
+    # returns a request-changes verdict in handle_review. When it reaches
+    # ``_MAX_REVIEW_CYCLES`` the story is routed to
+    # ``BLOCKED_REVIEW_NONCONVERGENT`` instead of looping back to dev, so a
+    # non-converging dev<->reviewer ping-pong cannot burn budget unbounded.
+    reviewer_cycles: int = 0
     current_model_tier: str = "standard"  # standard | hard
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -179,6 +191,10 @@ EVENT_TESTS_NEED_CLARIFICATION = "tests_need_clarification"  # dev signalled bad
 EVENT_REVIEWER_STARTED = "reviewer_started"
 EVENT_REVIEWER_APPROVE = "reviewer_approve"
 EVENT_REVIEWER_REQUEST_CHANGES = "reviewer_request_changes"
+# Reviewer requested changes for the _MAX_REVIEW_CYCLES-th time without the
+# story converging — the hard convergence guard fires this instead of
+# EVENT_REVIEWER_REQUEST_CHANGES to break the dev<->reviewer ping-pong.
+EVENT_REVIEW_NONCONVERGENT = "review_nonconvergent"
 EVENT_TECH_WRITER_STARTED = "tech_writer_started"
 EVENT_TECH_WRITER_DONE = "tech_writer_done"
 EVENT_DOCS_ENFORCER_CHECK = "docs_enforcer_check"
@@ -255,6 +271,14 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
         StoryState.REVIEWER_IN_PROGRESS,
         EVENT_REVIEWER_REQUEST_CHANGES,
     ): StoryState.REVIEWER_REQUESTED_CHANGES,
+    # Hard convergence guard: the Nth (N=_MAX_REVIEW_CYCLES) consecutive
+    # request-changes verdict routes to a terminal blocked state instead of
+    # looping back to dev. No outgoing transition → orchestrator stops
+    # dispatching; the story waits for a human.
+    (
+        StoryState.REVIEWER_IN_PROGRESS,
+        EVENT_REVIEW_NONCONVERGENT,
+    ): StoryState.BLOCKED_REVIEW_NONCONVERGENT,
     # Reviewer changes route back to dev (if code finding) or to designer
     # (if test-quality finding). The handler decides which by inspecting
     # the verdict payload; both go through DEV_RETRY on the test-quality

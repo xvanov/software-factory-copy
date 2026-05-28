@@ -43,6 +43,7 @@ from factory.chain.state_machine import (
     EVENT_HARNESS_PRECHECK_FAIL,
     EVENT_HARNESS_PRECHECK_PASS,
     EVENT_HARNESS_PRECHECK_STARTED,
+    EVENT_REVIEW_NONCONVERGENT,
     EVENT_REVIEWER_APPROVE,
     EVENT_REVIEWER_REQUEST_CHANGES,
     EVENT_REVIEWER_STARTED,
@@ -137,6 +138,9 @@ _MIGRATION_COLUMNS: dict[str, str] = {
     # Item 4 — harness precheck flag. Bool, default 0 (False). SQLite
     # stores bool as 0/1 INTEGER; the SQLModel layer coerces on read.
     "harness_precheck_passed": "INTEGER NOT NULL DEFAULT 0",
+    # Hard convergence guard counter. INTEGER default 0; pre-existing stories
+    # gain it on next visit and start counting from their next reviewer pass.
+    "reviewer_cycles": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
@@ -1205,6 +1209,12 @@ def handle_harness_precheck(
 # ``factory_needs_redesign`` event so the operator sees the signal.
 _MAX_DEV_RETRIES = 3
 
+# Hard convergence guard. A healthy story converges within a few review
+# rounds; beyond this many request-changes verdicts the dev<->reviewer loop
+# is judged non-converging and routed to BLOCKED_REVIEW_NONCONVERGENT instead
+# of looping back to dev indefinitely. Counted by ``story.reviewer_cycles``.
+_MAX_REVIEW_CYCLES = 3
+
 
 def _dry_run_dev(story: StoryRecord) -> tuple[bool, dict[str, Any]]:
     """Deterministic dev result for dry-run mode.
@@ -1978,18 +1988,54 @@ def handle_review(
     if verdict == "approve" and score >= 0.7:
         story.state = advance(story, EVENT_REVIEWER_APPROVE).value
     else:
-        story.state = advance(story, EVENT_REVIEWER_REQUEST_CHANGES).value
-        # Label the PR if it's the test-quality branch (real-run only).
-        if not dry_run and github_client is not None and story.github_pr_number is not None:
-            try:
-                repo = github_client.get_repo(app_config.repo)
-                pr = repo.get_pull(story.github_pr_number)
-                if score < 0.7:
-                    pr.add_to_labels("needs-test-quality-fix")
-                else:
-                    pr.add_to_labels("needs-changes")
-            except Exception:  # pragma: no cover - real-run path
-                pass
+        # Hard convergence guard: count this request-changes verdict. Once a
+        # story has accrued _MAX_REVIEW_CYCLES of them without converging, the
+        # dev<->reviewer ping-pong is non-converging — stop looping back to dev
+        # (which burns budget unbounded) and route to a terminal blocked state
+        # for human review instead.
+        story.reviewer_cycles += 1
+        if story.reviewer_cycles >= _MAX_REVIEW_CYCLES:
+            story.state = advance(story, EVENT_REVIEW_NONCONVERGENT).value
+            story.error = (
+                f"Review did not converge after {story.reviewer_cycles} reviewer "
+                f"cycles (max {_MAX_REVIEW_CYCLES}); routed to "
+                f"{StoryState.BLOCKED_REVIEW_NONCONVERGENT.value} for human review."
+            )
+            if (
+                not dry_run
+                and github_client is not None
+                and story.github_pr_number is not None
+            ):
+                try:
+                    repo = github_client.get_repo(app_config.repo)
+                    pr = repo.get_pull(story.github_pr_number)
+                    pr.add_to_labels("review-nonconvergent")
+                    pr.create_issue_comment(
+                        f"⚠️ Convergence guard: this PR has been through "
+                        f"{story.reviewer_cycles} reviewer cycles without "
+                        f"approval (max {_MAX_REVIEW_CYCLES}). The dev↔reviewer "
+                        f"loop is not converging; routing to human review "
+                        f"instead of dispatching dev again."
+                    )
+                except Exception:  # pragma: no cover - real-run path
+                    pass
+        else:
+            story.state = advance(story, EVENT_REVIEWER_REQUEST_CHANGES).value
+            # Label the PR if it's the test-quality branch (real-run only).
+            if (
+                not dry_run
+                and github_client is not None
+                and story.github_pr_number is not None
+            ):
+                try:
+                    repo = github_client.get_repo(app_config.repo)
+                    pr = repo.get_pull(story.github_pr_number)
+                    if score < 0.7:
+                        pr.add_to_labels("needs-test-quality-fix")
+                    else:
+                        pr.add_to_labels("needs-changes")
+                except Exception:  # pragma: no cover - real-run path
+                    pass
 
     persist_story(story, db)
     return HandlerResult(next_state=StoryState(story.state), payload=result)

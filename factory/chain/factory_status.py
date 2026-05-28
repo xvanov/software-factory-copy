@@ -55,11 +55,13 @@ _TERMINAL_STATES = {
     "deployed",
     "blocked_tests_need_clarification",
     "blocked_deploy_failed",
+    "blocked_review_nonconvergent",
 }
 
 _BLOCKED_STATES = {
     "blocked_tests_need_clarification",
     "blocked_deploy_failed",
+    "blocked_review_nonconvergent",
     "reviewer_requested_changes",
 }
 

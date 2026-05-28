@@ -103,3 +103,106 @@ def test_request_changes_due_to_findings(temp_root: Path, app_config: AppConfig)
     }
     result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
     assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
+
+
+# --------------------------------------------------------------------------- #
+# Hard convergence guard — non-converging dev<->reviewer loops are capped at
+# _MAX_REVIEW_CYCLES request-changes verdicts and routed to a terminal blocked
+# state instead of looping back to dev indefinitely.
+# --------------------------------------------------------------------------- #
+
+_REQUEST_CHANGES_FIXTURE = {
+    "verdict": "request_changes",
+    "findings": [
+        {
+            "severity": "high",
+            "location": "src/x.py:42",
+            "what": "still not addressed",
+            "fix_suggestion": "fix it",
+        }
+    ],
+    "test_quality_score": 0.85,
+    "test_quality_findings": [],
+    "comments_to_post": [],
+    "summary": "more changes",
+}
+
+
+def _story_at_tests_green_with_cycles(root: Path, cycles: int) -> StoryRecord:
+    db = root / "state" / "factory.db"
+    return persist_story(
+        StoryRecord(
+            direction_id="002",
+            app="sacrifice",
+            title="t",
+            slug="t",
+            scope="backend",
+            state=StoryState.TESTS_GREEN.value,
+            reviewer_cycles=cycles,
+        ),
+        db,
+    )
+
+
+def test_request_changes_increments_reviewer_cycles(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    s = _story_at_tests_green_with_cycles(temp_root, 0)
+    db = temp_root / "state" / "factory.db"
+    handle_review(
+        s, app_config, temp_root, dry_run=True, db_path=db,
+        fixture=_REQUEST_CHANGES_FIXTURE,
+    )
+    assert s.reviewer_cycles == 1
+    assert s.state == StoryState.REVIEWER_REQUESTED_CHANGES.value
+
+
+def test_guard_does_not_fire_below_max(temp_root: Path, app_config: AppConfig) -> None:
+    """At cycle 2 (below the cap of 3) the story still loops back to dev."""
+    s = _story_at_tests_green_with_cycles(temp_root, 1)
+    db = temp_root / "state" / "factory.db"
+    result = handle_review(
+        s, app_config, temp_root, dry_run=True, db_path=db,
+        fixture=_REQUEST_CHANGES_FIXTURE,
+    )
+    assert s.reviewer_cycles == 2
+    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
+
+
+def test_guard_blocks_at_max_cycles(temp_root: Path, app_config: AppConfig) -> None:
+    """The 3rd request-changes verdict routes to the terminal blocked state."""
+    s = _story_at_tests_green_with_cycles(temp_root, 2)
+    db = temp_root / "state" / "factory.db"
+    result = handle_review(
+        s, app_config, temp_root, dry_run=True, db_path=db,
+        fixture=_REQUEST_CHANGES_FIXTURE,
+    )
+    assert s.reviewer_cycles == 3
+    assert result.next_state == StoryState.BLOCKED_REVIEW_NONCONVERGENT
+    assert s.state == StoryState.BLOCKED_REVIEW_NONCONVERGENT.value
+    assert s.error is not None and "did not converge" in s.error
+
+
+def test_approve_never_triggers_guard(temp_root: Path, app_config: AppConfig) -> None:
+    """A clean approve advances normally even if prior cycles were high."""
+    s = _story_at_tests_green_with_cycles(temp_root, 2)
+    db = temp_root / "state" / "factory.db"
+    fixture = {
+        "verdict": "approve",
+        "findings": [],
+        "test_quality_score": 0.95,
+        "test_quality_findings": [],
+        "comments_to_post": [],
+        "summary": "approve",
+    }
+    result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
+    assert result.next_state == StoryState.REVIEWER_DONE
+    # Approve does not increment the request-changes counter.
+    assert s.reviewer_cycles == 2
+
+
+def test_blocked_review_nonconvergent_is_terminal() -> None:
+    """The guard's target state must have no outgoing transitions."""
+    from factory.chain.state_machine import is_terminal
+
+    assert is_terminal(StoryState.BLOCKED_REVIEW_NONCONVERGENT)
