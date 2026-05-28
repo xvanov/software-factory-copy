@@ -632,6 +632,7 @@ def _build_initial_message(
     context_prelude: str,
     persona_prompt: str,
     prior_attempts: list[dict[str, Any]] | None = None,
+    reviewer_findings: dict[str, Any] | None = None,
 ) -> str:
     parts = [
         context_prelude,
@@ -642,6 +643,48 @@ def _build_initial_message(
         "# Story",
         story_text.rstrip(),
     ]
+    # When the chain bounces a story back from the reviewer (state
+    # REVIEWER_REQUESTED_CHANGES -> dev), the tests are already green, so the
+    # dev LLM has no signal about WHY it was re-dispatched unless we hand it
+    # the reviewer's actual change requests. Without this section dev fixes
+    # blind, the reviewer re-raises the same findings, and the loop never
+    # converges. Render the findings prominently, right after the story.
+    if reviewer_findings:
+        findings = reviewer_findings.get("findings") or []
+        tq_findings = reviewer_findings.get("test_quality_findings") or []
+        summary = (reviewer_findings.get("summary") or "").strip()
+        if findings or tq_findings or summary:
+            parts.append("---")
+            parts.append("# Reviewer change requests — you MUST address ALL of these")
+            parts.append(
+                "The reviewer rejected the previous revision of this PR. The "
+                "tests are already green; your job this pass is to resolve "
+                "EVERY item below, not to re-run the tests. If a request is "
+                "wrong or impossible, say so explicitly in your summary rather "
+                "than silently ignoring it — leaving any item unaddressed will "
+                "cause the reviewer to reject again."
+            )
+            if summary:
+                parts.append(f"\n**Reviewer summary:** {summary[:600]}")
+            for i, f in enumerate(findings, 1):
+                sev = f.get("severity", "?")
+                loc = f.get("location", "")
+                what = (f.get("what") or "").strip()
+                fix = (f.get("fix_suggestion") or "").strip()
+                parts.append(f"\n{i}. **[{sev}]** {loc}".rstrip())
+                if what:
+                    parts.append(f"   - Problem: {what[:500]}")
+                if fix:
+                    parts.append(f"   - Suggested fix: {fix[:500]}")
+            for j, f in enumerate(tq_findings, 1):
+                name = f.get("test_name", "")
+                issue = (f.get("issue") or "").strip()
+                fix = (f.get("fix_suggestion") or "").strip()
+                parts.append(f"\nTest-quality {j}. `{name}`".rstrip())
+                if issue:
+                    parts.append(f"   - Issue: {issue[:400]}")
+                if fix:
+                    parts.append(f"   - Suggested fix: {fix[:400]}")
     if prior_attempts:
         # The chain feeds prior failed attempts forward so the LLM sees what
         # was already tried and which assertions are still red. Without this,
@@ -774,6 +817,7 @@ async def sandbox_run(
     software_factory_root: Path | None = None,
     test_command: str | None = None,
     prior_attempts: list[dict[str, Any]] | None = None,
+    reviewer_findings: dict[str, Any] | None = None,
     story_id: int | None = None,
     app: str | None = None,
     direction_id: str | None = None,
@@ -808,6 +852,7 @@ async def sandbox_run(
         context_prelude=context_prelude,
         persona_prompt=persona_prompt,
         prior_attempts=prior_attempts,
+        reviewer_findings=reviewer_findings,
     )
 
     _t0 = time.monotonic()

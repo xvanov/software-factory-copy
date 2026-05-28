@@ -108,6 +108,67 @@ def test_build_initial_message_no_prior_attempts_skips_block() -> None:
     assert "Previous attempts" not in msg
 
 
+def test_build_initial_message_includes_reviewer_findings() -> None:
+    """On the reviewer_requested_changes -> dev path, the reviewer's findings
+    must reach the dev prompt so it can address them (root cause of the
+    non-converging review loop was that dev never saw them)."""
+    msg = _build_initial_message(
+        persona="dev",
+        story_text="# story body",
+        context_prelude="# ctx",
+        persona_prompt="# persona",
+        reviewer_findings={
+            "verdict": "request_changes",
+            "summary": "cleanup + coverage gaps",
+            "findings": [
+                {
+                    "severity": "high",
+                    "location": "src/upload.py:42",
+                    "what": "file written before metadata persists; orphaned on failure",
+                    "fix_suggestion": "delete the file if persist_metadata raises",
+                }
+            ],
+            "test_quality_findings": [
+                {
+                    "test_name": "test_save_upload",
+                    "issue": "does not cover the persistence-failure cleanup seam",
+                    "fix_suggestion": "add a test forcing persist_metadata to raise",
+                }
+            ],
+        },
+    )
+    assert "Reviewer change requests" in msg
+    assert "cleanup + coverage gaps" in msg
+    assert "src/upload.py:42" in msg
+    assert "orphaned on failure" in msg
+    assert "delete the file if persist_metadata raises" in msg
+    assert "test_save_upload" in msg
+
+
+def test_build_initial_message_no_reviewer_findings_skips_block() -> None:
+    """First dev pass (TESTS_RED -> dev) has no reviewer verdict yet."""
+    msg = _build_initial_message(
+        persona="dev",
+        story_text="# s",
+        context_prelude="# c",
+        persona_prompt="# p",
+        reviewer_findings=None,
+    )
+    assert "Reviewer change requests" not in msg
+
+
+def test_build_initial_message_empty_findings_skips_block() -> None:
+    """An approve verdict with no findings should not render the section."""
+    msg = _build_initial_message(
+        persona="dev",
+        story_text="# s",
+        context_prelude="# c",
+        persona_prompt="# p",
+        reviewer_findings={"verdict": "approve", "findings": [], "summary": ""},
+    )
+    assert "Reviewer change requests" not in msg
+
+
 def test_each_dev_retry_emits_factory_needs_redesign_event(
     temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

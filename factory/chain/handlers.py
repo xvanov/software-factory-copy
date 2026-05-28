@@ -1302,6 +1302,22 @@ def handle_dev(
             except (json.JSONDecodeError, TypeError):
                 prior_attempts = []
 
+        # When dev is re-dispatched after the reviewer requested changes, hand
+        # it the reviewer's actual findings. Tests are already green on this
+        # path, so without the findings the dev LLM has no signal about what to
+        # fix and the dev<->reviewer loop cannot converge. Only the most recent
+        # reviewer verdict is relevant.
+        reviewer_findings: dict[str, Any] | None = None
+        if story.reviewer_result_json:
+            try:
+                parsed = json.loads(story.reviewer_result_json)
+                if isinstance(parsed, dict) and (
+                    parsed.get("findings") or parsed.get("test_quality_findings")
+                ):
+                    reviewer_findings = parsed
+            except (json.JSONDecodeError, TypeError):
+                reviewer_findings = None
+
         run_res = asyncio.run(
             sandbox_run(
                 persona="dev",
@@ -1314,6 +1330,7 @@ def handle_dev(
                 software_factory_root=software_factory_root,
                 test_command=app_config.gates.test_command,
                 prior_attempts=prior_attempts,
+                reviewer_findings=reviewer_findings,
                 story_id=story.id,
                 app=story.app,
                 direction_id=story.direction_id,
