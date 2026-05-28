@@ -41,8 +41,14 @@ gates:
   # there, not at the repo root. Limit to ``tests/`` (the unit-test
   # tree); ``backend/e2e_test.py`` requires a running stack (postgres,
   # backend, celery) and is the operator's smoke gate, not the dev-loop
-  # gate.
-  test_command: "cd backend && python -m pytest -q tests/"
+  # gate. Use ``uv run --extra dev`` so each per-story worktree
+  # self-syncs the backend's declared deps (asyncpg, pytest-asyncio,
+  # etc.) into a local .venv before pytest collection — without this
+  # the worktree falls back to the factory's ambient .venv which lacks
+  # sacrifice-specific runtime deps and pytest exits with a
+  # ModuleNotFoundError collection error (exit code 4), routing every
+  # backend story to BLOCKED_TESTS_NEED_CLARIFICATION.
+  test_command: "cd backend && uv run --extra dev pytest -q tests/"
   coverage_command: "pytest --cov=backend --cov-report=json --cov-fail-under=70"
   e2e_command: "npx playwright test"
   mutation_testing: false
