@@ -243,6 +243,8 @@ _NON_CAP_COUNTING_STATES = {
     StoryState.TESTS_RED.value,
     StoryState.TESTS_GREEN.value,
     StoryState.DEV_RETRY.value,
+    StoryState.REVIEWER_DONE.value,
+    StoryState.REVIEWER_REQUESTED_CHANGES.value,
     StoryState.DOCS_ONBOARDER_DONE.value,
     StoryState.DEPLOY_PENDING.value,
 }
