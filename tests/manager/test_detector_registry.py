@@ -12,6 +12,7 @@ from factory.manager.detectors import DETECTOR_DOCS, DETECTORS
 EXPECTED_NAMES = {
     "runs_failed_since",
     "retry_storm",
+    "review_churn",
     "cost_spike",
     "tick_duration_outliers",
     "state_distribution_skew",
@@ -58,6 +59,7 @@ def test_detector_runs_on_empty_root(name: str, tmp_path: Path) -> None:
     if name in (
         "runs_failed_since",
         "retry_storm",
+        "review_churn",
         "tick_duration_outliers",
         "state_distribution_skew",
         "placeholder_prompts",

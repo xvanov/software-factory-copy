@@ -25,6 +25,7 @@ from collections.abc import Callable
 from factory.manager.detectors.cost_spike import cost_spike
 from factory.manager.detectors.placeholder_prompts import placeholder_prompts
 from factory.manager.detectors.retry_storm import retry_storm
+from factory.manager.detectors.review_churn import review_churn
 from factory.manager.detectors.runs_failed_since import runs_failed_since
 from factory.manager.detectors.state_distribution_skew import state_distribution_skew
 from factory.manager.detectors.tick_duration_outliers import tick_duration_outliers
@@ -36,6 +37,7 @@ __all__ = [
     "cost_spike",
     "placeholder_prompts",
     "retry_storm",
+    "review_churn",
     "runs_failed_since",
     "state_distribution_skew",
     "tick_duration_outliers",
@@ -45,6 +47,7 @@ __all__ = [
 DETECTORS: dict[str, Callable] = {
     "runs_failed_since": runs_failed_since,
     "retry_storm": retry_storm,
+    "review_churn": review_churn,
     "cost_spike": cost_spike,
     "tick_duration_outliers": tick_duration_outliers,
     "state_distribution_skew": state_distribution_skew,

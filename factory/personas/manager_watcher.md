@@ -97,6 +97,22 @@ taxonomy):
   with `failure_count >= 3` on the same story + persona is a retry storm.
   Multiple groups in a short window is more serious.
 
+* **`review_churn`** — Per-story counts of *successful* dev<->reviewer
+  cycles. This is the blind-spot complement to `retry_storm`: a story can
+  bounce between dev and reviewer many times with **every run succeeding**
+  (the reviewer keeps returning `request_changes`, not failing), so it
+  trips no failure detector and — because each 60s window sees only one
+  cycle — never looks anomalous in a single bundle. The cycle counts here
+  are **cumulative**, so they reveal churn the window cannot. Calibration:
+  a `reviewer_cycles` of 3-4 may be normal convergence; **escalate when
+  `reviewer_cycles >= 6` AND `active_in_window` is true** (the story is
+  still spinning, not parked) — that is a story failing to converge and
+  silently burning the `total_cost_usd` shown. A high `reviewer_cycles`
+  with `active_in_window: false` is a *parked* story (already stopped
+  cycling); mention it but do not escalate on it alone. This is exactly
+  the "looks like it's working but isn't" pattern — do not be reassured by
+  the runs all being successful.
+
 * **`cost_spike`** — Recent spend vs. trailing baseline. A `ratio` of 2-3x
   may be normal after a cold start (baseline = 0). A `ratio` of 5-10x
   sustained over 2+ watcher intervals is likely anomalous. **Do not

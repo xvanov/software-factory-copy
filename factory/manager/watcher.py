@@ -465,6 +465,17 @@ def run_watcher_once(
     except Exception as exc:  # noqa: BLE001
         detector_results["retry_storm"] = {"error": repr(exc)}
 
+    # review_churn — surfaces stories cycling through review without
+    # converging. Unlike retry_storm (failures only), this counts SUCCESSFUL
+    # dev<->reviewer ping-pong, the green-but-non-converging loop that no
+    # failure-based detector and no single 60s window can see.
+    try:
+        detector_results["review_churn"] = DETECTORS["review_churn"](
+            root=root, since=since
+        )
+    except Exception as exc:  # noqa: BLE001
+        detector_results["review_churn"] = {"error": repr(exc)}
+
     # cost_spike
     try:
         detector_results["cost_spike"] = DETECTORS["cost_spike"](root=root)
