@@ -659,6 +659,14 @@ def _apply_one_manager_proposal(
 
     def _cleanup() -> None:
         try:
+            # Discard any uncommitted working-tree changes from a partial apply
+            # before switching branches. Without this, a failed test_command
+            # leaves the patched files in the working tree, and `git checkout
+            # starting_branch` silently carries those uncommitted changes
+            # across the branch switch (real incident on 2026-05-27: a failed
+            # apply attempt left factory/routes.yaml dirty on main).
+            _run(["git", "reset", "--hard", "HEAD"], cwd=root, runner=runner, timeout=15)
+            _run(["git", "clean", "-fd"], cwd=root, runner=runner, timeout=15)
             if starting_branch:
                 _run(["git", "checkout", starting_branch], cwd=root, runner=runner, timeout=15)
             _run(["git", "branch", "-D", branch], cwd=root, runner=runner, timeout=15)

@@ -230,3 +230,8 @@ useful post-resume; include it if you have one.
 * `halt_reason` must be a non-empty string when `request_halt=true`.
   A null or empty `halt_reason` with `request_halt=true` will silently
   drop the halt request — the system will NOT halt.
+* **Acknowledge prior failures.** When the bundle includes a "Prior failed
+  attempts" section, do NOT replicate any of those attempts. If after
+  consulting them you genuinely cannot identify a different actionable fix,
+  set `target_class="escalate_to_human"` with a reason that names the
+  previous attempts.
