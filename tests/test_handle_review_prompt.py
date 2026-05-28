@@ -348,3 +348,88 @@ def test_handle_review_raises_on_broken_placeholder(
         handle_review(s, app_config, temp_root, db_path=db)
     # text_run must NOT have been reached when the guard fires.
     assert cap.calls == []
+
+
+def test_handle_review_tolerates_malformed_dev_attempts_json(
+    temp_root: Path,
+    app_config: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed ``dev_attempts_json`` must NOT raise — fall through to the
+    next signal source (harness_precheck log, then the explicit sentinel)."""
+    _patch_helpers_to_be_inert(monkeypatch)
+    cap = _patch_text_run(monkeypatch)
+    import factory.chain.handlers as handlers_mod
+
+    monkeypatch.setattr(
+        handlers_mod,
+        "_fetch_pr_diff_for_review",
+        lambda *_a, **_k: "(inert diff)",
+    )
+
+    s = _story(temp_root)
+    # Garbage in the DB column — historically possible if a write was
+    # truncated mid-flight or a migration replaced the field with a string
+    # literal. The reviewer must still get a prompt; the section just
+    # falls back to the sentinel.
+    s.dev_attempts_json = "{not valid json"
+    db = temp_root / "state" / "factory.db"
+    persist_story(s, db)
+
+    # Should not raise.
+    handle_review(s, app_config, temp_root, db_path=db)
+    prompt = cap.last_prompt
+    # With no harness_precheck event either, we land on the explicit sentinel.
+    assert "(no recent test run on record)" in prompt
+
+
+def test_handle_review_truncates_large_story_file_at_32kb(
+    temp_root: Path,
+    app_config: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A story file larger than 32K chars MUST be capped with the truncation
+    marker so the LLM context window isn't blown out by a runaway story."""
+    _patch_helpers_to_be_inert(monkeypatch)
+    cap = _patch_text_run(monkeypatch)
+    import factory.chain.handlers as handlers_mod
+
+    monkeypatch.setattr(
+        handlers_mod,
+        "_fetch_pr_diff_for_review",
+        lambda *_a, **_k: "(inert diff)",
+    )
+
+    # Story whose body is 40K chars of filler — far past the 32K cap.
+    huge_body = (
+        "# Story: huge\n\n"
+        "MAGIC-HUGE-MARKER-1618033988\n\n"
+        + ("x" * (40 * 1024))
+    )
+    s = _story(temp_root, story_md=huge_body)
+    db = temp_root / "state" / "factory.db"
+
+    handle_review(s, app_config, temp_root, db_path=db)
+    prompt = cap.last_prompt
+
+    # Truncation marker must appear, and the head of the story must still
+    # be visible (it's where acceptance criteria live).
+    assert "\n...[truncated at 32KB]" in prompt
+    assert "MAGIC-HUGE-MARKER-1618033988" in prompt
+
+    # Extract the Story section and confirm its body is bounded.
+    # Section runs from "## Story\n\n" to the next "## " header.
+    story_start = prompt.index("## Story\n\n") + len("## Story\n\n")
+    story_end = prompt.index("\n## ", story_start)
+    story_section = prompt[story_start:story_end]
+    # Cap (32 * 1024 chars) + suffix "\n...[truncated at 32KB]".
+    max_expected = handlers_mod._STORY_CONTENT_CAP_BYTES + len(
+        "\n...[truncated at 32KB]"
+    )
+    # Two trailing newlines surround the section in the assembled prompt;
+    # the actual content sits inside, so length <= max_expected + a small
+    # padding for the trailing newline.
+    assert len(story_section.rstrip()) <= max_expected, (
+        f"story section length {len(story_section.rstrip())} exceeds "
+        f"expected cap {max_expected}"
+    )

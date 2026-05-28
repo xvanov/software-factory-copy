@@ -1651,9 +1651,16 @@ def handle_dev(
 
 # Section caps for handle_review / handle_tech_writer prompt plumbing. Keep
 # these as module-level constants so the contract tests can import them.
-_STORY_CONTENT_CAP_BYTES = 32 * 1024
-_TEST_OUTPUT_CAP_BYTES = 8 * 1024
-_PR_DIFF_CAP_BYTES = 64 * 1024
+# Section caps for the assembled review/tech_writer prompts. These are
+# CHARACTER counts (str.__len__), not byte counts — Python's slicing
+# operates on characters, and ``len(s) <= N`` uses the same unit. The
+# ``_BYTES`` suffix is preserved for historical naming compatibility
+# (and because for ASCII-heavy persona output the two coincide); a future
+# refactor may rename them but the semantics are documented here so the
+# constant is not ambiguous.
+_STORY_CONTENT_CAP_BYTES = 32 * 1024  # characters; ~32KiB ASCII
+_TEST_OUTPUT_CAP_BYTES = 8 * 1024  # characters; ~8KiB ASCII
+_PR_DIFF_CAP_BYTES = 64 * 1024  # characters; ~64KiB ASCII
 
 # Markers that indicate a prompt section was NOT populated with real data
 # (the literal placeholder strings that caused stories 5/15/16/18/19/22 to

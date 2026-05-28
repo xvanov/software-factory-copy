@@ -641,3 +641,105 @@ class TestBuildUserMessage:
         # Spot-check: the runs_failed_since docstring should appear.
         # Both the detector name and some context from the docstring appear.
         assert "runs_failed_since" in msg
+
+
+# ---------------------------------------------------------------------------
+# placeholder_prompts integration — confirm the watcher wires the detector
+# into the user message so a leaked-placeholder regression surfaces in the
+# L1→L2→L3→L4 pipeline.
+# ---------------------------------------------------------------------------
+
+
+def _write_prompt_event(
+    root: Path,
+    *,
+    ts: str,
+    persona: str,
+    markers: list[str],
+    story_id: int | None = 7,
+) -> None:
+    """Append one prompt-metadata record to state/events/prompts.ndjson."""
+    path = root / "state" / "events" / "prompts.ndjson"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rec = {
+        "ts": ts,
+        "schema_version": 1,
+        "event": "prompt",
+        "persona": persona,
+        "story_id": story_id,
+        "model_id": "stub/model",
+        "prompt_length_total": 1234,
+        "prompt_section_lengths": {"Story": 100, "PR diff": 50},
+        "placeholder_markers_found": markers,
+        "prompt_hash": "deadbeefdeadbeef",
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec) + "\n")
+
+
+class TestWatcherInvokesPlaceholderPromptsDetector:
+    """The new placeholder_prompts detector must be invoked by run_watcher_once
+    and its result must appear in the user message handed to the LLM."""
+
+    def test_leaked_marker_record_appears_in_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Plant one prompts.ndjson record with a leaked broken marker.
+        marker = "(fetched from GitHub by the chain"
+        _write_prompt_event(
+            tmp_path,
+            ts=(SINCE + timedelta(minutes=2)).isoformat(),
+            persona="reviewer",
+            markers=[marker],
+        )
+
+        captured_prompts: list[str] = []
+
+        def _capturing_text_run(
+            persona: str, prompt: str, model_id: str, **kwargs: Any
+        ) -> dict:
+            captured_prompts.append(prompt)
+            return _CANNED_GOOD
+
+        monkeypatch.setattr("factory.manager.watcher.text_run", _capturing_text_run)
+        monkeypatch.setattr(
+            "factory.manager.watcher._read_persona_prompt",
+            lambda persona: "# Watcher persona mock",
+        )
+
+        run_watcher_once(root=tmp_path, now=NOW)
+
+        assert len(captured_prompts) == 1
+        prompt = captured_prompts[0]
+        # The detector section header must be present in the user message.
+        assert "`placeholder_prompts`" in prompt
+        # The detector's actual finding (the leaked marker + persona) must
+        # be embedded in the result block so the LLM can reason about it.
+        assert marker in prompt
+        assert "reviewer" in prompt
+        # severity is added by the detector for every returned row.
+        assert "\"severity\"" in prompt and "high" in prompt
+
+    def test_detector_called_even_when_stream_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No prompts.ndjson at all → detector returns []; watcher must still
+        include the section (so the LLM sees the empty result, not a gap)."""
+        captured_prompts: list[str] = []
+
+        def _capturing_text_run(
+            persona: str, prompt: str, model_id: str, **kwargs: Any
+        ) -> dict:
+            captured_prompts.append(prompt)
+            return _CANNED_GOOD
+
+        monkeypatch.setattr("factory.manager.watcher.text_run", _capturing_text_run)
+        monkeypatch.setattr(
+            "factory.manager.watcher._read_persona_prompt",
+            lambda persona: "# Watcher persona mock",
+        )
+
+        run_watcher_once(root=tmp_path, now=NOW)
+
+        prompt = captured_prompts[0]
+        assert "`placeholder_prompts`" in prompt

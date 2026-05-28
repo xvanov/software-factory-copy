@@ -493,6 +493,19 @@ def run_watcher_once(
     except Exception as exc:  # noqa: BLE001
         detector_results["worktree_orphans"] = {"error": repr(exc)}
 
+    # placeholder_prompts — surfaces prompt-log records where a literal
+    # placeholder string ("(fetched from GitHub by the chain", "(see {", etc.)
+    # survived into the prompt sent to the LLM. Every record returned here is
+    # a plumbing bug in a handler's prompt assembly and worth escalating; the
+    # detector docstring (rendered into the user message by _build_user_message)
+    # spells out the historical context for the LLM.
+    try:
+        detector_results["placeholder_prompts"] = DETECTORS["placeholder_prompts"](
+            root=root, since=since
+        )
+    except Exception as exc:  # noqa: BLE001
+        detector_results["placeholder_prompts"] = {"error": repr(exc)}
+
     # Read raw streams.
     raw_streams: dict[str, list[dict]] = {}
     for stream_name in _RAW_STREAMS:

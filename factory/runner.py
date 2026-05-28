@@ -1130,14 +1130,13 @@ def text_run(
     via ``jsonschema`` if installed, falling back to a minimal key-presence
     check otherwise.
     """
-    cfg = LLMConfig(model=model_id, api_key=api_key, base_url=base_url)
-    resolved_key = _resolve_api_key(cfg)
-
     # Log prompt metadata (length, section headers, placeholder markers, hash)
-    # to ``state/events/prompts.ndjson`` BEFORE any failure path so a failed
-    # API key check, a missing litellm, or a parse-retry storm still leaves
-    # an audit trail for the L1 watcher / placeholder_prompts detector to
-    # consume. NEVER logs prompt content — only metadata.
+    # to ``state/events/prompts.ndjson`` BEFORE any failure path — including
+    # ``_resolve_api_key``, which can return None and raise, and the litellm
+    # import below, which can ImportError. The metadata is needed precisely
+    # when the call later fails, so the placeholder_prompts detector / L1
+    # watcher can correlate a leaked-placeholder prompt with the resulting
+    # error row in runs.ndjson. NEVER logs prompt content — only metadata.
     _log_prompt_metadata(
         persona=persona,
         prompt=prompt,
@@ -1145,6 +1144,9 @@ def text_run(
         story_id=story_id,
         software_factory_root=software_factory_root,
     )
+
+    cfg = LLMConfig(model=model_id, api_key=api_key, base_url=base_url)
+    resolved_key = _resolve_api_key(cfg)
 
     _t0 = time.monotonic()
     _started_at = datetime.now(UTC).isoformat()
