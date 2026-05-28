@@ -1649,6 +1649,215 @@ def handle_dev(
 # --------------------------------------------------------------------------- #
 
 
+# Section caps for handle_review / handle_tech_writer prompt plumbing. Keep
+# these as module-level constants so the contract tests can import them.
+_STORY_CONTENT_CAP_BYTES = 32 * 1024
+_TEST_OUTPUT_CAP_BYTES = 8 * 1024
+_PR_DIFF_CAP_BYTES = 64 * 1024
+
+# Markers that indicate a prompt section was NOT populated with real data
+# (the literal placeholder strings that caused stories 5/15/16/18/19/22 to
+# cycle dev<->reviewer 5+ times). The sanity guard in handle_review raises
+# RuntimeError if any of these survive into the final prompt; the prompt
+# logger in factory.runner.text_run also scans for them so the watcher can
+# surface regressions before they burn another month of reviewer cycles.
+_BROKEN_PROMPT_MARKERS: tuple[str, ...] = (
+    "(fetched from GitHub by the chain",
+    "placeholder for real-run",
+    # The literal "(see {" never appears when the f-string interpolates a
+    # real path — only when the f-string itself was removed and replaced
+    # by a bare string. We match the literal substring so a regressing
+    # author swapping the f-string out is caught.
+    "(see {",
+)
+
+
+def _read_story_file_content(
+    story: StoryRecord, software_factory_root: Path
+) -> str:
+    """Return the story markdown content, capped, with a clear error fallback.
+
+    The reviewer / tech_writer prompts used to embed ``(see <path>)`` instead
+    of the actual file content — that meant the LLM was guessing about the
+    story's acceptance criteria and routinely demanded clarifications about
+    information that was already on disk.
+    """
+    if not story.story_file_path:
+        return "(no story_file_path on record)"
+    story_path = software_factory_root / "apps" / story.app / story.story_file_path
+    try:
+        content = story_path.read_text(encoding="utf-8")
+    except (OSError, FileNotFoundError) as exc:
+        return f"(story file unreadable at {story_path}: {exc!r})"
+    if len(content) > _STORY_CONTENT_CAP_BYTES:
+        content = content[:_STORY_CONTENT_CAP_BYTES] + "\n...[truncated at 32KB]"
+    return content
+
+
+def _fetch_latest_test_output(
+    story: StoryRecord,
+    software_factory_root: Path,
+) -> str:
+    """Return the most recent test output for ``story``.
+
+    Preference order (richest signal first):
+
+    1. The last entry of ``story.dev_attempts_json`` — dev writes a
+       ``test_output_tail`` (1800 char tail) here on every red retry. This
+       is the freshest signal when dev has run at least once.
+    2. The most recent ``harness_precheck`` event in the per-story log —
+       captures the output_tail of the one-shot pytest collect+exit that
+       the chain runs before dev. Useful when the story bounced back to
+       reviewer before dev produced an attempt of its own (e.g. tech_writer
+       failure routed to REVIEWER_REQUESTED_CHANGES).
+    3. ``"(no recent test run on record)"`` — explicit signal to the
+       reviewer that test output isn't available, instead of an empty
+       JSON object that looks indistinguishable from a passing run.
+
+    Output is capped at 8KB regardless of source.
+    """
+    # 1. dev_attempts_json (preferred)
+    if story.dev_attempts_json:
+        try:
+            attempts = json.loads(story.dev_attempts_json)
+        except (TypeError, json.JSONDecodeError):
+            attempts = None
+        if isinstance(attempts, list) and attempts:
+            last = attempts[-1]
+            tail = (last.get("test_output_tail") or "").strip()
+            if tail:
+                header = (
+                    f"(from dev_attempts[-1]; "
+                    f"attempt={last.get('attempt')!r} "
+                    f"ts={last.get('ts')!r})\n"
+                )
+                body = header + tail
+                if len(body) > _TEST_OUTPUT_CAP_BYTES:
+                    body = body[:_TEST_OUTPUT_CAP_BYTES] + "\n...[truncated at 8KB]"
+                return body
+
+    # 2. harness_precheck event log
+    if story.id is not None:
+        try:
+            from factory.chain.event_log import read_story_events
+
+            events = read_story_events(
+                story.id,
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
+            )
+        except Exception:  # noqa: BLE001 — log read must never break review
+            events = []
+        for ev in reversed(events):
+            if ev.get("event") == "harness_precheck" and ev.get("output_tail"):
+                tail = str(ev.get("output_tail")).strip()
+                header = (
+                    f"(from harness_precheck event; "
+                    f"exit_code={ev.get('exit_code')!r} "
+                    f"passed={ev.get('passed')!r} "
+                    f"ts={ev.get('ts')!r})\n"
+                )
+                body = header + tail
+                if len(body) > _TEST_OUTPUT_CAP_BYTES:
+                    body = body[:_TEST_OUTPUT_CAP_BYTES] + "\n...[truncated at 8KB]"
+                return body
+
+    return "(no recent test run on record)"
+
+
+def _fetch_pr_diff_for_review(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+) -> str:
+    """Return the diff the reviewer should look at.
+
+    Two cases:
+
+    * ``story.github_pr_number`` is set → ``gh pr diff <num> -R <repo>``.
+      This is the source of truth once a PR exists.
+    * Otherwise → ``git diff origin/<default_branch>...HEAD`` inside the
+      per-story worktree. The chain creates a PR lazily; reviewer can fire
+      before that point, and we still want a real diff, not a placeholder.
+
+    Either way we cap the result at 64KB. Subprocess failures are swallowed
+    and surfaced inside the returned string (prefixed with ``"(...)"``)
+    so the reviewer sees the cause instead of an empty section. The
+    BROKEN_PROMPT_MARKERS guard further down catches the case where this
+    helper itself regresses and returns a literal placeholder.
+    """
+    import subprocess
+
+    diff_text: str
+
+    pr_number = story.github_pr_number
+    if pr_number is not None:
+        try:
+            proc = subprocess.run(
+                ["gh", "pr", "diff", str(pr_number), "-R", app_config.repo],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            return f"(gh pr diff failed: {exc!r})"
+        if proc.returncode != 0:
+            diff_text = (
+                f"(gh pr diff #{pr_number} returned rc={proc.returncode}; "
+                f"stderr_tail={proc.stderr.strip()[-200:]!r})"
+            )
+        else:
+            diff_text = proc.stdout or ""
+    else:
+        # No PR yet — diff the worktree against the default branch.
+        try:
+            worktree = _writing_worktree(app_config, software_factory_root, story)
+        except Exception as exc:  # noqa: BLE001
+            return f"(could not resolve writing worktree: {exc!r})"
+        base = app_config.default_branch or "main"
+        try:
+            proc = subprocess.run(
+                ["git", "diff", f"origin/{base}...HEAD"],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            return f"(git diff worktree failed: {exc!r})"
+        if proc.returncode != 0:
+            diff_text = (
+                f"(git diff origin/{base}...HEAD returned rc={proc.returncode}; "
+                f"stderr_tail={proc.stderr.strip()[-200:]!r})"
+            )
+        else:
+            diff_text = proc.stdout or ""
+
+    if not diff_text.strip():
+        return "(diff is empty — no commits on this branch beyond the base)"
+    if len(diff_text) > _PR_DIFF_CAP_BYTES:
+        diff_text = diff_text[:_PR_DIFF_CAP_BYTES] + "\n...[truncated at 64KB]"
+    return diff_text
+
+
+def _assert_no_broken_prompt_markers(full_prompt: str, *, where: str) -> None:
+    """Sanity guard — raise if a literal placeholder leaked into the prompt.
+
+    See ``_BROKEN_PROMPT_MARKERS`` for the list. Raised as ``RuntimeError``
+    so the orchestrator's normal error handling captures + logs the failure
+    instead of silently feeding an inert prompt to the LLM.
+    """
+    for marker in _BROKEN_PROMPT_MARKERS:
+        if marker in full_prompt:
+            raise RuntimeError(
+                f"{where} produced a prompt containing broken plumbing marker "
+                f"{marker!r}; check that PR diff and test output fetches "
+                f"actually executed."
+            )
+
+
 def _dry_run_review(story: StoryRecord) -> dict[str, Any]:
     return {
         "verdict": "approve",
@@ -1704,21 +1913,27 @@ def handle_review(
             direction_chain=chain,
             software_factory_root=software_factory_root,
         )
+        story_content = _read_story_file_content(story, software_factory_root)
+        fresh_test_output = _fetch_latest_test_output(story, software_factory_root)
+        pr_diff = _fetch_pr_diff_for_review(
+            story, app_config, software_factory_root
+        )
         full_prompt = (
             f"{persona_prompt.rstrip()}\n\n"
             "---\n\n"
             "## Context\n\n"
             f"{prelude.rstrip()}\n\n"
             "## Story\n\n"
-            f"(see {story.story_file_path})\n\n"
+            f"{story_content}\n\n"
             "## Test plan\n\n"
             f"{story.test_plan_json or '{}'}\n\n"
-            "## Test-Implementer result\n\n"
-            f"{story.test_implementer_result_json or '{}'}\n\n"
+            "## Latest test output\n\n"
+            f"{fresh_test_output}\n\n"
             "## PR diff\n\n"
-            "(fetched from GitHub by the chain — placeholder for real-run)\n\n"
+            f"{pr_diff}\n\n"
             "Return the JSON object for the review. No prose outside the JSON."
         )
+        _assert_no_broken_prompt_markers(full_prompt, where="handle_review")
         model_id = route(persona)
         result_any = text_run(
             persona=persona,
@@ -1833,17 +2048,22 @@ def handle_tech_writer(
             direction_chain=chain,
             software_factory_root=software_factory_root,
         )
+        story_content = _read_story_file_content(story, software_factory_root)
+        pr_diff = _fetch_pr_diff_for_review(
+            story, app_config, software_factory_root
+        )
         full_prompt = (
             f"{persona_prompt.rstrip()}\n\n"
             "---\n\n"
             "## Context\n\n"
             f"{prelude.rstrip()}\n\n"
             "## Story\n\n"
-            f"(see {story.story_file_path})\n\n"
+            f"{story_content}\n\n"
             "## PR diff\n\n"
-            "(fetched from GitHub by the chain — placeholder for real-run)\n\n"
+            f"{pr_diff}\n\n"
             "Return the JSON object. No prose outside the JSON."
         )
+        _assert_no_broken_prompt_markers(full_prompt, where="handle_tech_writer")
         model_id = route(persona)
         result_any = text_run(
             persona=persona,
