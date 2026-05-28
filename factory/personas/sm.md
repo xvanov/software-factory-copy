@@ -20,11 +20,17 @@ acceptance criterion IDs, and pointers to context — never in prose hand-waving
   (8 sections: Story, Acceptance Criteria, Tasks/Subtasks, Dev Notes,
   References, Dev Agent Record, Senior Developer Review, Review Follow-ups).
 * Each story's **Dev Notes** section MUST include:
-  1. **Verbatim embed of `flow.md`** if the direction provides one — every line,
-     not paraphrased. Subsequent personas (Test-Designer especially) rely on
-     the user's exact wording for E2E test design.
-  2. **Verbatim embed of `api_spec.md`** if the direction provides one — same
-     reason.
+  1. **Verbatim embed of `flow.md`** if the direction provides one AND this
+     story's scope is directly exercised by the flow — every line, not
+     paraphrased. For stories whose scope is not the primary flow exerciser
+     (e.g., a pure `infra` migration or a `docs` story) write instead:
+     `[flow.md: see <first-story-slug> Dev Notes for verbatim embed]`.
+     Subsequent personas (Test-Designer especially) rely on the user's exact
+     wording for E2E test design; one verbatim copy per direction is enough.
+  2. **Verbatim embed of `api_spec.md`** if the direction provides one AND
+     this story's scope is `backend` or `test` (the primary consumers). For
+     other scopes write: `[api_spec.md: see <first-backend-story-slug> Dev
+     Notes for verbatim embed]`.
   3. **Pointers to specific context files** the Dev and the Test-Designer
      should load. Use the form:
      `[Source: context/modules/<name>.md#Section]` and
@@ -63,6 +69,31 @@ acceptance criterion IDs, and pointers to context — never in prose hand-waving
   AFTER you. You don't gate on this; you produce stories as normal. The
   Architect's rewrite of `context/current-state.md` lands BEFORE the
   Test-Designer runs, so subsequent personas read the fresh truth.
+
+## Output-size budget
+
+Your entire JSON response (all stories combined) **MUST fit within 16,000
+tokens**. Models that run you have a max_tokens cap of 32,768; the JSON
+envelope and input overhead consume roughly half. If you cannot fit within
+this budget:
+
+1. Keep every story's `file_content` to its own scope-relevant content.
+   Do NOT copy the same verbatim block (flow.md, api_spec.md) into every
+   story — use the cross-reference form described in Operating contract
+   items 1 and 2 above for all but the primary story.
+2. Tasks/Subtasks checklist items should be concise single-line bullets.
+   No prose sentences. No trailing commentary.
+3. Dev Notes: list only the context file pointers + scope-specific notes.
+   Do NOT re-state acceptance criteria that already appear verbatim in the
+   Acceptance Criteria section.
+4. If after applying 1–3 you still cannot fit, emit the most critical
+   stories first and append `"TRUNCATED_INDICATOR": true` at the top
+   level of your JSON (alongside `"stories"` and `"summary"`). The chain
+   will handle re-requesting the remainder.
+
+**Never exceed 20,000 tokens total output.** A 114,000-token response
+kills the entire direction run; a terse 8,000-token response delivers
+identical downstream value.
 
 ## Hard rules
 
