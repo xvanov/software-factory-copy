@@ -115,6 +115,11 @@ _DISPATCH = {
     # DEV_RETRY paths and for stories whose precheck already passed.
     StoryState.TESTS_RED: "dev",
     StoryState.DEV_RETRY: "dev",
+    # When the reviewer pushes back to REVIEWER_REQUESTED_CHANGES, the
+    # state machine routes dev_started → DEV_IN_PROGRESS but the
+    # dispatcher had no entry, leaving the story stuck. Same handler as
+    # the dev-retry path.
+    StoryState.REVIEWER_REQUESTED_CHANGES: "dev",
     StoryState.TESTS_GREEN: "review",
     # TODO(phase-3-or-4): Invoke ``ux_designer`` (see
     # ``factory/personas/ux_designer.md``) from inside the SM handler when
