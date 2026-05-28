@@ -367,6 +367,187 @@ def _sentinel_proposal(*, concern_title: str, error: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Failed-apply memory
+# ---------------------------------------------------------------------------
+
+# Status strings that represent a failed apply attempt.
+_FAILED_APPLY_STATUSES = frozenset({
+    "test_failed",
+    "patch_failed",
+    "abandoned",
+    "push_failed",
+    "pr_failed",
+})
+
+# Maximum entries shown in the "Prior failed attempts" section.
+_MAX_PRIOR_FAILURES = 5
+
+# Maximum characters of suggested_patch excerpt per entry.
+_PATCH_EXCERPT_CAP = 800
+
+
+def _load_recent_failed_applies(
+    *,
+    root: Path,
+    concern_title: str,
+    lookback_hours: int = 24,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Read state/.manager_apply_history.json and return records for recent
+    failed apply attempts that match *concern_title*.
+
+    Matching: an entry matches when the referenced proposal file contains a
+    ``concern_title`` field equal to *concern_title*.  The entry's ``ts`` field
+    must be within ``lookback_hours`` of now (UTC).
+
+    For each matching entry, the referenced proposal JSON is loaded and the
+    following fields are extracted:
+      - ``proposal_path``   (from the history entry)
+      - ``ts``              (from the history entry)
+      - ``status``          (from the history entry)
+      - ``proposal.target`` (from the proposal JSON, or "")
+      - ``proposal.kind``   (from the proposal JSON, or "")
+      - ``patch_excerpt``   (first _PATCH_EXCERPT_CAP chars of suggested_patch)
+
+    Parameters
+    ----------
+    now:
+        Reference time for the lookback window.  Defaults to
+        ``datetime.now(UTC)`` if not provided.  Pass explicitly in tests
+        to avoid wall-clock dependency.
+
+    Returns a list ordered newest-first, capped at ``_MAX_PRIOR_FAILURES``.
+    Empty list if no matches or if the history file does not exist.
+    """
+    history_path = root / "state" / ".manager_apply_history.json"
+    if not history_path.exists():
+        return []
+
+    try:
+        raw = json.loads(history_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            return []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    now_utc = now if now is not None else datetime.now(UTC)
+    cutoff = now_utc.timestamp() - lookback_hours * 3600
+
+    matched: list[dict[str, Any]] = []
+
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        status = entry.get("status", "")
+        if status not in _FAILED_APPLY_STATUSES:
+            continue
+
+        # Time filter.
+        ts_str = entry.get("ts", "")
+        try:
+            ts_dt = datetime.fromisoformat(ts_str)
+            if ts_dt.timestamp() < cutoff:
+                continue
+        except (ValueError, TypeError):
+            continue
+
+        # Concern-title filter: load the proposal JSON and check.
+        proposal_path_str = entry.get("proposal_path", "")
+        if not proposal_path_str:
+            continue
+        proposal_path = Path(proposal_path_str)
+
+        try:
+            proposal_doc = json.loads(proposal_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # Proposal file missing or corrupt — skip.
+            continue
+
+        if not isinstance(proposal_doc, dict):
+            continue
+
+        if proposal_doc.get("concern_title") != concern_title:
+            continue
+
+        # Extract proposal sub-fields.
+        inner = proposal_doc.get("proposal", {})
+        if not isinstance(inner, dict):
+            inner = {}
+
+        suggested_patch = inner.get("suggested_patch", "") or ""
+        patch_excerpt = suggested_patch[:_PATCH_EXCERPT_CAP]
+
+        matched.append({
+            "proposal_path": proposal_path_str,
+            "ts": ts_str,
+            "status": status,
+            "target": inner.get("target", ""),
+            "kind": inner.get("kind", ""),
+            "patch_excerpt": patch_excerpt,
+        })
+
+    # Sort newest-first by ts string (ISO-8601 lexicographic sort is correct).
+    matched.sort(key=lambda e: e.get("ts", ""), reverse=True)
+
+    return matched[:_MAX_PRIOR_FAILURES]
+
+
+def _render_prior_failures_section(
+    failed_applies: list[dict[str, Any]],
+    total_in_history: int | None = None,
+) -> str:
+    """Render the "Prior failed attempts" section for injection into the user message.
+
+    Parameters
+    ----------
+    failed_applies:
+        The (already-capped) list of failed apply records from
+        ``_load_recent_failed_applies``.
+    total_in_history:
+        If the history had more than ``_MAX_PRIOR_FAILURES`` entries, pass
+        the total count so the section can mention it.  If None, no mention.
+    """
+    n = len(failed_applies)
+    lines: list[str] = [
+        "## Prior failed attempts on this concern (last 24h)",
+        "",
+        f"L4 has previously tried to apply {n} proposal(s) for this same concern "
+        "title; each was rejected by the apply pipeline. "
+        "DO NOT re-propose the same approach. The prior attempts:",
+        "",
+    ]
+
+    for i, rec in enumerate(failed_applies, start=1):
+        lines.append(
+            f"{i}. status: {rec['status']}   target: {rec['target']}"
+        )
+        excerpt = rec.get("patch_excerpt", "")
+        if excerpt:
+            lines.append("   patch excerpt:")
+            lines.append("   ```")
+            for line in excerpt.splitlines():
+                lines.append(f"   {line}")
+            lines.append("   ```")
+        lines.append("")
+
+    if total_in_history is not None and total_in_history > _MAX_PRIOR_FAILURES:
+        lines.append(
+            f"_(showing {_MAX_PRIOR_FAILURES} of {total_in_history} total failed "
+            "attempts within the lookback window)_"
+        )
+        lines.append("")
+
+    lines.append(
+        "Consider why these attempts failed (schema violations, broken syntax, "
+        "test regressions) and propose a DIFFERENT approach. If you can identify "
+        "no plausible alternative within your context, set "
+        'target_class="escalate_to_human" with a clear reason.'
+    )
+
+    return "\n".join(lines)
+
+
 def _build_user_message(
     *,
     persona_prompt: str,
@@ -374,20 +555,31 @@ def _build_user_message(
     source_files: dict[str, str],
     detector_hint: list[str],
     now: datetime,
+    prior_failed_applies: list[dict[str, Any]] | None = None,
 ) -> str:
     """Assemble the full user message sent to the L3 LLM.
 
     Order:
     1. Persona prompt
-    2. Context header
-    3. Concern document (full JSON)
-    4. Pre-loaded source files (clearly delimited)
-    5. Detector hint
-    6. Instruction to return JSON
+    2. Prior failed attempts (if any) — injected near the top so the LLM
+       reads them before the concern document
+    3. Context header
+    4. Concern document (full JSON)
+    5. Pre-loaded source files (clearly delimited)
+    6. Detector hint
+    7. Instruction to return JSON
     """
     parts: list[str] = [
         persona_prompt.rstrip(),
         "",
+    ]
+
+    # Prior failed attempts — injected before the context bundle.
+    if prior_failed_applies:
+        parts.append(_render_prior_failures_section(prior_failed_applies))
+        parts.append("")
+
+    parts += [
         "---",
         "",
         "## Diagnostician context bundle",
@@ -735,15 +927,23 @@ def run_diagnostician_once(
 
     # Step 5: load persona prompt and build user message.
     persona_prompt = _read_persona_prompt("manager_diagnostician")
+
+    # Load prior failed apply attempts for this concern title (failed-apply memory).
+    concern_title = concern.get("title", "unnamed")
+    prior_failed_applies = _load_recent_failed_applies(
+        root=root,
+        concern_title=concern_title,
+        now=now,
+    )
+
     user_message = _build_user_message(
         persona_prompt=persona_prompt,
         concern=concern,
         source_files=source_files,
         detector_hint=detector_hint,
         now=now,
+        prior_failed_applies=prior_failed_applies if prior_failed_applies else None,
     )
-
-    concern_title = concern.get("title", "unnamed")
 
     if dry_run:
         print(user_message)
@@ -937,4 +1137,6 @@ __all__ = [
     "run_diagnostician_once",
     "run_diagnostician_daemon",
     "_pre_load_source",
+    "_load_recent_failed_applies",
+    "_render_prior_failures_section",
 ]
