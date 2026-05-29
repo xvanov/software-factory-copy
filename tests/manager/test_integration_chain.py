@@ -57,20 +57,20 @@ _REAL_ROUTES_YAML = (
 # Verified unified diff — produced by:
 #   cp factory/routes.yaml /tmp/r/factory/routes.yaml
 #   git init ... && git commit
-#   sed -i 's/sm: deepseek.*/sm: deepseek\/deepseek-chat\n  max_tokens: 32000/' ...
-#   git diff
+#   insert 'max_tokens: 32000' under the routes: sm line && git diff
 # Applies cleanly to the exact factory/routes.yaml in this repo.  The test
-# verifies this with git apply --check before proceeding.
+# verifies this with git apply --check before proceeding. (Context updated
+# 2026-05-29 after sm was routed to azure/gpt-5.4 in the routes: block.)
 # ---------------------------------------------------------------------------
 
 _L3_PATCH = (
     "diff --git a/factory/routes.yaml b/factory/routes.yaml\n"
     "--- a/factory/routes.yaml\n"
     "+++ b/factory/routes.yaml\n"
-    "@@ -24,6 +24,7 @@ routes:\n"
-    "   analyst: deepseek/deepseek-chat\n"
-    "   architect: anthropic/claude-opus-4-7\n"
-    "   sm: deepseek/deepseek-chat\n"
+    "@@ -28,6 +28,7 @@ routes:\n"
+    "   # 2026-05-29). Use gpt-5.4 (JSON-reliable) here too so SM is consistent\n"
+    "   # regardless of active provider; the azure_routes block already uses it.\n"
+    "   sm: azure/gpt-5.4\n"
     "+  max_tokens: 32000\n"
     "   dev:\n"
     "     standard: deepseek/deepseek-coder\n"

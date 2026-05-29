@@ -23,7 +23,11 @@ routes:
   pm: deepseek/deepseek-chat
   analyst: deepseek/deepseek-chat
   architect: anthropic/claude-opus-4-7
-  sm: deepseek/deepseek-chat
+  # SM emits a structured JSON plan; deepseek-chat intermittently returns a
+  # tiny malformed body falsely flagged finish_reason=length (operator-approved
+  # 2026-05-29). Use gpt-5.4 (JSON-reliable) here too so SM is consistent
+  # regardless of active provider; the azure_routes block already uses it.
+  sm: azure/gpt-5.4
   dev:
     standard: deepseek/deepseek-coder
     hard: anthropic/claude-sonnet-4-6

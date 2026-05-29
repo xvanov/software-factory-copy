@@ -1396,7 +1396,8 @@ def text_run(
         text = response["choices"][0]["message"]["content"]
         usage = response.get("usage", {}) or {}
         tokens_in += int(usage.get("prompt_tokens", 0) or 0)
-        tokens_out += int(usage.get("completion_tokens", 0) or 0)
+        attempt_out = int(usage.get("completion_tokens", 0) or 0)
+        tokens_out += attempt_out
         try:
             cost_usd += float(getattr(response, "_hidden_params", {}).get("response_cost") or 0.0)
         except Exception:
@@ -1406,16 +1407,35 @@ def text_run(
         except Exception:
             last_finish_reason = None
 
+        # A "length" finish_reason is only a REAL truncation if the model
+        # actually emitted close to the cap. Some providers (observed:
+        # deepseek-chat in JSON mode) intermittently return a tiny malformed
+        # body while still flagging finish_reason="length"; doubling the cap
+        # then re-calling cannot help — the model isn't using the cap it has.
+        # Treat that as futile and stop retrying instead of burning the full
+        # doubling ladder (8192 -> 65536) on a model that won't comply.
+        fake_truncation = (
+            last_finish_reason == "length" and attempt_out < int(current_max * 0.8)
+        )
+
         if schema is None:
-            # Plain text mode — only retry on explicit truncation.
-            if last_finish_reason != "length" or current_max >= _MAX_OUTPUT_RETRY_CEILING:
+            # Plain text mode — only retry on REAL truncation.
+            if (
+                last_finish_reason != "length"
+                or fake_truncation
+                or current_max >= _MAX_OUTPUT_RETRY_CEILING
+            ):
                 break
         else:
             try:
                 parsed = json.loads(text)
                 break
             except Exception as parse_exc:
-                if current_max >= _MAX_OUTPUT_RETRY_CEILING or attempt == _MAX_OUTPUT_RETRIES:
+                if (
+                    current_max >= _MAX_OUTPUT_RETRY_CEILING
+                    or attempt == _MAX_OUTPUT_RETRIES
+                    or fake_truncation
+                ):
                     # No more headroom — record and raise with full diagnostics.
                     if _hb_id is not None:
                         with contextlib.suppress(Exception):
