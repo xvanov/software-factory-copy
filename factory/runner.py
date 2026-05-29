@@ -659,13 +659,22 @@ def _build_initial_message(
             parts.append(
                 "The reviewer rejected the previous revision of this PR. The "
                 "tests are already green; your job this pass is to resolve "
-                "EVERY item below, not to re-run the tests. If a request is "
-                "wrong or impossible, say so explicitly in your summary rather "
-                "than silently ignoring it — leaving any item unaddressed will "
-                "cause the reviewer to reject again."
+                "EVERY code item below, not to re-run the tests. If a request "
+                "is wrong or impossible, say so explicitly in your summary "
+                "rather than silently ignoring it — leaving any item "
+                "unaddressed will cause the reviewer to reject again.\n\n"
+                "CRITICAL: test files are FROZEN — you must NOT create, edit, "
+                "or delete any test file to satisfy a finding (doing so blocks "
+                "the story). If addressing a finding would require changing a "
+                "test, do NOT touch the test; instead emit "
+                "``TESTS_NEED_CLARIFICATION:`` on a single line followed by "
+                "which test and why, so the chain routes it to the "
+                "test designer."
             )
             if summary:
                 parts.append(f"\n**Reviewer summary:** {summary[:600]}")
+            if findings:
+                parts.append("\n## Code change requests (fix these in production code)")
             for i, f in enumerate(findings, 1):
                 sev = f.get("severity", "?")
                 loc = f.get("location", "")
@@ -676,15 +685,25 @@ def _build_initial_message(
                     parts.append(f"   - Problem: {what[:500]}")
                 if fix:
                     parts.append(f"   - Suggested fix: {fix[:500]}")
-            for j, f in enumerate(tq_findings, 1):
-                name = f.get("test_name", "")
-                issue = (f.get("issue") or "").strip()
-                fix = (f.get("fix_suggestion") or "").strip()
-                parts.append(f"\nTest-quality {j}. `{name}`".rstrip())
-                if issue:
-                    parts.append(f"   - Issue: {issue[:400]}")
-                if fix:
-                    parts.append(f"   - Suggested fix: {fix[:400]}")
+            # Test-quality findings are about the TESTS, which dev may not edit.
+            # Surface them only so dev can route them via TESTS_NEED_CLARIFICATION
+            # — never as a direct instruction to modify the test files.
+            if tq_findings:
+                parts.append(
+                    "\n## Test-quality concerns — do NOT edit tests yourself"
+                )
+                parts.append(
+                    "The reviewer flagged the tests below. You cannot fix these "
+                    "(test files are frozen). If they are valid, emit "
+                    "``TESTS_NEED_CLARIFICATION:`` naming each test and the issue "
+                    "so the test designer rewrites them. Do NOT modify the tests."
+                )
+                for j, f in enumerate(tq_findings, 1):
+                    name = f.get("test_name", "")
+                    issue = (f.get("issue") or "").strip()
+                    parts.append(f"\nTest-quality {j}. `{name}`".rstrip())
+                    if issue:
+                        parts.append(f"   - Issue: {issue[:400]}")
     if prior_attempts:
         # The chain feeds prior failed attempts forward so the LLM sees what
         # was already tried and which assertions are still red. Without this,

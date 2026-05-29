@@ -143,6 +143,10 @@ def test_build_initial_message_includes_reviewer_findings() -> None:
     assert "orphaned on failure" in msg
     assert "delete the file if persist_metadata raises" in msg
     assert "test_save_upload" in msg
+    # Test-quality findings must NOT instruct dev to edit tests (dev is
+    # forbidden from touching test files); they route via the escape hatch.
+    assert "TESTS_NEED_CLARIFICATION" in msg
+    assert "test files are FROZEN" in msg or "do NOT edit tests" in msg.lower() or "Do NOT modify the tests" in msg
 
 
 def test_build_initial_message_no_reviewer_findings_skips_block() -> None:
