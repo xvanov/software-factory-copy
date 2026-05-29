@@ -72,7 +72,7 @@ except Exception:
   remaining=$(uv run python -c "
 import sqlite3, sys
 c = sqlite3.connect('state/factory.db')
-n = c.execute(\"SELECT COUNT(*) FROM stories WHERE app=? AND state NOT IN ('deployed','blocked_tests_need_clarification','blocked_deployment_skipped','blocked_deploy_failed')\", (sys.argv[1],)).fetchone()[0]
+n = c.execute(\"SELECT COUNT(*) FROM stories WHERE app=? AND state NOT IN ('deployed','blocked_tests_need_clarification','blocked_deployment_skipped','blocked_deploy_failed','blocked_review_nonconvergent')\", (sys.argv[1],)).fetchone()[0]
 print(n)
 " "$APP" 2>/dev/null || echo 0)
   emit "dispatchable remaining=${remaining}"
