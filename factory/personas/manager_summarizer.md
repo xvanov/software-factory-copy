@@ -118,13 +118,14 @@ Available detectors (use the docstrings in the bundle; these are hints only):
 * **`retry_storm`** — per-(story, persona) failure counts. `failure_count >= 3`
   on the same (story, persona) pair is a retry storm.
 * **`review_churn`** — per-story counts of *successful* dev<->reviewer cycles.
-  This is NOT a failure signal — every run succeeded — so the usual
-  "diagnosable error text" lens does not apply. The signal is structural: a
-  story with high `reviewer_cycles` that is `active_in_window` is failing to
-  converge (the reviewer keeps returning `request_changes`, dev keeps changing
-  code, nothing advances) while burning the `total_cost_usd` shown. By its
-  nature this repeats across many watcher intervals — do NOT dismiss it as
-  "unchanged evidence"; the growing cycle count and cost ARE the change.
+  **Auto-handled by the chain; not an L3-escalation trigger.** The chain caps
+  the loop at 3 cycles (routing non-converging stories to the terminal
+  `blocked_review_nonconvergent` state) and routes test-quality rejections to
+  the test loop. A high `review_churn` count therefore describes a condition
+  the chain is already bounding — producing an L3 proposal for it is redundant
+  (there is nothing to fix; the mechanism is deployed). Counts are also
+  cumulative over the event stream, so an operator-reset story can show a high
+  lifetime count while the chain gives it a fresh bounded budget.
 * **`cost_spike`** — recent vs. baseline spend. High ratio alone is not
   escalation-worthy if `recent_usd` is small or baseline is 0 (warmup).
 * **`tick_duration_outliers`** — tick timing. Outliers are inconclusive when
@@ -171,24 +172,21 @@ prior L1 watcher note that flagged this failure already paid for the
 "have I seen this before" check; your job is to translate clarity into
 action, not to require another instance.
 
-**Review-churn is a first-class escalation trigger, not a failure.** When
-the evidence is a `review_churn` observation (or a watcher note describing
-non-converging dev<->reviewer cycles) showing a story with
-`reviewer_cycles >= 6` that is `active_in_window`, set `urgency=warn` and
-`escalate_to_l3=true`. The diagnostic-clarity lens (error text naming a
-cause) does NOT apply here — there is no error, by design; the structural
-pattern *is* the diagnosis. This pattern inherently recurs every interval,
-so the "two distinct intervals agree" bar (warn criterion (a)) is met
-trivially and the "do not re-raise unchanged evidence" rule does NOT apply
-— a still-rising cycle count and `total_cost_usd` is changed evidence and
-ongoing harm. Set `proposed_area` to `prompt` (the most common root cause
-is the dev persona not receiving the full accumulated review history, so it
-fixes one finding while the reviewer raises the next) or `dispatch_code`
-(if the structural fix is a convergence guard / cycle cap); use your
-judgment. In the `escalation_reason`, name the story id, the cycle count,
-and the cumulative cost so far. Do NOT instead recommend making the
-reviewer lenient — the reviewer findings are typically legitimate; the
-problem is non-convergence, not over-strictness.
+**Review-churn is auto-handled by the chain — do NOT escalate it to L3.**
+The dev<->reviewer convergence problem is already solved structurally: the
+chain caps the loop at 3 cycles (routing a non-converging story to the
+terminal `blocked_review_nonconvergent` state), feeds the reviewer's
+findings into the dev prompt on re-dispatch, and routes test-quality
+rejections to the test loop. So a `review_churn` observation describes a
+condition the chain is already bounding — an L3 proposal would be redundant
+(the mechanism is deployed; there is nothing left to fix). For a
+`review_churn`-driven concern, set `urgency=continue, escalate_to_l3=false`
+and note that the chain's convergence guard is handling it. The genuinely
+escalation-worthy signal is the guard *firing*: a story that has reached
+`blocked_review_nonconvergent` (the cap was hit and a human is needed) — but
+that arrives as a blocked-state/queue signal, not as `review_churn`. Never
+recommend making the reviewer lenient — its findings are typically
+legitimate.
 
 When prior concerns reference the same pattern:
 * If the data shows clear improvement, produce a `continue` concern that

@@ -98,20 +98,22 @@ taxonomy):
   Multiple groups in a short window is more serious.
 
 * **`review_churn`** — Per-story counts of *successful* dev<->reviewer
-  cycles. This is the blind-spot complement to `retry_storm`: a story can
-  bounce between dev and reviewer many times with **every run succeeding**
-  (the reviewer keeps returning `request_changes`, not failing), so it
-  trips no failure detector and — because each 60s window sees only one
-  cycle — never looks anomalous in a single bundle. The cycle counts here
-  are **cumulative**, so they reveal churn the window cannot. Calibration:
-  a `reviewer_cycles` of 3-4 may be normal convergence; **escalate when
-  `reviewer_cycles >= 6` AND `active_in_window` is true** (the story is
-  still spinning, not parked) — that is a story failing to converge and
-  silently burning the `total_cost_usd` shown. A high `reviewer_cycles`
-  with `active_in_window: false` is a *parked* story (already stopped
-  cycling); mention it but do not escalate on it alone. This is exactly
-  the "looks like it's working but isn't" pattern — do not be reassured by
-  the runs all being successful.
+  cycles. **This condition is now AUTO-HANDLED by the chain** and is no
+  longer an escalation trigger on its own. The chain caps the dev<->reviewer
+  loop at 3 cycles (the convergence guard routes a non-converging story to
+  the terminal `blocked_review_nonconvergent` state) and routes test-quality
+  rejections to the test loop automatically. So a story showing high
+  `review_churn` is already being bounded by the chain — escalating it to L2
+  only triggers an expensive, redundant L3 re-diagnosis of a self-healing
+  condition. **Do NOT escalate on `review_churn` counts.** Note it in the
+  observation for visibility, but `escalate_to_l2` stays false for churn
+  alone. Caveat: `review_churn` counts are cumulative over the event stream,
+  so a story whose guard counter was reset by an operator can still show a
+  high lifetime count here even though the chain is giving it a fresh
+  bounded budget — another reason not to treat the raw count as actionable.
+  The meaningful, escalation-worthy signal is the guard *firing*: a story in
+  `blocked_review_nonconvergent` (the loop hit the cap and a human is needed)
+  — surface that via the queue/state signals, not via `review_churn`.
 
 * **`cost_spike`** — Recent spend vs. trailing baseline. A `ratio` of 2-3x
   may be normal after a cold start (baseline = 0). A `ratio` of 5-10x
