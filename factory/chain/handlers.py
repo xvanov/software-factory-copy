@@ -55,6 +55,7 @@ from factory.chain.state_machine import (
     EVENT_TEST_DESIGN_DONE,
     EVENT_TEST_DESIGN_STARTED,
     EVENT_TEST_IMPL_SLOP,
+    EVENT_TEST_IMPL_SLOP_RETRY,
     EVENT_TEST_IMPL_STARTED,
     EVENT_TESTS_NEED_CLARIFICATION,
     EVENT_TESTS_RED,
@@ -1030,8 +1031,68 @@ def handle_test_implementation(
     story.test_implementer_result_json = json.dumps(result)
 
     if result.get("slop_detected"):
+        # Tests passed with NO implementation present → vacuous/slop tests.
+        # This is a test-QUALITY problem, not env breakage: re-run the
+        # Test-Implementer with explicit feedback so it rewrites the tests to
+        # actually exercise the unbuilt behavior (red). Cap retries per the
+        # "nothing loops >3" rule; only block for human attention at the cap.
+        from factory.chain.event_log import read_story_events
+
+        prior_slop_retries = sum(
+            1
+            for e in read_story_events(
+                story.id, software_factory_root=software_factory_root, slug_hint=story.slug
+            )
+            if e.get("event") == "test_impl_slop_retry"
+        )
+        if prior_slop_retries < _MAX_TEST_IMPL_SLOP_RETRIES:
+            # Feed the slop back through the SAME channel the reviewer
+            # test-quality rejection uses: handle_test_implementation reads
+            # ``story.reviewer_result_json`` for ``test_quality_findings`` and
+            # _build_initial_message renders them as "rewrite the TESTS".
+            story.reviewer_result_json = json.dumps(
+                {
+                    "summary": (
+                        "Your tests PASSED before any implementation existed. They do "
+                        "not exercise the new behavior — a correct TDD test must FAIL "
+                        "(red) until the feature is built."
+                    ),
+                    "test_quality_findings": [
+                        {
+                            "test_name": "(all newly-written tests)",
+                            "issue": (
+                                "The suite passes with no production implementation "
+                                "present, so it asserts nothing about the feature this "
+                                "story introduces (vacuous / slop tests)."
+                            ),
+                            "fix_suggestion": (
+                                "Rewrite the tests to import and assert on the specific "
+                                "new API/behavior the story adds, so they fail now and "
+                                "pass only once dev implements it."
+                            ),
+                        }
+                    ],
+                }
+            )
+            story.state = advance(story, EVENT_TEST_IMPL_SLOP_RETRY).value
+            story.error = None
+            persist_story(story, db)
+            log_story_event(
+                story.id,
+                "test_impl_slop_retry",
+                {"attempt": prior_slop_retries + 1, "cap": _MAX_TEST_IMPL_SLOP_RETRIES},
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
+            )
+            return HandlerResult(next_state=StoryState(story.state), payload=result)
+
+        # Cap hit — the test loop couldn't produce non-vacuous tests. Block for
+        # human attention.
         story.state = advance(story, EVENT_TEST_IMPL_SLOP).value
-        story.error = "tests passed pre-implementation (slop)"
+        story.error = (
+            f"tests passed pre-implementation (slop) after "
+            f"{prior_slop_retries} test_implementer retries"
+        )
         persist_story(story, db)
         return HandlerResult(
             next_state=StoryState(story.state),
@@ -1317,6 +1378,14 @@ def handle_harness_precheck(
 # attempts (dev now also receives the reviewer findings + the full prior-
 # attempt history) materially improve convergence on the harder stories.
 _MAX_DEV_RETRIES = 6
+
+# Test-Implementer slop retry cap. When the Test-Implementer's tests pass
+# BEFORE any implementation exists, they are vacuous (don't exercise the new
+# behavior). That's a test-quality problem the test loop can fix, so we re-run
+# the Test-Implementer with explicit slop feedback rather than terminally
+# blocking — but capped at this many retries per the "nothing loops >3" rule.
+# Counted from ``test_impl_slop_retry`` events in the per-story log.
+_MAX_TEST_IMPL_SLOP_RETRIES = 3
 
 # Hard convergence guard. A healthy story converges within a few review
 # rounds; beyond this many request-changes verdicts the dev<->reviewer loop

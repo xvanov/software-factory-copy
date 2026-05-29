@@ -175,6 +175,12 @@ EVENT_TEST_DESIGN_DONE = "test_design_done"
 EVENT_TEST_IMPL_STARTED = "test_impl_started"
 EVENT_TESTS_RED = "tests_red"
 EVENT_TEST_IMPL_SLOP = "test_impl_slop"
+# Test-Implementer slop (tests passed before any implementation existed) but
+# under the retry cap: route BACK to the test loop (test_implementer rewrites
+# the tests with explicit slop feedback) instead of terminally blocking. Caps
+# at _MAX_TEST_IMPL_SLOP_RETRIES per the "nothing loops >3" rule; the EVENT_
+# TEST_IMPL_SLOP edge above is the terminal block taken once the cap is hit.
+EVENT_TEST_IMPL_SLOP_RETRY = "test_impl_slop_retry"
 # Item 4 — harness precheck events. Started fires on the
 # TESTS_RED→HARNESS_PRECHECK_IN_PROGRESS edge; PASS routes to DEV_IN_PROGRESS;
 # FAIL routes to BLOCKED_TESTS_NEED_CLARIFICATION (same terminal blocked
@@ -241,6 +247,11 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
         StoryState.TEST_IMPLEMENTATION_IN_PROGRESS,
         EVENT_TEST_IMPL_SLOP,
     ): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
+    # Slop under the retry cap → back to the test loop to rewrite the tests.
+    (
+        StoryState.TEST_IMPLEMENTATION_IN_PROGRESS,
+        EVENT_TEST_IMPL_SLOP_RETRY,
+    ): StoryState.TEST_DESIGN_DONE,
     # Item 4 — harness precheck between TESTS_RED and DEV. Runs ONCE
     # per story (the orchestrator's dispatch table reads
     # ``story.harness_precheck_passed`` and skips re-running on
