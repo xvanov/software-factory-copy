@@ -91,6 +91,17 @@ def test_tests_slop_bounces_to_blocked() -> None:
     assert next_state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION
 
 
+def test_pr_unmergeable_sinks_to_blocked_deploy_failed() -> None:
+    """Auto-merge giving up on a terminally un-mergeable PR routes the story
+    from any mergeable state to BLOCKED_DEPLOY_FAILED so it stops being
+    retried every tick."""
+    from factory.chain.state_machine import EVENT_PR_UNMERGEABLE
+
+    for src in (StoryState.PR_OPEN, StoryState.CI_GREEN, StoryState.READY_FOR_MERGE):
+        s = _story(src)
+        assert advance(s, EVENT_PR_UNMERGEABLE) == StoryState.BLOCKED_DEPLOY_FAILED
+
+
 def test_dev_retry_loops_then_exhausts() -> None:
     """Dev failure path: DEV_IN_PROGRESS -> DEV_RETRY -> DEV_IN_PROGRESS until exhausted."""
     s = _story(StoryState.DEV_IN_PROGRESS)

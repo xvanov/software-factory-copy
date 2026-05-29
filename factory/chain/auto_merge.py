@@ -310,6 +310,42 @@ def _gh_pr_merge(
     return None
 
 
+def _pr_terminally_unmergeable(
+    *, app_config: AppConfig, pr_number: int, github_client: Any
+) -> bool:  # pragma: no cover - real-run path; queries live GH state
+    """Return True when a PR can never be merged by retrying.
+
+    A merge can fail transiently (CI still pending, ``--auto`` not yet
+    enabled). But a PR that is CLOSED, already MERGED out-of-band, or
+    CONFLICTING/DIRTY will fail on *every* tick — retrying it forever wedges
+    the auto-merge worker and keeps drive_chain idle-spinning on a story that
+    can never advance. Detect those terminal conditions so the caller can sink
+    the story to a blocked state instead.
+    """
+    import json as _json
+    import subprocess
+
+    cmd = [
+        "gh", "pr", "view", str(pr_number), "--repo", app_config.repo,
+        "--json", "state,mergeable,mergeStateStatus",
+    ]
+    try:
+        out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+        data = _json.loads(out)
+    except subprocess.CalledProcessError:
+        # gh couldn't resolve the PR at all (deleted / wrong repo) — that is
+        # itself terminal: retrying will never succeed.
+        return True
+    except (FileNotFoundError, ValueError):
+        # gh missing or unparseable output — don't make a terminal call we
+        # can't justify; let the normal retry path continue.
+        return False
+    state = str(data.get("state", "")).upper()
+    mergeable = str(data.get("mergeable", "")).upper()
+    merge_status = str(data.get("mergeStateStatus", "")).upper()
+    return state in ("CLOSED", "MERGED") or mergeable == "CONFLICTING" or merge_status == "DIRTY"
+
+
 def auto_merge_tick(
     software_factory_root: Path,
     app: str,
@@ -483,6 +519,34 @@ def auto_merge_tick(
                     # queue entry still drives the work; the story will be
                     # reconciled by the orchestrator on a later tick.
                     pass
+        elif (
+            not dry_run
+            and not action.merged
+            and action.reason.startswith("gh merge failed")
+            and f.story is not None
+            and f.story.state in _MERGEABLE_STATES
+            and _pr_terminally_unmergeable(
+                app_config=cfg, pr_number=action.pr_number, github_client=github_client
+            )
+        ):
+            # The PR can never be merged (closed / already-merged / conflicting).
+            # Sink the story to BLOCKED_DEPLOY_FAILED so the worker stops retrying
+            # it every tick and drive_chain's dispatchable count can drain to DONE.
+            from factory.chain.state_machine import EVENT_PR_UNMERGEABLE, advance
+
+            try:
+                f.story.state = advance(f.story, EVENT_PR_UNMERGEABLE).value
+                f.story.error = (
+                    f"auto-merge gave up: PR #{action.pr_number} is terminally "
+                    f"un-mergeable (closed/merged/conflicting). Needs human "
+                    f"resolution."
+                )
+                eng = _engine(db)
+                with Session(eng) as session:
+                    session.add(f.story)
+                    session.commit()
+            except Exception:
+                pass
         # Emit auto_merge_attempt signal — best-effort, never raises.
         try:
             from factory.manager.signals import write_git_event as _wge_am

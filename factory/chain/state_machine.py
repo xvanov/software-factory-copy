@@ -217,6 +217,10 @@ EVENT_DEPLOY_STARTED = "deploy_started"
 EVENT_DEPLOY_SUCCEEDED = "deploy_succeeded"
 EVENT_DEPLOY_FAILED = "deploy_failed"
 EVENT_DEPLOY_SKIPPED = "deploy_skipped"  # mode/cap rejection or deploy.enabled=false
+# Auto-merge worker gave up: the PR is terminally un-mergeable (closed,
+# already-merged out-of-band, or CONFLICTING/DIRTY). Routes the story to the
+# terminal BLOCKED_DEPLOY_FAILED sink so it stops being retried every tick.
+EVENT_PR_UNMERGEABLE = "pr_unmergeable"
 
 
 # Lookup table: (current_state, event) -> next_state.
@@ -349,6 +353,12 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
     (StoryState.READY_FOR_MERGE, EVENT_MERGED): StoryState.DEPLOY_PENDING,
     (StoryState.CI_GREEN, EVENT_MERGED): StoryState.DEPLOY_PENDING,
     (StoryState.PR_OPEN, EVENT_MERGED): StoryState.DEPLOY_PENDING,
+    # Auto-merge gave up on a terminally un-mergeable PR (closed/conflicting):
+    # route the story to the blocked sink so the worker stops retrying it every
+    # tick and the chain can reach DONE. Reachable from every mergeable state.
+    (StoryState.PR_OPEN, EVENT_PR_UNMERGEABLE): StoryState.BLOCKED_DEPLOY_FAILED,
+    (StoryState.CI_GREEN, EVENT_PR_UNMERGEABLE): StoryState.BLOCKED_DEPLOY_FAILED,
+    (StoryState.READY_FOR_MERGE, EVENT_PR_UNMERGEABLE): StoryState.BLOCKED_DEPLOY_FAILED,
     (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_STARTED): StoryState.DEPLOY_PENDING,
     (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_SUCCEEDED): StoryState.DEPLOYED,
     (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_FAILED): StoryState.BLOCKED_DEPLOY_FAILED,
