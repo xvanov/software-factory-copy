@@ -446,6 +446,22 @@ class TestPreLoadSourceRespectsProposedArea:
         for content in files.values():
             assert len(content) <= 16384 + 50  # small buffer for the truncation notice
 
+    def test_total_bundle_cap_enforced(self) -> None:
+        """The whole bundle must stay within _BUNDLE_TOTAL_CAP, not just warn.
+
+        prompt_edit loads every persona, which historically pushed the bundle
+        to ~147KB; the diagnostician then silently received an over-budget
+        context. The cap must now be enforced by trimming.
+        """
+        from factory.manager.diagnostician import _BUNDLE_TOTAL_CAP
+
+        files = _pre_load_source("prompt_edit", factory_dir=self._factory_dir)
+        total = sum(len(v) for v in files.values())
+        # Allow a small per-file overage for the appended truncation-notice strings.
+        assert total <= _BUNDLE_TOTAL_CAP + 200 * len(files)
+        # Sanity: trimming kept every file represented, none dropped.
+        assert len(files) >= 5
+
 
 # ---------------------------------------------------------------------------
 # Tests: invalid JSON response → sentinel escalation

@@ -320,12 +320,31 @@ def _pre_load_source(
             text = text[:_CONTEXT_MODULE_CAP] + "\n...[truncated at 16KB]"
         files[f"[context-module:{mod_name}]"] = text
 
-    # Warn if bundle is too large.
+    # Enforce the bundle cap instead of merely warning. Previously this only
+    # logged when the total exceeded the cap, so the frontier model silently
+    # received an over-budget bundle (e.g. prompt_edit loads ALL personas →
+    # ~147KB) and the provider truncated it arbitrarily — degrading every L3
+    # diagnosis. Deterministically shrink each file to an equal share of the
+    # budget so the total stays under the cap and every file remains visible
+    # (truncated, not dropped). Files already under their share are untouched.
     total = sum(len(v) for v in files.values())
-    if total > _BUNDLE_TOTAL_CAP:
+    if total > _BUNDLE_TOTAL_CAP and files:
+        per_file_budget = max(1, _BUNDLE_TOTAL_CAP // len(files))
+        trimmed = 0
+        for key in list(files):
+            if len(files[key]) > per_file_budget:
+                files[key] = (
+                    files[key][:per_file_budget]
+                    + f"\n...[truncated to {per_file_budget} chars to fit the "
+                    f"{_BUNDLE_TOTAL_CAP}-char L3 context budget across "
+                    f"{len(files)} files]"
+                )
+                trimmed += 1
+        new_total = sum(len(v) for v in files.values())
         print(
-            f"[diagnostician] WARNING: pre-loaded source bundle is {total} chars "
-            f"(>{_BUNDLE_TOTAL_CAP} cap); LLM context may be degraded.",
+            f"[diagnostician] bundle was {total} chars (>{_BUNDLE_TOTAL_CAP} cap); "
+            f"trimmed {trimmed}/{len(files)} files to {per_file_budget} chars each "
+            f"-> {new_total} chars.",
             file=sys.stderr,
         )
 
