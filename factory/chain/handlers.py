@@ -1064,6 +1064,61 @@ def handle_test_implementation(
 _HARNESS_PRECHECK_OK_EXIT_CODES = {0, 1}
 _HARNESS_PRECHECK_TIMEOUT_S = 120
 
+# Directories never treated as first-party source when resolving an import.
+_NON_SOURCE_DIRS = {".venv", "venv", "site-packages", "node_modules", ".git", "__pycache__"}
+
+
+def _first_party_package_exists(worktree_root: Path, top: str) -> bool:
+    """True if ``top`` is a first-party Python package in the worktree.
+
+    Checks the repo root and one level down (covers ``backend/app`` layouts)
+    for a ``<top>/__init__.py``. Deliberately shallow: source packages live at
+    the repo root or one directory in, never buried inside ``.venv``.
+    """
+    candidates = [worktree_root / top]
+    try:
+        for child in worktree_root.iterdir():
+            if child.is_dir() and child.name not in _NON_SOURCE_DIRS:
+                candidates.append(child / top)
+    except OSError:
+        return False
+    return any((c / "__init__.py").exists() for c in candidates)
+
+
+def _collection_failure_is_module_under_construction(output: str, worktree_root: Path) -> bool:
+    """Classify a pytest collection failure (exit 2) as a legitimate TDD red.
+
+    A brand-new-module story writes a test that imports the very module the
+    story is meant to create (``from app.models.media_upload import ...``).
+    At ``--collect-only`` time that import raises ``ModuleNotFoundError`` and
+    pytest exits 2 — which the precheck would otherwise classify as
+    environmental breakage and block. But this is the NORMAL red state for a
+    new module: dev CAN fix it by creating the module.
+
+    Returns True only when EVERY import error names a FIRST-PARTY module
+    (its top-level package exists as source in the worktree). A missing
+    third-party dependency (top package absent) or a broken ``conftest.py``
+    is genuine environmental breakage → returns False → the story still
+    blocks for operator attention.
+    """
+    # A conftest collection error is shared-infra breakage, never a single
+    # story's module-under-construction. Block.
+    if re.search(r"\bconftest\.py\b", output):
+        return False
+    missing = re.findall(r"ModuleNotFoundError: No module named ['\"]([\w.]+)['\"]", output)
+    cannot_import = re.findall(
+        r"ImportError: cannot import name ['\"][\w]+['\"] from ['\"]([\w.]+)['\"]",
+        output,
+    )
+    candidates = missing + cannot_import
+    if not candidates:
+        # Exit 2 with no import error we recognise (SyntaxError, usage error,
+        # etc.) — don't second-guess it; block.
+        return False
+    # Every reported failure must be a first-party module. One missing
+    # third-party package is enough to keep the whole thing blocked.
+    return all(_first_party_package_exists(worktree_root, mod.split(".")[0]) for mod in candidates)
+
 
 def handle_harness_precheck(
     story: StoryRecord,
@@ -1074,6 +1129,7 @@ def handle_harness_precheck(
     db_path: Path | None = None,
     fixture_exit_code: int | None = None,
     fixture_output: str | None = None,
+    fixture_worktree_root: Path | None = None,
 ) -> HandlerResult:
     """Run a one-shot test-collection check before dev gets dispatched.
 
@@ -1104,6 +1160,7 @@ def handle_harness_precheck(
 
     exit_code: int
     output: str
+    worktree_root: Path | None = fixture_worktree_root
 
     if fixture_exit_code is not None:
         exit_code = fixture_exit_code
@@ -1137,6 +1194,7 @@ def handle_harness_precheck(
             if "pytest" in test_command and "--collect-only" not in test_command:
                 precheck_command = f"{test_command} --collect-only"
             target_repo = _writing_worktree(app_config, software_factory_root, story)
+            worktree_root = target_repo
             try:
                 import subprocess
 
@@ -1161,12 +1219,29 @@ def handle_harness_precheck(
     passed = exit_code in _HARNESS_PRECHECK_OK_EXIT_CODES
     tail = output[-2000:]
 
+    # Module-under-construction reclassification. A collection failure (exit 2)
+    # caused solely by an ImportError for a FIRST-PARTY module the story is
+    # meant to create is a legitimate TDD red — not environmental breakage dev
+    # can't fix. Without this, every new-module story (new model, service,
+    # package) blocks at precheck because its test imports a module that does
+    # not exist yet. We let dev proceed; the missing module IS dev's job.
+    under_construction = False
+    if (
+        not passed
+        and exit_code == 2
+        and worktree_root is not None
+        and _collection_failure_is_module_under_construction(output, worktree_root)
+    ):
+        under_construction = True
+        passed = True
+
     log_story_event(
         story.id,
         "harness_precheck",
         {
             "exit_code": exit_code,
             "passed": passed,
+            "module_under_construction": under_construction,
             "output_tail": tail[-600:],
         },
         software_factory_root=software_factory_root,
@@ -1182,6 +1257,7 @@ def handle_harness_precheck(
             payload={
                 "passed": True,
                 "exit_code": exit_code,
+                "module_under_construction": under_construction,
                 "output_tail": tail,
             },
         )
