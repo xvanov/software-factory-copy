@@ -292,6 +292,51 @@ def _count_app_in_flight(db: Path, app: str, exclude_story_id: int | None = None
     )
 
 
+# Docs-chain serialization (loop-3 fix). Multiple docs stories for the same
+# app rewrite an overlapping set of canonical ``context/*.md`` files
+# (current-state.md, project.md, navigation.md, the shared module docs…). When
+# two docs PRs are open at once, whichever auto-merges second goes DIRTY /
+# CONFLICTING and dies in ``blocked_deploy_failed`` (observed: PRs #88/#89).
+# The agent-concurrency cap can't prevent this because PR_OPEN and the CI/merge
+# states are in ``_NON_CAP_COUNTING_STATES`` — two docs stories can both sit in
+# PR_OPEN and conflict at merge time. So we serialize docs stories with a
+# dedicated counter that DOES span the open-PR/merge window: a docs story is
+# "active" from the moment its first handler is dispatched until it is DEPLOYED
+# or terminal. While any docs story for an app is active, no *other* docs story
+# for that app leaves STORY_CREATED — the next one waits, then regenerates its
+# diff against the prior story's already-merged content (conflict-free).
+_DOCS_ACTIVE_STATES = {
+    StoryState.DOCS_SM_IN_PROGRESS.value,
+    StoryState.DOCS_SM_DONE.value,
+    StoryState.DOCS_ONBOARDER_IN_PROGRESS.value,
+    StoryState.DOCS_ONBOARDER_DONE.value,
+    StoryState.DOCS_ENFORCER_CHECK.value,
+    StoryState.PR_OPEN.value,
+    StoryState.CI_PENDING.value,
+    StoryState.CI_GREEN.value,
+    StoryState.READY_FOR_MERGE.value,
+    StoryState.DEPLOY_PENDING.value,
+}
+
+
+def _count_app_docs_active(db: Path, app: str, exclude_story_id: int | None = None) -> int:
+    """Count docs-chain stories for ``app`` with a live (or pending) PR.
+
+    Spans the whole open-PR/merge window (see ``_DOCS_ACTIVE_STATES``) so the
+    serialization gate holds two docs PRs from being open simultaneously.
+    """
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        rows = session.exec(select(StoryRecord).where(StoryRecord.app == app)).all()
+    return sum(
+        1
+        for r in rows
+        if r.chain_kind == "docs"
+        and r.state in _DOCS_ACTIVE_STATES
+        and (exclude_story_id is None or r.id != exclude_story_id)
+    )
+
+
 # Mapping from a stranded ``*_in_progress`` state back to its
 # dispatch-eligible predecessor. Used by ``_prune_stale_in_progress`` to
 # recover rows that didn't reach the handler's normal exit (process kill,
@@ -643,6 +688,32 @@ def tick(
                 if handler_name is None:
                     # No handler for this state — either in-progress (waiting on
                     # webhook) or terminal. Stop driving.
+                    break
+
+                # Docs-chain serialization gate. A docs story may only LEAVE
+                # STORY_CREATED when no other docs story for this app is already
+                # active (open PR / mid-merge). This prevents two docs PRs —
+                # which rewrite an overlapping set of canonical context files —
+                # from being open at once and conflicting at merge time
+                # (root cause of the blocked_deploy_failed docs backlog). The
+                # gate fires only at the start state, so an already-running docs
+                # story is never blocked by itself, and STORY_CREATED siblings
+                # don't count as active → exactly one wins per tick, no deadlock.
+                if (
+                    story.chain_kind == "docs"
+                    and story.state == StoryState.STORY_CREATED.value
+                    and _count_app_docs_active(db, app, exclude_story_id=story.id) > 0
+                ):
+                    log_story_event(
+                        story.id,
+                        "docs_serialized",
+                        {
+                            "reason": "another docs story for this app has an "
+                            "active PR; deferring to avoid context-file conflict",
+                        },
+                        software_factory_root=root,
+                        slug_hint=story.slug,
+                    )
                     break
 
                 # Backpressure check before dispatch. The current_state dict is

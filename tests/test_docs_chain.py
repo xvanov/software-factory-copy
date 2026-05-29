@@ -185,3 +185,70 @@ def test_tdd_kind_story_still_uses_tdd_chain(factory_tree: Path, app_config: App
     assert refreshed.state != StoryState.DOCS_SM_DONE.value
     # SM dry-run advances to SM_DONE in one tick step.
     assert refreshed.state in (StoryState.SM_DONE.value, StoryState.SM_IN_PROGRESS.value)
+
+
+def test_second_docs_story_deferred_while_another_has_open_pr(
+    factory_tree: Path, app_config: AppConfig
+) -> None:
+    """Docs serialization gate: while one docs story for the app holds an open
+    PR, a second docs story must NOT leave STORY_CREATED.
+
+    Regression guard for the blocked_deploy_failed docs backlog — two docs PRs
+    open at once rewrite overlapping context files and conflict at merge time
+    (observed: PRs #88/#89). The first must fully deploy before the second
+    starts, so the second regenerates against the first's merged content.
+    """
+    db = factory_tree / "state" / "factory.db"
+    # Story A already mid-flight with an open PR (active for serialization).
+    active = persist_story(
+        StoryRecord(
+            id=None,
+            direction_id="005",
+            app="sacrifice",
+            title="Docs A",
+            slug="docs-a",
+            scope="docs",
+            state=StoryState.PR_OPEN.value,
+            chain_kind="docs",
+            github_issue_number=50,
+            github_pr_number=88,
+            story_file_path="stories/50-docs-a.md",
+        ),
+        db,
+    )
+    # Story B freshly queued — must be held back.
+    queued = persist_story(
+        StoryRecord(
+            id=None,
+            direction_id="005",
+            app="sacrifice",
+            title="Docs B",
+            slug="docs-b",
+            scope="docs",
+            state=StoryState.STORY_CREATED.value,
+            chain_kind="docs",
+            github_issue_number=51,
+            story_file_path="stories/51-docs-b.md",
+        ),
+        db,
+    )
+
+    orchestrator.tick(
+        factory_tree,
+        "sacrifice",
+        dry_run=True,
+        db_path=db,
+        max_advances_per_story=10,
+    )
+
+    from sqlmodel import Session, create_engine, select
+
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        b = session.exec(select(StoryRecord).where(StoryRecord.id == queued.id)).one()
+        a = session.exec(select(StoryRecord).where(StoryRecord.id == active.id)).one()
+    # B stays queued (deferred); A (terminal-for-orchestrator PR_OPEN) untouched.
+    assert b.state == StoryState.STORY_CREATED.value, (
+        f"second docs story should be deferred while another has an open PR; got {b.state!r}"
+    )
+    assert a.state == StoryState.PR_OPEN.value
