@@ -329,10 +329,13 @@ def test_precheck_real_pytest_against_clean_worktree(tmp_path: Path) -> None:
         db_path=root / "state" / "factory.db",
     )
 
-    # Real pytest collects + fails => exit 1 => precheck passes.
+    # The precheck now runs collection-only (--collect-only): real pytest
+    # collects the suite successfully => exit 0 => precheck passes. (It no
+    # longer executes the tests, so we don't see the exit-1 "red" code — the
+    # point of the precheck is collectability, not red/green.)
     assert result.next_state == StoryState.TESTS_RED
     assert story.harness_precheck_passed is True
-    assert result.payload["exit_code"] == 1
+    assert result.payload["exit_code"] == 0
 
 
 def test_precheck_real_pytest_against_broken_conftest_fails(

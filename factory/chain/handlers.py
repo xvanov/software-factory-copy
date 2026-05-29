@@ -1124,12 +1124,24 @@ def handle_harness_precheck(
             exit_code = 1
             output = "(no app_config.gates.test_command configured; precheck skipped)"
         else:
+            # The precheck's job is to verify the harness can COLLECT the test
+            # suite (catch ImportError / broken conftest / missing deps) BEFORE
+            # dev runs — NOT to execute the suite. Executing the full command
+            # makes the precheck run (and hang on) heavy/e2e tests, timing out
+            # at _HARNESS_PRECHECK_TIMEOUT_S (exit 124) and wedging otherwise
+            # healthy stories. For pytest, append --collect-only: it imports
+            # every test module (surfacing the exact collection failures this
+            # precheck is meant to catch, exit 2) in ~1s without executing any
+            # test body. Non-pytest commands (e.g. playwright) run unchanged.
+            precheck_command = test_command
+            if "pytest" in test_command and "--collect-only" not in test_command:
+                precheck_command = f"{test_command} --collect-only"
             target_repo = _writing_worktree(app_config, software_factory_root, story)
             try:
                 import subprocess
 
                 proc = subprocess.run(
-                    test_command,
+                    precheck_command,
                     shell=True,
                     cwd=str(target_repo),
                     capture_output=True,
@@ -1224,7 +1236,11 @@ def handle_harness_precheck(
 # is wrong, context docs are missing key info, etc.) — not a problem
 # more retries can fix. Exhaustion fires an explicit
 # ``factory_needs_redesign`` event so the operator sees the signal.
-_MAX_DEV_RETRIES = 3
+# Bumped 3 -> 6 (operator-approved 2026-05-29): many stories were landing
+# 1-N tests short of green and exhausting the budget; the extra informed
+# attempts (dev now also receives the reviewer findings + the full prior-
+# attempt history) materially improve convergence on the harder stories.
+_MAX_DEV_RETRIES = 6
 
 # Hard convergence guard. A healthy story converges within a few review
 # rounds; beyond this many request-changes verdicts the dev<->reviewer loop
