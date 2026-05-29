@@ -55,10 +55,11 @@ def test_high_quality_approve_advances_to_reviewer_done(
     assert s.state == StoryState.REVIEWER_DONE.value
 
 
-def test_low_test_quality_score_bounces_to_request_changes(
+def test_low_test_quality_score_routes_to_test_loop(
     temp_root: Path, app_config: AppConfig
 ) -> None:
-    """Score below 0.7 triggers REVIEWER_REQUESTED_CHANGES even if verdict=approve."""
+    """Score below 0.7 routes to the TEST loop (test_implementer rewrites the
+    tests), NOT to dev — dev cannot edit frozen test files."""
     s = _story_at_tests_green(temp_root)
     db = temp_root / "state" / "factory.db"
     fixture = {
@@ -76,7 +77,7 @@ def test_low_test_quality_score_bounces_to_request_changes(
         "summary": "slop tests",
     }
     result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
-    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
+    assert result.next_state == StoryState.TEST_DESIGN_DONE
     # Reviewer persisted the JSON for later inspection.
     assert s.reviewer_result_json is not None
     assert "0.42" in s.reviewer_result_json or "0.4" in s.reviewer_result_json
@@ -181,6 +182,44 @@ def test_guard_blocks_at_max_cycles(temp_root: Path, app_config: AppConfig) -> N
     assert result.next_state == StoryState.BLOCKED_REVIEW_NONCONVERGENT
     assert s.state == StoryState.BLOCKED_REVIEW_NONCONVERGENT.value
     assert s.error is not None and "did not converge" in s.error
+
+
+def test_request_changes_low_score_routes_to_test_loop(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    """request_changes with test_quality_score < 0.7 → test loop, not dev."""
+    s = _story_at_tests_green_with_cycles(temp_root, 0)
+    db = temp_root / "state" / "factory.db"
+    fixture = {
+        "verdict": "request_changes",
+        "findings": [
+            {"severity": "medium", "location": "t.test.ts:3",
+             "what": "401 test asserts only substring", "fix_suggestion": "assert status"}
+        ],
+        "test_quality_score": 0.55,
+        "test_quality_findings": [
+            {"test_name": "test_401", "issue": "sloppy assertion",
+             "fix_suggestion": "assert preserved status"}
+        ],
+        "comments_to_post": [],
+        "summary": "tests are weak",
+    }
+    result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
+    assert result.next_state == StoryState.TEST_DESIGN_DONE
+    assert s.reviewer_cycles == 1  # still counts toward the convergence guard
+
+
+def test_request_changes_high_score_routes_to_dev(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    """request_changes with a healthy test score → dev (code fix), not test loop."""
+    s = _story_at_tests_green_with_cycles(temp_root, 0)
+    db = temp_root / "state" / "factory.db"
+    result = handle_review(
+        s, app_config, temp_root, dry_run=True, db_path=db,
+        fixture=_REQUEST_CHANGES_FIXTURE,  # test_quality_score 0.85
+    )
+    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
 
 
 def test_approve_never_triggers_guard(temp_root: Path, app_config: AppConfig) -> None:

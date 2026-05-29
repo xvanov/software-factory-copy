@@ -653,57 +653,94 @@ def _build_initial_message(
         findings = reviewer_findings.get("findings") or []
         tq_findings = reviewer_findings.get("test_quality_findings") or []
         summary = (reviewer_findings.get("summary") or "").strip()
+        # The reviewer findings reach two different personas on two different
+        # re-dispatch paths: dev (code findings; tests frozen) and
+        # test_implementer (test-quality rejection; rewriting tests IS the job).
+        # Frame the section for whichever persona is reading it.
+        is_test_persona = persona in ("test_implementer", "test_designer")
         if findings or tq_findings or summary:
             parts.append("---")
-            parts.append("# Reviewer change requests — you MUST address ALL of these")
-            parts.append(
-                "The reviewer rejected the previous revision of this PR. The "
-                "tests are already green; your job this pass is to resolve "
-                "EVERY code item below, not to re-run the tests. If a request "
-                "is wrong or impossible, say so explicitly in your summary "
-                "rather than silently ignoring it — leaving any item "
-                "unaddressed will cause the reviewer to reject again.\n\n"
-                "CRITICAL: test files are FROZEN — you must NOT create, edit, "
-                "or delete any test file to satisfy a finding (doing so blocks "
-                "the story). If addressing a finding would require changing a "
-                "test, do NOT touch the test; instead emit "
-                "``TESTS_NEED_CLARIFICATION:`` on a single line followed by "
-                "which test and why, so the chain routes it to the "
-                "test designer."
-            )
-            if summary:
-                parts.append(f"\n**Reviewer summary:** {summary[:600]}")
-            if findings:
-                parts.append("\n## Code change requests (fix these in production code)")
-            for i, f in enumerate(findings, 1):
-                sev = f.get("severity", "?")
-                loc = f.get("location", "")
-                what = (f.get("what") or "").strip()
-                fix = (f.get("fix_suggestion") or "").strip()
-                parts.append(f"\n{i}. **[{sev}]** {loc}".rstrip())
-                if what:
-                    parts.append(f"   - Problem: {what[:500]}")
-                if fix:
-                    parts.append(f"   - Suggested fix: {fix[:500]}")
-            # Test-quality findings are about the TESTS, which dev may not edit.
-            # Surface them only so dev can route them via TESTS_NEED_CLARIFICATION
-            # — never as a direct instruction to modify the test files.
-            if tq_findings:
+            if is_test_persona:
+                parts.append("# Reviewer rejected the TESTS — rewrite them to fix this")
                 parts.append(
-                    "\n## Test-quality concerns — do NOT edit tests yourself"
+                    "The reviewer rejected the previous revision on test "
+                    "quality. Rewrite the test files so they resolve EVERY "
+                    "concern below — correct file location per the test plan, "
+                    "tighten weak/sloppy assertions, and add the missing "
+                    "behavioral coverage. Editing the test files is exactly "
+                    "your job here; do not touch production code."
                 )
-                parts.append(
-                    "The reviewer flagged the tests below. You cannot fix these "
-                    "(test files are frozen). If they are valid, emit "
-                    "``TESTS_NEED_CLARIFICATION:`` naming each test and the issue "
-                    "so the test designer rewrites them. Do NOT modify the tests."
-                )
+                if summary:
+                    parts.append(f"\n**Reviewer summary:** {summary[:600]}")
+                if tq_findings:
+                    parts.append("\n## Test-quality findings (fix each)")
                 for j, f in enumerate(tq_findings, 1):
                     name = f.get("test_name", "")
                     issue = (f.get("issue") or "").strip()
-                    parts.append(f"\nTest-quality {j}. `{name}`".rstrip())
+                    fix = (f.get("fix_suggestion") or "").strip()
+                    parts.append(f"\n{j}. `{name}`".rstrip())
                     if issue:
                         parts.append(f"   - Issue: {issue[:400]}")
+                    if fix:
+                        parts.append(f"   - Suggested fix: {fix[:400]}")
+                # Code findings that are really about tests/coverage also help.
+                if findings:
+                    parts.append("\n## Reviewer code/coverage findings (for context)")
+                for i, f in enumerate(findings, 1):
+                    loc = f.get("location", "")
+                    what = (f.get("what") or "").strip()
+                    parts.append(f"\n{i}. {loc}".rstrip())
+                    if what:
+                        parts.append(f"   - {what[:400]}")
+            else:
+                parts.append("# Reviewer change requests — you MUST address ALL of these")
+                parts.append(
+                    "The reviewer rejected the previous revision of this PR. The "
+                    "tests are already green; your job this pass is to resolve "
+                    "EVERY code item below, not to re-run the tests. If a request "
+                    "is wrong or impossible, say so explicitly in your summary "
+                    "rather than silently ignoring it — leaving any item "
+                    "unaddressed will cause the reviewer to reject again.\n\n"
+                    "CRITICAL: test files are FROZEN — you must NOT create, edit, "
+                    "or delete any test file to satisfy a finding (doing so blocks "
+                    "the story). If addressing a finding would require changing a "
+                    "test, do NOT touch the test; instead emit "
+                    "``TESTS_NEED_CLARIFICATION:`` on a single line followed by "
+                    "which test and why, so the chain routes it to the "
+                    "test designer."
+                )
+                if summary:
+                    parts.append(f"\n**Reviewer summary:** {summary[:600]}")
+                if findings:
+                    parts.append("\n## Code change requests (fix these in production code)")
+                for i, f in enumerate(findings, 1):
+                    sev = f.get("severity", "?")
+                    loc = f.get("location", "")
+                    what = (f.get("what") or "").strip()
+                    fix = (f.get("fix_suggestion") or "").strip()
+                    parts.append(f"\n{i}. **[{sev}]** {loc}".rstrip())
+                    if what:
+                        parts.append(f"   - Problem: {what[:500]}")
+                    if fix:
+                        parts.append(f"   - Suggested fix: {fix[:500]}")
+                # Test-quality findings are about the TESTS, which dev may not
+                # edit. Surface them only so dev routes them via
+                # TESTS_NEED_CLARIFICATION — never as a fix-the-test instruction.
+                if tq_findings:
+                    parts.append("\n## Test-quality concerns — do NOT edit tests yourself")
+                    parts.append(
+                        "The reviewer flagged the tests below. You cannot fix "
+                        "these (test files are frozen). If they are valid, emit "
+                        "``TESTS_NEED_CLARIFICATION:`` naming each test and the "
+                        "issue so the test designer rewrites them. Do NOT modify "
+                        "the tests."
+                    )
+                    for j, f in enumerate(tq_findings, 1):
+                        name = f.get("test_name", "")
+                        issue = (f.get("issue") or "").strip()
+                        parts.append(f"\nTest-quality {j}. `{name}`".rstrip())
+                        if issue:
+                            parts.append(f"   - Issue: {issue[:400]}")
     if prior_attempts:
         # The chain feeds prior failed attempts forward so the LLM sees what
         # was already tried and which assertions are still red. Without this,

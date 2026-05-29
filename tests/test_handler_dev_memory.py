@@ -149,6 +149,35 @@ def test_build_initial_message_includes_reviewer_findings() -> None:
     assert "test files are FROZEN" in msg or "do NOT edit tests" in msg.lower() or "Do NOT modify the tests" in msg
 
 
+def test_build_initial_message_reviewer_findings_test_persona() -> None:
+    """For test_implementer the reviewer section must tell it to REWRITE the
+    tests (its job), not freeze them as for dev."""
+    rf = {
+        "verdict": "request_changes",
+        "summary": "tests in wrong file, weak assertions",
+        "findings": [],
+        "test_quality_findings": [
+            {
+                "test_name": "test_401",
+                "issue": "asserts substring instead of status",
+                "fix_suggestion": "assert the preserved status code",
+            }
+        ],
+    }
+    msg = _build_initial_message(
+        persona="test_implementer",
+        story_text="# s",
+        context_prelude="# c",
+        persona_prompt="# p",
+        reviewer_findings=rf,
+    )
+    assert "rewrite" in msg.lower()
+    assert "test_401" in msg
+    # Must NOT carry the dev-only frozen-tests prohibition.
+    assert "FROZEN" not in msg
+    assert "TESTS_NEED_CLARIFICATION" not in msg
+
+
 def test_build_initial_message_no_reviewer_findings_skips_block() -> None:
     """First dev pass (TESTS_RED -> dev) has no reviewer verdict yet."""
     msg = _build_initial_message(

@@ -47,6 +47,7 @@ from factory.chain.state_machine import (
     EVENT_REVIEWER_APPROVE,
     EVENT_REVIEWER_REQUEST_CHANGES,
     EVENT_REVIEWER_STARTED,
+    EVENT_REVIEWER_TEST_QUALITY,
     EVENT_SM_DONE,
     EVENT_SM_STARTED,
     EVENT_TECH_WRITER_DONE,
@@ -949,6 +950,21 @@ def handle_test_implementation(
         llm = LLMConfig(model=route("test_implementer"))
         import asyncio
 
+        # If test_implementer was re-dispatched because the reviewer rejected
+        # on test quality (REVIEWER_IN_PROGRESS --reviewer_test_quality-->
+        # TEST_DESIGN_DONE), hand it the reviewer's test findings so it knows
+        # exactly which tests to rewrite instead of regenerating blindly.
+        ti_reviewer_findings: dict[str, Any] | None = None
+        if story.reviewer_result_json:
+            try:
+                parsed = json.loads(story.reviewer_result_json)
+                if isinstance(parsed, dict) and (
+                    parsed.get("test_quality_findings") or parsed.get("findings")
+                ):
+                    ti_reviewer_findings = parsed
+            except (json.JSONDecodeError, TypeError):
+                ti_reviewer_findings = None
+
         run_res = asyncio.run(
             sandbox_run(
                 persona="test_implementer",
@@ -959,6 +975,7 @@ def handle_test_implementation(
                 direction_chain=ti_chain,
                 software_factory_root=software_factory_root,
                 test_command=app_config.gates.test_command,
+                reviewer_findings=ti_reviewer_findings,
                 story_id=story.id,
                 app=story.app,
                 direction_id=story.direction_id,
@@ -2036,9 +2053,13 @@ def handle_review(
                     )
                 except Exception:  # pragma: no cover - real-run path
                     pass
-        else:
-            story.state = advance(story, EVENT_REVIEWER_REQUEST_CHANGES).value
-            # Label the PR if it's the test-quality branch (real-run only).
+        elif score < 0.7:
+            # Test-quality rejection: the tests themselves are wrong,
+            # insufficient, or misplaced. Route to the TEST loop so
+            # test_implementer rewrites them — NOT to dev, which is forbidden
+            # from editing test files and would only block trying to satisfy
+            # test-focused findings (the failure mode that re-blocked story 5).
+            story.state = advance(story, EVENT_REVIEWER_TEST_QUALITY).value
             if (
                 not dry_run
                 and github_client is not None
@@ -2047,10 +2068,20 @@ def handle_review(
                 try:
                     repo = github_client.get_repo(app_config.repo)
                     pr = repo.get_pull(story.github_pr_number)
-                    if score < 0.7:
-                        pr.add_to_labels("needs-test-quality-fix")
-                    else:
-                        pr.add_to_labels("needs-changes")
+                    pr.add_to_labels("needs-test-quality-fix")
+                except Exception:  # pragma: no cover - real-run path
+                    pass
+        else:
+            story.state = advance(story, EVENT_REVIEWER_REQUEST_CHANGES).value
+            if (
+                not dry_run
+                and github_client is not None
+                and story.github_pr_number is not None
+            ):
+                try:
+                    repo = github_client.get_repo(app_config.repo)
+                    pr = repo.get_pull(story.github_pr_number)
+                    pr.add_to_labels("needs-changes")
                 except Exception:  # pragma: no cover - real-run path
                     pass
 

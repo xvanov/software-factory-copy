@@ -195,6 +195,11 @@ EVENT_REVIEWER_REQUEST_CHANGES = "reviewer_request_changes"
 # story converging — the hard convergence guard fires this instead of
 # EVENT_REVIEWER_REQUEST_CHANGES to break the dev<->reviewer ping-pong.
 EVENT_REVIEW_NONCONVERGENT = "review_nonconvergent"
+# Reviewer rejected primarily on TEST QUALITY (test_quality_score < threshold):
+# the tests themselves are wrong/insufficient/misplaced. Route to the test
+# loop (test_implementer rewrites the tests) rather than to dev, which is
+# forbidden from editing test files and would only block trying.
+EVENT_REVIEWER_TEST_QUALITY = "reviewer_test_quality"
 EVENT_TECH_WRITER_STARTED = "tech_writer_started"
 EVENT_TECH_WRITER_DONE = "tech_writer_done"
 EVENT_DOCS_ENFORCER_CHECK = "docs_enforcer_check"
@@ -279,11 +284,15 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
         StoryState.REVIEWER_IN_PROGRESS,
         EVENT_REVIEW_NONCONVERGENT,
     ): StoryState.BLOCKED_REVIEW_NONCONVERGENT,
-    # Reviewer changes route back to dev (if code finding) or to designer
-    # (if test-quality finding). The handler decides which by inspecting
-    # the verdict payload; both go through DEV_RETRY on the test-quality
-    # branch as well, since the implementer rewrites tests on the
-    # designer's revised plan.
+    # Reviewer changes route back to dev (if code finding) or to the test
+    # loop (if the rejection is test-quality driven). The handler decides
+    # which by inspecting the verdict payload's test_quality_score.
+    # Test-quality rejections go to TEST_DESIGN_DONE so test_implementer
+    # rewrites the tests — dev may not edit test files and would only block.
+    (
+        StoryState.REVIEWER_IN_PROGRESS,
+        EVENT_REVIEWER_TEST_QUALITY,
+    ): StoryState.TEST_DESIGN_DONE,
     (StoryState.REVIEWER_REQUESTED_CHANGES, EVENT_DEV_STARTED): StoryState.DEV_IN_PROGRESS,
     (
         StoryState.REVIEWER_DONE,
