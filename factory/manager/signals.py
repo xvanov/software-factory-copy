@@ -30,6 +30,7 @@ spend.ndjson     | factory/chain/orchestrator.py — tick()
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,7 +45,16 @@ SCHEMA_VERSION: int = 1
 
 
 def _events_dir(software_factory_root: Path | None) -> Path:
-    root = Path(software_factory_root) if software_factory_root else Path.cwd()
+    # Resolution order: explicit arg → FACTORY_STATE_ROOT env → cwd. The env
+    # seam lets the test suite redirect ALL event writes to a tmp dir (see
+    # tests/conftest.py) so a test that calls text_run without threading an
+    # explicit root can never pollute the production event log — which the FMS
+    # watcher reads and would otherwise escalate as real persona failures.
+    if software_factory_root:
+        root = Path(software_factory_root)
+    else:
+        env_root = os.environ.get("FACTORY_STATE_ROOT")
+        root = Path(env_root) if env_root else Path.cwd()
     return root / "state" / "events"
 
 
