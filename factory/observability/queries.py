@@ -622,11 +622,10 @@ def velocity_table(
     rows = _raw_sql_iter(
         db_path,
         """
-        SELECT runs.persona, runs.model, runs.duration_s, stories.points, runs.success
+        SELECT runs.persona, runs.model, runs.duration_s, COALESCE(stories.points, 3), runs.success
         FROM runs
         JOIN stories ON runs.story_id = stories.id
         WHERE runs.duration_s IS NOT NULL AND runs.duration_s > 0
-          AND stories.points IS NOT NULL
           AND runs.ts >= ?
         """,
         (cutoff,),

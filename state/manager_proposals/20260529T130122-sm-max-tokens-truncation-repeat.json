@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "sm-max-tokens-truncation-repeat",
+  "diagnosis": "The evidence shows a recurring SM failure mode where the model returns malformed, truncated JSON with `finish_reason=length`, and downstream parsing fails. The concern cites two consecutive failures (`attempt_n=816` and `817`) bracketed by successful SM runs, which fits an intermittent generation/retry path rather than a total provider outage. The failure signature is explicit: `json parse failed at max_tokens=... finish_reason=length`, so the mechanism is model output truncation against an SM JSON-only contract.\n\nIn the pre-loaded `factory/routes.yaml`, the direct `routes.sm` entry is already set to `azure/gpt-5.4`, with an inline comment explicitly documenting this exact issue: `deepseek-chat intermittently returns a tiny malformed body falsely flagged finish_reason=length ... Use gpt-5.4 (JSON-reliable) here too so SM is consistent regardless of active provider; the azure_routes block already uses it.` The `azure_routes.sm` entry is also `azure/gpt-5.4`. That means the most obvious persona-settings fix has already been applied at current HEAD.\n\nBecause the concern's `proposed_area` is `persona_settings`, but the relevant settings file already contains the intended remediation, the remaining root cause is likely outside the visible source bundle: either runtime route resolution is not honoring `factory/routes.yaml`, provider override state such as `FACTORY_PROVIDER` / model selection is bypassing the configured SM route, or the truncation is happening in a downstream call path not represented in the provided persona-settings files. The prior failed attempt also targeted `factory/routes.yaml`; repeating that approach would replicate an already-applied or near-identical fix and is specifically disallowed by the bundle's failed-attempt notice.\n\nGiven the available evidence and files, I can diagnose that this is not a missing route entry in current HEAD. I cannot produce a reliable one-file persona-settings patch without seeing the dispatch/router code that resolves SM model IDs at runtime or the exact runtime settings path that emitted `model=deepseek/deepseek-chat` despite the current YAML mapping. This needs a human or a broader L3/L4 bundle with `factory/chain/` routing code and any model-router implementation files.",
+  "proposal": {
+    "kind": "persona_settings",
+    "target": "factory/routes.yaml",
+    "rationale": "No safe persona-settings change is justified from the provided source, because `factory/routes.yaml` already contains the SM-to-`azure/gpt-5.4` routing change that would address the described truncation mechanism. A new patch against the same file would likely be redundant or speculative; the real issue appears to be route-resolution behavior outside the supplied files.",
+    "suggested_patch": "",
+    "verification": "Inspect runtime router/model-resolution path and reproduce with a smoke run that logs effective persona->model selection for SM before any config change.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "Current HEAD already routes `sm` to `azure/gpt-5.4` in `factory/routes.yaml`, and a prior L4 attempt against that file was abandoned. The remaining likely fix is in runtime route resolution or provider override code not included in the source bundle; I would need the model-router / dispatch files and effective runtime config to produce a reliable patch.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T130122-sm-max-tokens-truncation-repeat.json",
+  "halt_requested": false
+}

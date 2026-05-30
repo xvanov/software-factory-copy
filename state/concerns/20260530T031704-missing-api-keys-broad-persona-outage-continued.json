@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "title": "missing-api-keys-broad-persona-outage-continued",
+  "description": "This is a continuation of missing-api-keys-broad-persona-outage-continued. Since at least 2026-05-30T03:15:41Z in this window, the factory has continued dispatching broad dev work that fails immediately with the same explicit infrastructure-side credential error for `deepseek/deepseek-coder`: \"No API key available\". The pattern spans many distinct stories in under 30 seconds, with zero input/output tokens and near-zero run durations, which indicates the failures occur before model execution rather than inside story-specific code paths.\n\nThe downstream impact remains broad blockage of persona work rather than a localized retry storm. New worktrees are still being created for multiple stories, but the associated dev runs fail right away, so the scheduler is advancing orchestration while useful dev progress is not occurring on the affected model path. This window does not show meaningful direct token spend from the failing runs, but it does show continuing wasted dispatch activity and blocked story advancement across many stories.\n\nThe scheduler itself is still alive: one tick completed successfully in 29.876s with 17 stories advanced and 9 blocked, and two newer ticks were still running at note time. Queue skew toward `tests_red` remains high at 24/42 stories (57%), though that is improved from 31 earlier in the same window and does not by itself show worsening stall growth here. Severe worktree drift also remains present, but in this bundle it appears as a continuing background condition rather than the primary newly changing signal.\n\nThe diagnostic clarity is high because the error text names a missing API key directly and attributes it to model credential availability. Combined with the prior concerns, this is now a sustained factory-attributable outage across consecutive L2 intervals rather than an ambiguous single event.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-30T03:16:53.750016+00:00",
+      "summary_excerpt": "Previously escalated credential outage is still active: 22 dev runs across many stories failed immediately with the same explicit \"No API key available\" error for deepseek/deepseek-coder."
+    },
+    {
+      "kind": "run",
+      "id": 18,
+      "ts": "2026-05-30T03:15:42.960859+00:00",
+      "excerpt": "dev run failed in 1.147s for story 18 on deepseek/deepseek-coder: \"No API key available for model 'deepseek/deepseek-coder'...\" tokens_in=0 tokens_out=0 cost_usd=0.0"
+    },
+    {
+      "kind": "run",
+      "id": 24,
+      "ts": "2026-05-30T03:15:45.989668+00:00",
+      "excerpt": "dev run failed in 0.0s for story 24 on deepseek/deepseek-coder: \"No API key available for model 'deepseek/deepseek-coder'...\" tokens_in=0 tokens_out=0 cost_usd=0.0"
+    },
+    {
+      "kind": "run",
+      "id": 46,
+      "ts": "2026-05-30T03:16:05.163105+00:00",
+      "excerpt": "dev run failed in 0.0s for story 46 on deepseek/deepseek-coder: \"No API key available for model 'deepseek/deepseek-coder'...\" tokens_in=0 tokens_out=0 cost_usd=0.0"
+    },
+    {
+      "kind": "tick",
+      "tick_id": "a4ce2f66-c435-40a8-8909-2bcd0b21b964",
+      "ts": "2026-05-30T03:16:05.174697+00:00",
+      "duration_s": 29.876,
+      "excerpt": "tick_end success=true duration_s=29.876 stories_advanced=17 stories_blocked=9 errors=0"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-30T03:16:53.750016+00:00",
+      "excerpt": "22 failed dev runs across distinct stories all show the same explicit factory-side credential error: no API key available for deepseek/deepseek-coder."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "state_distribution_skew",
+      "ts": "2026-05-30T03:16:53.750016+00:00",
+      "excerpt": "Latest queue snapshot is still skewed toward tests_red at 24/42 stories (57%), though it improved from 31 to 24 within the window rather than showing clear stall growth."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "worktree_orphans",
+      "ts": "2026-05-30T03:16:53.750016+00:00",
+      "excerpt": "Worktree drift remains severe with 20 on-disk worktrees pointing to missing story IDs, consistent with the prior escalated state rather than resolved cleanup."
+    }
+  ],
+  "proposed_area": "persona_settings",
+  "urgency": "halt",
+  "escalate_to_l3": true,
+  "escalation_reason": "Broad missing-API-key outage for deepseek/dev persona work has persisted across multiple consecutive watcher and L2 intervals since at least 2026-05-30T03:13:48Z and is still producing immediate failures across many distinct stories in this window. L3 judgment is needed because the error is explicitly factory-attributable credential/configuration infrastructure, the pattern is sustained, and continued dispatches will keep blocking affected stories until the credential path is corrected."
+}

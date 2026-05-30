@@ -207,12 +207,11 @@ def recompute_baselines(db_path: Path) -> int:
     rows = _raw_sql_iter(
         db_path,
         """
-        SELECT runs.persona, stories.points, runs.duration_s, runs.success
+        SELECT runs.persona, COALESCE(stories.points, 3), runs.duration_s, runs.success
         FROM runs
         JOIN stories ON runs.story_id = stories.id
         WHERE runs.duration_s IS NOT NULL
           AND runs.duration_s > 0
-          AND stories.points IS NOT NULL
         """,
     )
     for persona, points, duration_s, success in rows:
@@ -316,13 +315,12 @@ def velocity_samples(
     rows = _raw_sql_iter(
         db_path,
         """
-        SELECT runs.duration_s, stories.points, runs.model, runs.success
+        SELECT runs.duration_s, COALESCE(stories.points, 3), runs.model, runs.success
         FROM runs
         JOIN stories ON runs.story_id = stories.id
         WHERE runs.persona = ?
           AND runs.duration_s IS NOT NULL
           AND runs.duration_s > 0
-          AND stories.points IS NOT NULL
           AND runs.ts >= ?
         """,
         (persona, cutoff),

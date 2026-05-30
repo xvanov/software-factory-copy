@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "sm-max-tokens-truncation-repeat",
+  "diagnosis": "The prior failed attempt also targeted `factory/routes.yaml`, and the current file already contains that exact remediation intent in comments and in the `sm` route value. Re-proposing another routes edit would replicate the same approach that has already been abandoned and would not match the observed contradiction between runtime evidence (`deepseek/deepseek-chat`) and config (`azure/gpt-5.4`). The mechanism to fix is therefore likely in dispatch/model-router code or runtime reload behavior, but those files were not pre-loaded in this bundle.",
+  "proposal": {
+    "kind": "persona_settings",
+    "target": "factory/routes.yaml",
+    "rationale": "No safe single-file settings patch is justified from the provided sources. The visible settings already encode the intended fix, while runtime still uses `deepseek/deepseek-chat`; that points to route application logic or stale config loading outside this file. A speculative routes edit would repeat a previously failed approach and would not address the mechanism evidenced here.",
+    "suggested_patch": "",
+    "verification": "Inspect the model-router/dispatch path that resolves persona `sm` under direct-provider runs; then run the relevant routing smoke test or a focused `sm` invocation showing selected model before/after.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The supplied source already shows `sm` pinned to `azure/gpt-5.4` in `factory/routes.yaml`, while the concern evidence shows live runs still executing `sm` on `deepseek/deepseek-chat`. Because a prior routes.yaml attempt was already abandoned and the likely fault is in unseen route-resolution/reload code, I cannot produce a reliable one-file patch from the provided context without risking a no-op or repeating the failed approach.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T011509-sm-max-tokens-truncation-repeat.json",
+  "halt_requested": false
+}

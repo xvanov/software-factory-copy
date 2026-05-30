@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "title": "manager-prompt-placeholder-leak",
+  "description": "This is a continuation of manager-prompt-placeholder-leak. A factory-internal prompt placeholder leak was again reported in a manager_watcher prompt during this window, with the flagged watcher note explicitly describing the recurrence as the same previously escalated high-severity pattern. The run stream shows manager_watcher completed successfully at 2026-05-29T18:49:19.831079+00:00, so the issue is not manifesting as an execution failure here; the concern is the continued presence of leaked placeholders in prompt assembly rather than an immediate crash.\n\nThe pattern now spans multiple consecutive prior concerns and remains unresolved in the current interval. That persistence increases confidence that this is a stable plumbing defect rather than a transient malformed input. Downstream impact in this specific window appears limited: no queue, tick, spend, webhook, or git anomalies were observed, and the only run failure present was an unrelated single ambiguous test_implementer outcome on story 27.\n\nPossible explanations remain constrained to factory-side prompt construction or dispatch plumbing because leaked placeholders in prompt logs are, per detector definition, a high-severity assembly bug rather than a story-domain error. The current evidence does not show escalating operational harm in this short window, but it does show that the prompt-leak pattern is still active and unchanged rather than resolving.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-29T18:50:38.009265+00:00",
+      "summary_excerpt": "The previously escalated prompt placeholder leak recurred again in a manager_watcher prompt at the start of the window."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "placeholder_prompts",
+      "ts": "2026-05-29T18:50:38.009265+00:00",
+      "excerpt": "{\"noteworthy\":\"High-severity placeholder markers recurred in a manager_watcher prompt, continuing the previously escalated prompt-leak pattern.\"}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-29T18:49:19.831079+00:00",
+      "excerpt": "manager_watcher completed successfully in 7.388s, cost_usd 0.024473, attempt_n 1652; recurrence is in prompt content rather than a failed run."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-29T18:50:38.009265+00:00",
+      "excerpt": "{\"noteworthy\":\"One failed test_implementer run for story 27 with \\\"tests not green after run\\\"; this is a single ambiguous test-red outcome, not a clearly diagnosable factory fault by itself.\"}"
+    }
+  ],
+  "proposed_area": "dispatch_code",
+  "urgency": "warn",
+  "escalate_to_l3": true,
+  "escalation_reason": "Recurring manager_watcher prompt placeholder leakage has persisted across multiple consecutive watcher-note intervals, including this window, indicating an unresolved factory prompt-assembly/dispatch pattern. L3 judgment is needed because the defect is infrastructure-attributable, already previously escalated, and is not showing resolution."
+}

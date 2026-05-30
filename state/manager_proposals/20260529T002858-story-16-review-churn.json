@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "story-16-review-churn",
+  "diagnosis": "The concern is a pure non-convergence pattern: story 16 has accumulated 15 `dev` runs and 12 `reviewer` runs, all apparently successful, with no competing detector evidence for harness breakage, retries, or prompt corruption. That makes this a protocol problem in how the factory carries reviewer feedback across cycles, not an execution failure inside a single persona run. The prior failed attempt targeted `factory/personas/dev.md`, which is the right general area, but that attempt was abandoned and its patch excerpt is truncated mid-line, so repeating the same \"read reviewer findings\" wording would violate the instruction not to replicate prior failed attempts.\n\nThe strongest direct source evidence is in `factory/personas/dev.md`: its Operating contract tells Dev to read the context prelude, story file, and referenced files, but the visible prompt does not explicitly instruct Dev to treat the story file's `Senior Developer Review` / `Review Follow-ups` sections as mandatory inputs on re-entry. Meanwhile `factory/personas/sm.md` defines those sections as canonical parts of every story file, and `factory/personas/reviewer.md` returns structured findings/comments that plausibly get written back into those sections by the chain. This creates a mechanism for churn: the review feedback exists in the story artifact, but Dev's prompt emphasizes the original story inputs and code/tests, not the reviewer follow-up sections as first-class work items.\n\nBecause the prior abandoned patch already tried to inject additional prompt-reading instructions into `dev.md`, I should not re-propose that same approach. The remaining plausible fix would be a structural chain change ensuring reviewer findings are merged into the next dev prompt or story task list in a stronger way. But no `factory/chain/*.py` source was preloaded, and without those files I cannot produce a reliable one-file dispatch patch with real context lines. That makes a safe concrete diff impossible from the supplied bundle.\n\nGiven the available evidence, I am moderately confident about the mechanism (review feedback is not being made sufficiently binding across cycles), but low confidence about a safe, different fix that avoids repeating the prior failed prompt-edit approach. The correct action is to escalate for human review of the chain wiring that persists and rehydrates reviewer feedback into subsequent dev attempts.",
+  "proposal": {
+    "kind": "dispatch_code",
+    "target": "factory/chain/<review-feedback-handoff>",
+    "rationale": "The churn mechanism is most likely in the factory handoff between Reviewer output and the next Dev attempt, not in story execution itself. Because the relevant `factory/chain/` files were not preloaded and a prompt-edit attempt against `factory/personas/dev.md` has already failed, I cannot produce a different reliable patch from this bundle.",
+    "suggested_patch": "",
+    "verification": "Inspect the reviewer\u2192dev retry handoff in factory/chain/ and then run the relevant chain pytest target(s) covering review-request_changes loops.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "A prior L4 attempt already targeted `factory/personas/dev.md` to make Dev read reviewer findings, so I should not re-propose the same prompt-edit approach. The alternative likely fix is in the reviewer\u2192dev handoff wiring under `factory/chain/`, but those files were not included in `source_files`, so I cannot produce a safe unified diff with real context lines.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T002858-story-16-review-churn.json",
+  "halt_requested": false
+}

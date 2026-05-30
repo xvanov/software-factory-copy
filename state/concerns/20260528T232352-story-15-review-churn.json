@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "title": "story-15-review-churn",
+  "description": "This is a continuation of story-15-review-churn. Story 15 recorded another successful reviewer run at 2026-05-28T23:22:56.177745+00:00, increasing its cumulative reviewer-cycle count to 11 per the flagged watcher note. The current window contains no failed runs, no retry clustering, no spend spike, no tick activity, and no new queue evidence, so the main signal remains a persistent non-converging review loop rather than an acute infrastructure fault.\n\nThe downstream impact is continued incremental spend and story progress that appears to be cycling without closure. In this interval the direct measured cost is small ($0.0235 for the reviewer run), and there is no evidence of broader factory degradation. The watcher note also reports a newly observed missing-DB worktree for story 53 alongside long-standing story 52, but the underlying signals here only show a worktree creation event for story 53 and do not establish cleanup failure or operational harm in this window. Given the existing prior concern history and unchanged pattern strength, this remains a low-urgency continuation rather than a new L3 escalation.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T23:23:46.839655+00:00",
+      "summary_excerpt": "Story 15 completed another successful reviewer run in this window, raising its cumulative review churn to 11 reviewer cycles and keeping the previously escalated non-converging pattern active."
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:22:56.177745+00:00",
+      "excerpt": "successful reviewer run for story 15, attempt_n=11, duration_s=16.813, cost_usd=0.0235135, model=azure/gpt-5.4"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "review_churn",
+      "ts": "2026-05-28T23:23:46.839655+00:00",
+      "excerpt": "{\"noteworthy\":\"Story 15 is active in this window at 11 reviewer cycles, continuing the previously escalated non-converging review loop; several other high-cycle stories remain parked.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "worktree_orphans",
+      "ts": "2026-05-28T23:23:46.839655+00:00",
+      "excerpt": "{\"noteworthy\":\"Worktree orphans appear to be growing: story 52 and newly created story 53 both have db_state=\\\"missing\\\", while story 33 remains an active non-orphaned worktree.\"}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:22:46.839296+00:00",
+      "excerpt": "successful manager_watcher run; no failure signal in this window"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "tick_duration_outliers",
+      "ts": "2026-05-28T23:23:46.839655+00:00",
+      "excerpt": "{\"noteworthy\":\"No completed or running ticks in scope; percentile/outlier analysis is inconclusive but there is no direct sign of a tick-duration problem.\"}"
+    }
+  ],
+  "proposed_area": "unknown",
+  "urgency": "continue",
+  "escalate_to_l3": false,
+  "escalation_reason": "no L3 needed \u2014 known continuation with low immediate impact and no new coherent infrastructure failure signal in this window"
+}

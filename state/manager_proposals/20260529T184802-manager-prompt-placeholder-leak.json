@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "manager-prompt-placeholder-leak",
+  "diagnosis": "The concern is specifically about leaked prompt placeholders in a `manager_watcher` prompt, but the preloaded sources are limited to `factory/chain/orchestrator.py`, `factory/chain/handlers.py`, and `factory/chain/state_machine.py`. Those files implement story-chain dispatch for app stories (`StoryRecord`, handler fan-out like `handle_sm`, `handle_review`, `handle_deploy`) and do not contain manager persona prompt assembly, watcher prompt templates, or any manager-dispatch code path. In the provided dispatch code, there is no reference to `manager_watcher`, prompt interpolation, template rendering, or any placeholder-bearing field names that could explain a watcher prompt leak.\n\nThe evidence strongly indicates a factory-side prompt-construction defect, but not in the visible story orchestrator path. The concern itself says the detector classified this as a prompt-log leak on an internal manager persona, and the only detector listed that matches is `placeholder_prompts`. That means the root cause is likely in manager-layer prompt assembly or manager persona prompt text, not in the app-story chain modules shown here. Any patch against the provided dispatch files would be speculative and would risk changing unrelated story orchestration behavior without addressing the actual manager prompt leak.\n\nBecause the relevant manager prompt assembly source is not in the bundle, I cannot produce a reliable one-file unified diff with real context lines. The smallest safe action is to escalate for human or a new L3 run with the actual manager prompt-construction files preloaded (likely under a manager/runner, manager prompt builder, or persona markdown path) plus any prior failed attempts, so the placeholder source can be located precisely and fixed without guesswork.",
+  "proposal": {
+    "kind": "dispatch_code",
+    "target": "factory/chain/orchestrator.py",
+    "rationale": "No safe code change is supportable from the provided sources because they do not include the manager_watcher prompt assembly path implicated by the concern. A speculative dispatch edit here would not be evidence-based and is unlikely to fix the placeholder leak.",
+    "suggested_patch": "",
+    "verification": "Precondition for a reliable fix: provide the manager prompt assembly source and watcher persona prompt files, then reproduce with the placeholder_prompts detector or manager watcher smoke run.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The implicated manager_watcher prompt-construction code is not present in the pre-loaded source bundle. Additional context is needed: the manager dispatch/runner that builds watcher prompts, the manager_watcher persona prompt file, and any prior failed attempts, so the placeholder source can be patched with real diff context.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T184802-manager-prompt-placeholder-leak.json",
+  "halt_requested": false
+}

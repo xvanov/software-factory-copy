@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "title": "manager-prompt-placeholder-leak",
+  "description": "This is a continuation of manager-prompt-placeholder-leak. A high-severity placeholder leak was again reported in a manager_watcher prompt at 2026-05-29T18:56:25.306367+00:00, continuing the same factory-internal prompt plumbing pattern seen in prior concerns. The current window was otherwise operationally quiet: manager_watcher, manager_summarizer, and manager_diagnostician all completed successfully, with no failed runs, retry clusters, queue snapshots, or tick records in scope.\n\nThe immediate impact in this bundle is limited to repeated prompt corruption rather than an observed execution failure. However, the detector docstring classifies any leaked placeholder as high severity and attributes it to dispatch/plumbing rather than normal workload variation. The recurrence across multiple prior concern intervals indicates the issue remains unresolved.\n\nNo new corroborating downstream harm is visible in this window beyond continued recurrence of the leaked placeholder signal. The long-standing orphaned worktree observations also appear unchanged rather than worsening. Given the strong diagnostic clarity of the placeholder signal and its persistence across many intervals, this remains an L3-worthy factory-internal issue even though this specific window shows low direct operational impact.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-29T18:57:51.624335+00:00",
+      "summary_excerpt": "The previously escalated high-severity prompt placeholder leak recurred again in a manager_watcher prompt at the start of the window."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "placeholder_prompts",
+      "ts": "2026-05-29T18:57:51.624335+00:00",
+      "excerpt": "{\"noteworthy\":\"A high-severity placeholder leak recurred in a manager_watcher prompt at 2026-05-29T18:56:25.306367+00:00, continuing the already escalated pattern.\"}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-29T18:56:32.045928+00:00",
+      "excerpt": "{\"persona\":\"manager_watcher\",\"started_at\":\"2026-05-29T18:56:25.306466+00:00\",\"duration_s\":6.727,\"success\":true,\"cost_usd\":0.025170500000000005,\"attempt_n\":1657}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "worktree_orphans",
+      "ts": "2026-05-29T18:57:51.624335+00:00",
+      "excerpt": "{\"noteworthy\":\"Long-standing orphan set appears unchanged: story 33 remains in tests_red and stories 51-64 mostly still have missing DB rows, suggesting persistent cleanup drift but no new change this window.\"}"
+    }
+  ],
+  "proposed_area": "dispatch_code",
+  "urgency": "warn",
+  "escalate_to_l3": true,
+  "escalation_reason": "Recurring manager_watcher prompt placeholder leak has persisted across many watcher-note intervals through 2026-05-29T18:56:25.306367+00:00. L3 judgment is needed because the signal is a high-clarity factory-internal prompt/dispatch plumbing defect and remains unresolved despite repeated prior concerns."
+}

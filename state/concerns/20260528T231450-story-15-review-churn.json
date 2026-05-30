@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "title": "story-15-review-churn",
+  "description": "Story 15 remains active in a non-converging review loop. In this window, the only story-level activity was another successful reviewer run for story 15 at attempt 8, with no accompanying failure signals, retry clustering, tick anomalies, or queue-skew evidence. This matches the watcher note's review-churn observation rather than an infrastructure fault.\n\nThe downstream impact visible here is continued incremental cost burn and lack of convergence for one active story, not a factory-wide stall. The run itself was brief and inexpensive in this window, and the evidence bundle does not show blocked execution or widening impact across other stories. Other high-cycle stories are described as historically elevated but currently parked.\n\nThe pattern is clear enough to describe as continued churn on story 15, but the cause is not clear from this evidence and could plausibly sit in story-specific dev/reviewer interaction rather than factory infrastructure. The lingering story 52 orphaned worktree is noted as unchanged from prior notes and does not appear newly active in this interval.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T23:14:45.765066+00:00",
+      "summary_excerpt": "Story 15 completed another successful reviewer run in this window... story 15 is still active at 8 reviewer cycles..."
+    },
+    {
+      "kind": "run",
+      "id": 15,
+      "ts": "2026-05-28T23:13:40.917159+00:00",
+      "excerpt": "successful reviewer run for story 15, attempt_n=8, duration_s=14.472, cost_usd=0.0192085, model=azure/gpt-5.4"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "review_churn",
+      "ts": "2026-05-28T23:14:45.765066+00:00",
+      "excerpt": "{\"noteworthy\":\"Story 15 has 8 reviewer cycles and is active in this window, which exceeds the non-converging review threshold. Several other stories also remain historically high-cycle but are currently parked.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "worktree_orphans",
+      "ts": "2026-05-28T23:14:45.765066+00:00",
+      "excerpt": "{\"noteworthy\":\"Worktree for story 52 still has db_state=\\\"missing\\\"; unchanged from prior notes, suggesting a lingering orphan rather than a new issue.\"}"
+    }
+  ],
+  "proposed_area": "unknown",
+  "urgency": "continue",
+  "escalate_to_l3": false,
+  "escalation_reason": "no L3 needed \u2014 single active churn signal with low immediate impact and no clear infrastructure diagnosis"
+}

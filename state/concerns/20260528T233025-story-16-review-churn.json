@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "title": "story-16-review-churn",
+  "description": "This is a continuation of story-15-review-churn in the broader sense of non-converging review activity, but the active pattern in this window is story 16. Since 2026-05-28T23:22:57.005745+00:00, story 16 completed another successful dev run followed immediately by a successful reviewer run, bringing its cumulative reviewer-cycle count to 7 per the flagged watcher note. There are no failed runs or retry clusters in the current window; the concern is repeated successful dev\u2194reviewer cycling without visible convergence.\n\nThe immediate impact is ongoing cost and latency on a single story rather than a factory-wide fault. In this window alone, the story consumed about $0.82 across a 427.606 s dev run and a 15.439 s reviewer run, and the watcher note indicates the cycle count is cumulative rather than isolated. The evidence does not identify a clear infrastructure error class: there are no queue, tick, or placeholder anomalies, and no detector observation pointing to prompt plumbing, runtime failure, or dispatch corruption.\n\nPossible explanations remain ambiguous from the available evidence. This could reflect legitimate story-level iteration, reviewer criteria that are not converging, or a workflow-level loop, but the current bundle does not distinguish among those cases. Given the absence of failures and the lack of a clear factory-infrastructure signature, this should be tracked as ongoing churn rather than escalated as an L3 incident at this time.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T23:30:21.143750+00:00",
+      "summary_excerpt": "Activity resumed on story 16: a successful dev run was followed by a successful reviewer run in this window, making its cumulative review churn 7 reviewer cycles and leaving the story actively cycling."
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:30:04.643740+00:00",
+      "excerpt": "story 16 dev run succeeded after 427.606 s, cost_usd=0.7808564999999998, attempt_n=10, tokens_in=1528212, tokens_out=11167."
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:30:20.371746+00:00",
+      "excerpt": "story 16 reviewer run succeeded after 15.439 s, cost_usd=0.043281, attempt_n=7, tokens_in=12960, tokens_out=1167."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "review_churn",
+      "ts": "2026-05-28T23:30:21.143750+00:00",
+      "excerpt": "{\"noteworthy\":\"Story 16 reached 7 reviewer cycles and is active in this window, indicating ongoing non-converging review churn; stories 5 and 15 remain historically high but inactive.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-28T23:30:21.143750+00:00",
+      "excerpt": "{\"noteworthy\":null}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "retry_storm",
+      "ts": "2026-05-28T23:30:21.143750+00:00",
+      "excerpt": "{\"noteworthy\":null}"
+    }
+  ],
+  "proposed_area": "unknown",
+  "urgency": "continue",
+  "escalate_to_l3": false,
+  "escalation_reason": "no L3 needed \u2014 ongoing single-story churn without a clear infrastructure diagnosis"
+}

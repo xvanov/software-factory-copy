@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "sandbox-template-missing-retry-storm",
+  "diagnosis": "The evidence shows a factory-internal failure that occurs before any model work begins: every affected dev run fails in ~0.2s with zero tokens and the identical error `sandbox run raised: TemplateNotFound('self_documentation.j2')`. That places the fault in sandbox setup / templating, not in story content, dispatch gating, or handler retry logic. The source bundle for `factory/chain/orchestrator.py`, `factory/chain/handlers.py`, and `factory/chain/state_machine.py` contains only the dispatch and state-driving layers; none of the provided files reference Jinja, template loaders, or `self_documentation.j2`. So the concrete missing-file mechanism is outside the visible source files.\n\nWhat the visible code does establish is that the orchestrator will continue dispatching `StoryState.TESTS_RED` and `StoryState.DEV_RETRY` stories to `handle_dev` via `_dispatch_for_story()` / `_invoke_handler()` as long as the handler keeps returning retry-shaped outcomes. There is no confirmed factory-halt or infrastructure-error circuit breaker in the provided dispatch code for repeated identical sandbox boot failures. That explains the retry-storm symptom, but it is not the underlying root cause of the `TemplateNotFound` itself.\n\nBecause the actual missing-template bug is in code not present in `source_files`\u2014likely sandbox execution code, prompt rendering, or template packaging\u2014I cannot produce a reliable one-file patch with valid context lines. Any edit to the orchestrator or handlers here would be speculative and would at best mask the symptom while leaving the broken sandbox renderer unresolved. Given the concern's halt-level urgency and the absence of the template-loading source, the correct action is to escalate to human with a halt request.",
+  "proposal": {
+    "kind": "dispatch_code",
+    "target": "factory/chain/orchestrator.py",
+    "rationale": "The observed storm is being amplified by repeated dispatch, but the actual `TemplateNotFound('self_documentation.j2')` root cause is in sandbox/template-loading code that is not included in the bundle. Without the source file that loads or packages sandbox templates, any diff against the provided dispatch files would be speculative and unsafe.",
+    "suggested_patch": "",
+    "verification": "Obtain the sandbox/template renderer source and reproduce with the failing dev path before patching; then run the relevant pytest target for that module plus a smoke `factory tick` against one affected story.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The root cause is a missing sandbox template (`self_documentation.j2`), but the template-loading/rendering code is not present in the provided source bundle. A reliable fix requires the actual sandbox/template module (or packaging config) that references this template; patching only the visible dispatch/state code would be speculative. Because the same factory-internal failure is repeating across many stories with no self-healing, operator intervention is needed now.",
+  "request_halt": true,
+  "halt_reason": "The factory is in a sustained infrastructure failure mode: the same pre-model sandbox error is causing immediate retry storms across multiple stories, and normal retries cannot self-heal a missing template asset. Continuing to run widens the blocked-story surface area while producing no useful work.",
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T190117-sandbox-template-missing-retry-storm.json",
+  "halt_requested": true
+}

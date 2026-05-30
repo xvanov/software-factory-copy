@@ -1447,6 +1447,25 @@ def _findings_target_tests(result: dict[str, Any]) -> bool:
             test_located += 1
     return located > 0 and test_located == located
 
+
+def _findings_target_code(result: dict[str, Any]) -> bool:
+    """True when any actionable finding points at a NON-test (code) file.
+
+    Code findings can only be fixed by dev, so the presence of even one means
+    the review must route to dev — never to the test loop on the basis of a low
+    test_quality_score (which would strand the code finding, as happened to the
+    "writes to disk before DB transaction" finding misrouted to test_impl).
+    """
+    findings = result.get("findings") or []
+    test_re = re.compile(r"(^|/)tests?/|test_|_test\.|conftest|\.test\.|\.spec\.")
+    for f in findings:
+        loc = (f.get("location") or "") if isinstance(f, dict) else ""
+        path = loc.split(":")[0]
+        if path and not test_re.search(path):
+            return True
+    return False
+
+
 # Pre-model sandbox infrastructure-error cap. A dev sandbox that fails BEFORE
 # any model work (``success=False`` with zero tokens/cost and tests never run)
 # is shared-infra breakage — a transient ``.venv`` relink from a concurrent
@@ -2573,15 +2592,16 @@ def handle_review(
                     )
                 except Exception:  # pragma: no cover - real-run path
                     pass
-        elif score < 0.7 or _findings_target_tests(result):
-            # Test-quality rejection: the tests themselves are wrong,
-            # insufficient, or misplaced. Route to the TEST loop so
-            # test_implementer rewrites them — NOT to dev, which is forbidden
-            # from editing test files and would only block trying to satisfy
-            # test-focused findings (the failure mode that re-blocked story 5).
-            # The ``_findings_target_tests`` override catches the case where the
-            # reviewer flags only test files but still reports a healthy
-            # test_quality_score (story 15) — dev still can't act on those.
+        elif _findings_target_tests(result) or (
+            score < 0.7 and not _findings_target_code(result)
+        ):
+            # Route to the TEST loop ONLY when the work is test work: findings
+            # point purely at test files, OR it's a pure test-quality/slop
+            # rejection (score<0.7) with NO code findings to fix. Crucially, a
+            # CODE finding always wins routing to dev below — even with a low
+            # test_quality_score — so a real code defect (e.g. "writes to disk
+            # before the DB transaction") is never stranded in test_impl, which
+            # cannot fix code. (test_impl can't fix code; dev can't edit tests.)
             story.state = advance(story, EVENT_REVIEWER_TEST_QUALITY).value
             if (
                 not dry_run

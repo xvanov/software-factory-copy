@@ -1,0 +1,434 @@
+[
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260527T135907-sm-max-tokens-truncation.json",
+    "ts": "20260527T135919",
+    "branch": "factory-manager/20260527T135919-sm-max-tokens-truncation",
+    "pr_url": null,
+    "pr_number": null,
+    "status": "test_failed",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260527T140116-sm-max-tokens-truncation.json",
+    "ts": "20260527T140128",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T024209-sm-max-tokens-truncation.json",
+    "ts": "20260528T024221",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T081721-sm-max-tokens-truncation.json",
+    "ts": "20260528T081735",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T112410-sm-max-tokens-truncation.json",
+    "ts": "20260528T112422",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T233544-story-16-review-churn.json",
+    "ts": "20260528T233556",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T233813-story-16-review-churn.json",
+    "ts": "20260528T233828",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T234508-story-16-review-churn.json",
+    "ts": "20260528T234516",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T234840-story-16-review-churn.json",
+    "ts": "20260528T234851",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T235109-story-18-review-churn.json",
+    "ts": "20260528T235124",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T235343-story-5-review-churn.json",
+    "ts": "20260528T235358",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T235725-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260528T235735",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T001459-story-15-review-churn.json",
+    "ts": "20260529T001514",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T001846-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260529T001858",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T002858-story-16-review-churn.json",
+    "ts": "20260529T002911",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T005006-story-16-review-churn.json",
+    "ts": "20260529T005019",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T011336-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260529T011348",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T011509-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260529T011519",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T011639-story-19-review-churn.json",
+    "ts": "20260529T011653",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T011819-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260529T011830",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T011944-story-15-review-churn.json",
+    "ts": "20260529T011957",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T012745-story-22-review-churn.json",
+    "ts": "20260529T012801",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T130122-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260529T130135",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T131400-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260529T131410",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T132421-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260529T132431",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T133122-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260529T133136",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T133259-sm-max-tokens-truncation-repeat.json",
+    "ts": "20260529T133314",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T153729-dev-azure-content-filter-block.json",
+    "ts": "20260529T153740",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T184335-dev-story-26-retry-storm.json",
+    "ts": "20260529T184347",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T184510-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T184520",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T184637-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T184646",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T184802-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T184812",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T184928-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T184938",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T185054-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T185103",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T185221-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T185231",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T185350-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T185359",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T185515-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T185525",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T185641-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T185651",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T185807-manager-prompt-placeholder-leak.json",
+    "ts": "20260529T185817",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T185941-sandbox-template-missing-retry-storm.json",
+    "ts": "20260529T185952",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T190117-sandbox-template-missing-retry-storm.json",
+    "ts": "20260529T190130",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260530T030601-azure-rate-limit-dev-run.json",
+    "ts": "20260530T030611",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260530T030728-azure-rate-limit-deepseek-spread.json",
+    "ts": "20260530T030740",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260530T030859-azure-rate-limit-deepseek-persistence.json",
+    "ts": "20260530T030911",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "abandoned",
+    "classification": "safe"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260530T031029-azure-rate-limit-deepseek-continued.json",
+    "ts": "20260530T031039",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260530T031409-missing-api-keys-broad-persona-outage.json",
+    "ts": "20260530T031419",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260530T031542-missing-api-keys-broad-persona-outage-continued.json",
+    "ts": "20260530T031553",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  },
+  {
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260530T031717-missing-api-keys-broad-persona-outage-continued.json",
+    "ts": "20260530T031727",
+    "branch": null,
+    "pr_url": null,
+    "pr_number": null,
+    "status": "escalation_acknowledged",
+    "classification": "escalate_to_human"
+  }
+]

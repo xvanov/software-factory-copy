@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "manager-prompt-placeholder-leak",
+  "diagnosis": "The concern identifies a repeated placeholder leak specifically in manager_watcher prompts, and the detector guidance explicitly classifies any non-empty placeholder marker as a factory plumbing bug rather than model behavior. In the provided source bundle, the relevant dispatch plumbing for manager personas is not present: the available files are `factory/chain/orchestrator.py`, `factory/chain/handlers.py`, and `factory/chain/state_machine.py`, all of which govern story-chain dispatch (`sm`, `test_design`, `dev`, `review`, docs-chain handlers, deploy) rather than manager prompt assembly.\n\nThe source evidence supports that mismatch. `factory/chain/orchestrator.py` only dispatches story handlers via `_dispatch_for_story()` and `_invoke_handler()` using names like `sm`, `test_design`, `review`, `docs_sm`, and `deploy`; there is no manager_watcher routing or prompt-construction path in the file. `factory/chain/handlers.py` similarly contains story-chain helpers and handlers, not manager watcher prompt templating. `factory/chain/state_machine.py` defines `StoryState` and chain transitions for story execution, again with no manager persona prompt assembly fields or functions. So while the concern's proposed area is `dispatch_code`, the preloaded dispatch code does not contain the mechanism that could emit a manager_watcher placeholder.\n\nThat means the root cause is most likely in a different subsystem: manager prompt rendering, concern/watcher invocation plumbing, or a manager persona/template file that was not included in the bundle. Because the detector says placeholder markers are a structural assembly fault, the right fix must target the actual manager prompt builder or template source. Producing a patch against the provided story-chain dispatch files would be speculative and likely wrong.",
+  "proposal": {
+    "kind": "dispatch_code",
+    "target": "factory/chain/orchestrator.py",
+    "rationale": "No reliable one-file fix can be derived from the supplied source bundle because none of the provided dispatch files contain manager_watcher prompt assembly. A correct repair needs the manager invocation/prompt-rendering code path or the watcher persona/template file to identify where placeholders are left unresolved.",
+    "suggested_patch": "",
+    "verification": "Load the manager prompt assembly sources first; then run the watcher-path tests or smoke command that exercises manager_watcher prompt construction.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The provided source_files do not include the manager_watcher prompt assembly or manager dispatch path that could leak placeholders. Additional context is required: the code that builds manager prompts and any manager watcher persona/template files. Without those, any patch to `factory/chain/` would be speculative.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T185221-manager-prompt-placeholder-leak.json",
+  "halt_requested": false
+}

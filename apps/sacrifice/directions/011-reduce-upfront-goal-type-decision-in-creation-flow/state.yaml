@@ -1,0 +1,9 @@
+status: created
+source: scheduled-ux_auditor
+created_at: '2026-05-27T13:08:09.161855+00:00'
+audit:
+- ts: '2026-05-27T13:08:09.161858+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-ux_auditor

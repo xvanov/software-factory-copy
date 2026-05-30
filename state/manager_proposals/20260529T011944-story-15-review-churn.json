@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "story-15-review-churn",
+  "diagnosis": "The concern evidence shows a workflow-level non-convergence pattern, not an execution failure: story 15 has reached 13 successful reviewer cycles, and the queue still contains 9 stories in `reviewer_requested_changes`. The only reviewer-specific source file in the bundle, `factory/personas/reviewer.md`, defines a hard verdict rule (`approve` only if all findings are low severity, `test_quality_score >= 0.7`, and no slop-grade test-quality finding) plus broad code-quality duties, but it does not contain any instruction to prefer approval once acceptance criteria are met and remaining issues are optional. That omission creates a mechanism for endless \"successful\" review runs that keep returning `request_changes` on non-blocking polish items.\n\nThe mechanism is visible in the prompt's incentives. In `factory/personas/reviewer.md`, the persona is told to be forensic, to flag maintainability and test gaps, and that it should \"block when it isn't\" \u2014 but there is no complementary convergence rule defining what should NOT block approval. In a strong-model reviewer, that asymmetry biases toward surfacing another issue each cycle, especially when the JSON schema always allows more findings and comments. The concern's repeated successful reviewer runs with no corresponding factory-side failures is exactly the signature of a reviewer prompt that is valid syntactically yet over-permissive semantically.\n\nA prior attempt already tried to add a convergence rule directly to `factory/personas/reviewer.md` and was abandoned by the apply pipeline. Given that history, repeating the same reviewer-prompt edit is disallowed. Within the provided sources, the next-smallest prompt-level lever is the upstream `factory/personas/dev.md` contract: Dev is currently instructed to execute approved stories against acceptance criteria, but it is not explicitly told to treat reviewer follow-ups as a finite closure task or to stop after addressing only material blockers. That leaves room for reactive, incremental churn where Dev keeps making optional cleanups one cycle at a time instead of resolving the full blocking set and summarizing what remains non-material.\n\nI do not have reviewer output examples, orchestrator logic, or story artifacts showing whether the churn is caused by prompt incentives alone versus chain-state policy around repeated review requests. Because the prior reviewer-prompt attempt failed and the remaining plausible fixes touch process semantics rather than a clearly isolated bug, confidence is low. A reliable fix would require inspecting actual reviewer findings across cycles and likely coordinating prompt and/or dispatch behavior together.",
+  "proposal": {
+    "kind": "prompt_edit",
+    "target": "factory/personas/dev.md",
+    "rationale": "A Dev-side convergence instruction is the only materially different prompt-level approach available in the provided sources after the failed reviewer-prompt attempt. However, without the actual reviewer findings or chain transition code, I cannot produce a high-confidence patch that is clearly safer than a human-reviewed workflow change.",
+    "suggested_patch": "",
+    "verification": "Inspect recent story 15 reviewer JSON outputs and corresponding dev self-summaries before changing prompts; if proceeding, run the persona prompt smoke tests that cover dev/reviewer handoff.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "Prior failed attempts already targeted `factory/personas/reviewer.md`, and the provided bundle lacks the reviewer outputs or chain-state code needed to distinguish prompt overreach from workflow-policy non-convergence. A safe fix likely requires reviewing actual repeated findings across cycles and may span both persona prompts and dispatch behavior.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T011944-story-15-review-churn.json",
+  "halt_requested": false
+}

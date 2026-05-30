@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "title": "sm-max-tokens-truncation-repeat",
+  "description": "This window shows a continuation of an already-observed SM failure pattern: the SM persona produced a failed run at 2026-05-28T23:56:11.784725+00:00 with explicit error text stating `json parse failed at max_tokens=65536 finish_reason=length`. That error names a truncated output condition directly, and it occurred immediately after a successful SM run in the same burst, indicating the persona remains intermittently exposed to the same factory-side output-cap failure mode rather than a one-off malformed prompt response.\n\nThe surrounding failures in this window are mostly separate low-signal sandbox/test activity: several zero-cost, ~0.01 s failures on test worktrees with `story_id=null` and ambiguous `tests not green after run` errors, plus an onboarder retry storm confined to those test paths. Those events do not materially strengthen diagnosis of the SM issue. The actionable pattern here is the repeated, clearly diagnosable SM truncation/json-parse failure.\n\nImpact in this specific window is low because the observed SM failure was fast and zero-cost, and subsequent SM runs succeeded. However, recurrence matters: the watcher note explicitly ties this event to the same earlier escalated pattern, so the evidence now shows persistence across intervals. The likely area is factory-side persona/model output handling or settings rather than story-domain behavior, because the error text points to generation length truncation and there is no associated story context.\n\nThis is not a halt-level event on the present evidence because the current occurrence did not burn meaningful cost, did not stall ticks or queue movement, and appears transient within the burst. It does warrant renewed L3 attention because the diagnosis is explicit, the pattern has recurred, and continued operation leaves room for repeated silent SM parse failures.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T23:57:06.304802+00:00",
+      "summary_excerpt": "Separately, the SM persona hit another diagnosable max-tokens truncation/json-parse failure, matching the same factory-side pattern seen earlier."
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:56:11.784725+00:00",
+      "excerpt": "persona=sm success=false model=deepseek/deepseek-chat error=\"json parse failed at max_tokens=65536 finish_reason=length: Unterminated string starting at: line 1 column 9 (char 8)\""
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:56:11.768189+00:00",
+      "excerpt": "persona=sm success=true duration_s=0.007 cost_usd=0.0 tokens_in=20 tokens_out=40 model=deepseek/deepseek-chat attempt_n=793"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:56:11.800872+00:00",
+      "excerpt": "persona=sm success=true duration_s=0.007 cost_usd=0.0 tokens_in=10 tokens_out=20 model=deepseek/deepseek-chat attempt_n=795"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-28T23:57:06.304802+00:00",
+      "excerpt": "{\"noteworthy\":\"Six failures landed in a tight burst; most are ambiguous sandbox/test-style \\\"tests not green after run\\\" events, but one SM failure is a clearly diagnosable max-tokens truncation/json-parse error and repeats a prior escalated pattern.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "retry_storm",
+      "ts": "2026-05-28T23:57:06.304802+00:00",
+      "excerpt": "{\"noteworthy\":\"Onboarder reached failure_count=3 within the window, but all failures are on story_id=null test/sandbox worktrees with ambiguous errors; worth noting, not sufficient by itself to escalate.\"}"
+    }
+  ],
+  "proposed_area": "persona_settings",
+  "urgency": "warn",
+  "escalate_to_l3": true,
+  "escalation_reason": "Repeated SM max-tokens truncation/json-parse failure has persisted across at least two watcher intervals, with another occurrence at 2026-05-28T23:56:11.784725+00:00. L3 judgment is needed because the error text explicitly identifies a factory-side output-cap/settings issue (`max_tokens=65536`, `finish_reason=length`) and recurrence confirms this is an ongoing pattern rather than an ambiguous one-off."
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "missing-api-keys-broad-persona-outage",
+  "diagnosis": "The failure pattern is a factory-side credential outage, not a persona-prompt defect and not a single-provider incident. The concern evidence shows immediate failures with explicit provider-auth text across multiple model families: `deepseek/deepseek-coder`, `deepseek/deepseek-chat`, and `anthropic/claude-sonnet-4-6`. In `factory/routes.yaml`, the active routing policy is `default_provider: azure`, but the direct-provider `routes:` block still assigns many personas to DeepSeek and Anthropic model IDs, including `dev.standard: deepseek/deepseek-coder`, `dev.hard: anthropic/claude-sonnet-4-6`, `factory_improver: deepseek/deepseek-chat`, `manager_watcher: deepseek/deepseek-chat`, and `manager_summarizer: anthropic/claude-sonnet-4-6`. The observed missing-key errors match those exact direct-route model IDs.\n\nHowever, the source bundle does not include the dispatch/model-router implementation that resolves `default_provider`, `routes`, and `azure_routes` at runtime. That missing code is the critical mechanism needed to distinguish between two materially different root causes: (1) direct-provider fallback is being used correctly because required `azure_routes` entries are absent for the failing personas, or (2) the router is incorrectly selecting `routes:` despite `default_provider: azure`. Those require different fixes. A safe settings-only change would need the complete current `azure_routes` entries to reroute every affected persona to Azure-backed models, but the provided `factory/routes.yaml` content is truncated before the full `azure_routes` block is visible, so I cannot produce a reliable one-file patch with exact current-context lines.\n\nThe evidence therefore supports a configuration/routing diagnosis at the persona-settings boundary, but not a high-confidence patch. The outage spans broad throughput-critical personas and is causing retry storms, yet direct spend remains low because calls fail before token use. That makes this operationally serious but not a halt condition from the available evidence. The smallest trustworthy next step is human intervention to restore credentials or provide the untruncated routing file plus the model-router source so the fix can be made without guessing.",
+  "proposal": {
+    "kind": "persona_settings",
+    "target": "factory/routes.yaml",
+    "rationale": "The concern points to model routing resolving to direct-provider DeepSeek/Anthropic IDs that currently lack credentials. A settings fix is plausible, but without the full `factory/routes.yaml` contents and the router implementation, I cannot safely determine whether the correct action is to add missing `azure_routes` entries or to fix routing precedence in code.",
+    "suggested_patch": "",
+    "verification": "Inspect active environment for provider keys; then smoke the router resolution for dev, factory_improver, manager_watcher, and manager_summarizer before resuming retries.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The source bundle is insufficient for a reliable patch: `factory/routes.yaml` is truncated before the full `azure_routes` block, and the routing/dispatch code that chooses between `routes` and `azure_routes` was not provided. I need the complete file plus the model-router implementation to distinguish a missing-settings fix from a dispatch-code bug.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260530T031409-missing-api-keys-broad-persona-outage.json",
+  "halt_requested": false
+}

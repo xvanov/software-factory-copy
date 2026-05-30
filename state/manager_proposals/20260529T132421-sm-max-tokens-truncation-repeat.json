@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "sm-max-tokens-truncation-repeat",
+  "diagnosis": "The recurring failure is no longer explained by the current `factory/routes.yaml` routing data. In the provided HEAD file, `default_provider: azure` and both `routes.sm` and `azure_routes.sm` are already set to `azure/gpt-5.4`, with an explicit comment documenting the exact truncation symptom and the intent to move SM off `deepseek/deepseek-chat`. Yet the concern evidence from attempts 824 and 825 shows `persona=sm ... model=deepseek/deepseek-chat`, which means the effective runtime route for SM is still resolving to DeepSeek despite the settings file saying otherwise.\n\nThat mismatch points to a dispatch/runtime path outside the preloaded persona-settings file: either provider/model resolution is bypassing `routes.yaml`, caching stale route data, or substituting a direct-provider model after persona lookup. The mechanism is evidenced by the contradiction between source-of-truth configuration (`factory/routes.yaml`) and observed run metadata in the concern. A settings-only patch to the same file would therefore not address the root cause; the previous failed attempt targeted exactly that file and approach, and the current HEAD already contains the intended SM route.\n\nBecause the relevant dispatch code was not included in the source bundle, I cannot produce a safe one-file patch with real context lines to correct the actual resolver behavior. The smallest likely real fix lives in `factory/chain/` or the model-router implementation that interprets `default_provider`, `routes`, and `azure_routes`, but diagnosing that path requires the resolver source and ideally one trace showing how `sm` became `deepseek/deepseek-chat` after the config had already been updated.",
+  "proposal": {
+    "kind": "persona_settings",
+    "target": "factory/routes.yaml",
+    "rationale": "No safe patch is proposed because the current settings file already contains the intended SM route, so another edit here would repeat a previously abandoned approach without addressing the observed runtime mismatch. The next actionable step is inspection of the route-resolution / dispatch code path that is still emitting `deepseek/deepseek-chat` for `sm`.",
+    "suggested_patch": "",
+    "verification": "Inspect model-router / dispatch resolution with a smoke trace for persona=sm under current HEAD before proposing code changes.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The provided source already shows SM pinned to `azure/gpt-5.4`, while runtime evidence still reports `deepseek/deepseek-chat`. This indicates a resolver/dispatch defect outside the supplied `factory/routes.yaml` context. Prior attempts already targeted `factory/routes.yaml`; repeating that approach would not fix the contradiction. Additional context needed: the model-router / dispatch source files that load and apply `routes.yaml`, plus any cache/env override path affecting persona resolution.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T132421-sm-max-tokens-truncation-repeat.json",
+  "halt_requested": false
+}

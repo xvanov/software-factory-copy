@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "title": "story-16-review-churn",
+  "description": "This is a continuation of story-16-review-churn. Story 16 became active again in this window with another long successful dev run followed by another successful reviewer run, bringing the cumulative reviewer-cycle count to 10 and confirming that the previously escalated non-converging review loop is still in progress rather than resolved. The current activity spans at least 2026-05-28T23:37:16.721728+00:00 through the reviewer completion at 2026-05-28T23:44:48.543566+00:00.\n\nThe immediate downstream impact is continued spend and operator time on a story that is not converging. In this window alone, the dev run consumed 426.782 seconds and $0.4292 before another reviewer pass occurred, and the watcher note reports cumulative churn of 10 reviewer cycles and 13 dev cycles. This matches the structural review-churn pattern: runs are succeeding, but the story is still cycling between dev and reviewer without advancing.\n\nThere was also one separate SM failure with a clearly diagnosable truncation signature: `json parse failed at max_tokens=65536 finish_reason=length`. However, in this bundle it appears as a single low-cost, storyless event surrounded by zero-cost sandbox/test-style failures and does not outweigh the stronger ongoing signal, which remains the sustained story-16 review loop. The most plausible area to inspect is prompt/context handling for review convergence rather than a new queue or tick-level factory stall.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T23:44:50.057018+00:00",
+      "summary_excerpt": "Activity resumed on story 16: a long successful dev run was followed by a successful reviewer run, raising cumulative review churn to 10 reviewer cycles and making it active again in this window."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "review_churn",
+      "ts": "2026-05-28T23:44:50.057018+00:00",
+      "excerpt": "{\"noteworthy\":\"Story 16 is active in-window with 10 reviewer cycles and 13 dev cycles, continuing the previously escalated non-converging review loop.\"}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:44:23.532236+00:00",
+      "excerpt": "story 16 dev succeeded after 426.782s at cost_usd 0.4291585, attempt_n 13, tokens_in 831404, tokens_out 8971"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:44:48.571430+00:00",
+      "excerpt": "story 16 reviewer succeeded after 24.831s at cost_usd 0.026685, attempt_n 10, following the long dev run in the same window"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-28T23:44:50.057018+00:00",
+      "excerpt": "{\"noteworthy\":\"Six failures appeared; most are ambiguous sandbox/test failures, but the SM error explicitly shows output truncation at max_tokens=65536 with finish_reason=length, a diagnosable factory-side issue.\"}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:44:12.913405+00:00",
+      "excerpt": "sm failed: json parse failed at max_tokens=65536 finish_reason=length: Unterminated string starting at: line 1 column 9 (char 8)"
+    }
+  ],
+  "proposed_area": "prompt",
+  "urgency": "halt",
+  "escalate_to_l3": true,
+  "escalation_reason": "Sustained non-converging review-churn pattern on story 16 has persisted across multiple L2 intervals and is still active, now at 10 reviewer cycles and 13 dev cycles with additional spend and a 426.782s dev run in this window. L3 judgment is needed because this is an ongoing structural factory-side convergence problem, and the evidence has continued to accumulate after prior warn and halt concerns."
+}

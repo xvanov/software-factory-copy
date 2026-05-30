@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "title": "story-15-review-churn",
+  "description": "This is a continuation of story-15-review-churn. In the current window, story 15 recorded another successful reviewer run at attempt 9, indicating the review loop is still active rather than resolved. The watcher note explicitly ties this to the previously escalated non-converging churn pattern, and the review_churn detector reports story 15 as active again with 9 reviewer cycles.\n\nEvidence in this interval is narrow but consistent: there were no failed runs, retry clustering, queue updates, tick events, or prompt placeholder signals. The only story-level activity captured here is the additional reviewer success for story 15, so the concern is continued iteration without visible convergence rather than a new infrastructure fault.\n\nDownstream impact appears limited but ongoing. Another review cycle consumed additional run time and cost, and the story remains active in review. Because this window adds only one more successful reviewer pass and no new corroborating failure or stall signal, the pattern remains best understood as continued review churn with unclear root cause from the factory-level evidence available here.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T23:18:07.267407+00:00",
+      "summary_excerpt": "Story 15 completed another successful reviewer run in this window... Review churn remains elevated overall, and story 15 is active again at 9 reviewer cycles."
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:17:15.021757+00:00",
+      "excerpt": "{\"event\":\"run\",\"success\":true,\"story_id\":15,\"persona\":\"reviewer\",\"attempt_n\":9,\"duration_s\":13.436,\"cost_usd\":0.0204085,\"tokens_in\":10837,\"tokens_out\":1148}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "review_churn",
+      "ts": "2026-05-28T23:18:07.267407+00:00",
+      "excerpt": "{\"noteworthy\":\"Story 15 is still active and now at 9 reviewer cycles, continuing the previously escalated non-converging churn pattern.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "worktree_orphans",
+      "ts": "2026-05-28T23:18:07.267407+00:00",
+      "excerpt": "{\"noteworthy\":\"Worktree state is unchanged: story 33 matches an active reviewer_requested_changes state, while story 52 still has db_state=\\\"missing\\\".\"}"
+    }
+  ],
+  "proposed_area": "unknown",
+  "urgency": "continue",
+  "escalate_to_l3": false,
+  "escalation_reason": "no L3 needed \u2014 continuation signal is limited to one more reviewer cycle with low incremental impact and no clearer factory-level diagnosis in this window"
+}

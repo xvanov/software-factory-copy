@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "sm-max-tokens-truncation-repeat",
+  "diagnosis": "The failure pattern is an output-cap mismatch, not malformed SM content. The concern evidence shows an SM run failing with `json parse failed at max_tokens=65536 finish_reason=length`, which means the provider stopped generation because it hit the configured output ceiling and returned truncated JSON. In the preloaded `factory/routes.yaml`, the active provider is `azure` (`default_provider: azure`), and the SM persona is routed under `azure_routes.sm` to `azure/gpt-5.4`, whose configured cap in `model_limits` is only `16384`. That makes the observed `max_tokens=65536` especially significant: the runtime call appears not to be using the per-model cap table from `routes.yaml` for this persona call, or is overriding it with a much larger request value.\n\nThe root cause therefore is structural factory code or runtime request construction outside the supplied files, not a bad persona prompt and not a route setting that can be safely corrected from the evidence available here. `factory/routes.yaml` already contains a conservative, explicit `model_limits.azure/gpt-5.4.max_output_tokens: 16384`, so changing persona settings alone would be speculative and could worsen behavior if the runtime currently ignores this table or if the provider's effective ceiling differs by API path. The repeated nature of the concern confirms the bug is persistent, but the mechanism we can prove from the provided sources is limited to a mismatch between the logged request cap (`65536`) and the configured route/model cap table.\n\nBecause the relevant request-building code was not included in `source_files`, I cannot produce a reliable one-file patch with exact context lines. A proper fix likely lives in the dispatch/text-run path that converts routed model ids into provider request parameters, and may require inspecting how `model_limits` and `defaults_extra.max_output_tokens_default` are loaded and applied. Shipping a settings-only patch here would not address the mechanism named by the evidence: the system is already configured with a lower cap than the failing call used.",
+  "proposal": {
+    "kind": "persona_settings",
+    "target": "factory/routes.yaml",
+    "rationale": "No safe settings-only patch is justified from the supplied files. `factory/routes.yaml` already declares `azure/gpt-5.4: { max_output_tokens: 16384 }`, which conflicts with the failing run's logged `max_tokens=65536`; that points to request-construction code ignoring or overriding the settings, so changing this file would be speculative.",
+    "suggested_patch": "",
+    "verification": "Inspect the text-run / model-request path, then run the relevant unit tests for route/model-limit application plus an SM smoke call that logs the resolved max_tokens.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The supplied sources show the configured cap table in `factory/routes.yaml`, but not the code that turns that table into the runtime `max_tokens` argument. The observed failure used `max_tokens=65536` despite `azure/gpt-5.4` being capped at 16384 in config, so the likely fix is in dispatch/request-construction code outside the provided bundle; I need that code path to produce a reliable patch.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T235725-sm-max-tokens-truncation-repeat.json",
+  "halt_requested": false
+}

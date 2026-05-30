@@ -1,0 +1,14 @@
+[
+  {
+    "schema_version": 1,
+    "mode": "halted",
+    "set_at": "2026-05-29T19:01:30.013759+00:00",
+    "set_by": "manager_diagnostician",
+    "concern_title": "sandbox-template-missing-retry-storm",
+    "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T190117-sandbox-template-missing-retry-storm.json",
+    "reason": "The factory is in a sustained infrastructure failure mode: the same pre-model sandbox error is causing immediate retry storms across multiple stories, and normal retries cannot self-heal a missing template asset. Continuing to run widens the blocked-story surface area while producing no useful work.",
+    "cleared_at": "2026-05-30T01:01:23.852000+00:00",
+    "cleared_by": "operator",
+    "clear_reason": "pre-model sandbox infra circuit breaker merged (#7); env repaired"
+  }
+]

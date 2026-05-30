@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "story-16-review-churn",
+  "diagnosis": "The concern is real and sustained: story 16 has reached 10 reviewer cycles and 13 dev cycles, with another long dev run (426.782s, $0.4292, 831404 input tokens) immediately followed by another reviewer pass. That is the exact non-converging dev\u2194reviewer loop described in `factory/personas/manager_summarizer.md`, which explicitly calls out review churn as a structural pattern where runs succeed but the story does not advance. The concern's evidence also points at prompt/context handling rather than a queue stall or execution failure: the dev and reviewer runs are succeeding, so the mechanism is almost certainly that each retry is missing some of the accumulated review history or is not being instructed strongly enough to resolve *all* prior findings before exiting.",
+  "proposal": {
+    "kind": "prompt_edit",
+    "target": "factory/personas/dev.md",
+    "rationale": "A prompt clarification in `factory/personas/dev.md` is the smallest plausible factory-side fix, but the exact missing mechanism cannot be confirmed from the provided source bundle because no chain/handler code or reviewer-feedback injection prompt is included. The only prior failed attempt in the last 24h already targeted this same file with a reviewer-findings instruction, and without the dispatch code that assembles the dev prompt I cannot produce a different high-confidence patch that is not speculative or duplicative.",
+    "suggested_patch": "",
+    "verification": "Inspect the dev prompt assembly path in factory/chain/ to confirm whether reviewer findings / prior PR comments are already injected before proposing a prompt edit.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The likely fix involves how reviewer findings are carried across dev retries, but the relevant dispatch/prompt-assembly code is not in the provided source bundle. A prior L4 attempt already tried a `factory/personas/dev.md` prompt tweak about prior reviewer findings and was abandoned; without the chain files that actually inject retry context, a different reliable fix cannot be derived from this prompt-only bundle.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T234508-story-16-review-churn.json",
+  "halt_requested": false
+}

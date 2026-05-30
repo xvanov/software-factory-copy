@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "title": "sm-max-tokens-truncation",
+  "description": "This is a continuation of sm-max-tokens-truncation. The same SM failure mode recurred in this interval: an SM run failed with explicit `max_tokens=65536` truncation and `finish_reason=length`, followed by JSON parse failure from incomplete output. The recurrence appears across consecutive watcher intervals, matching the prior concern pattern rather than introducing a new error class.\n\nIn this window the direct impact is small in measured cost and duration for the specific failed run, but the diagnostic clarity is high because the error text names the failure mode directly. The factory also showed several near-instant sandbox/test-style failures on onboarder, test_implementer, and dev with `story_id=null`; those appear separate and ambiguous, with no supporting spend, tick, queue, or worktree signals indicating broader production blockage.\n\nOverall, the coherent signal here is the repeated SM truncation/JSON-parse failure, not the sandbox noise. Because the pattern has now persisted across multiple watcher-note intervals and remains attributable to factory-side generation/settings behavior, it warrants L3 review even though this individual occurrence was low-cost and did not yet show queue stall or sustained spend burn.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-27T14:00:56.964194+00:00",
+      "summary_excerpt": "Activity resumed with several very short sandbox/test failures across onboarder, test_implementer, and dev, plus another SM failure with the same max_tokens=65536 truncation/JSON-parse error seen in the prior escalated note."
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-27T13:59:53.443944+00:00",
+      "excerpt": "persona=sm success=false duration_s=0.007 error=\"json parse failed at max_tokens=65536 finish_reason=length: Unterminated string starting at: line 1 column 9 (char 8)\" model=deepseek/deepseek-chat attempt_n=701"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-27T13:59:53.428326+00:00",
+      "excerpt": "persona=sm success=true duration_s=0.007 cost_usd=0.0 tokens_in=20 tokens_out=40 model=deepseek/deepseek-chat attempt_n=700"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-27T13:59:53.459475+00:00",
+      "excerpt": "persona=sm success=true duration_s=0.007 cost_usd=0.0 tokens_in=10 tokens_out=20 model=deepseek/deepseek-chat attempt_n=702"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-27T14:00:56.964194+00:00",
+      "excerpt": "{\"noteworthy\":\"Six failures in scope: five brief sandbox/test-style failures with story_id=null, plus a repeated SM failure whose error explicitly identifies max_tokens truncation and JSON parse failure.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "retry_storm",
+      "ts": "2026-05-27T14:00:56.964194+00:00",
+      "excerpt": "{\"noteworthy\":\"onboarder reached failure_count=3 in this window, forming a retry storm; other personas had single failures only.\"}"
+    }
+  ],
+  "proposed_area": "persona_settings",
+  "urgency": "warn",
+  "escalate_to_l3": true,
+  "escalation_reason": "Repeated SM max-tokens truncation/JSON-parse failure has persisted across consecutive watcher intervals, continuing the prior sm-max-tokens-truncation concern. The error text is self-diagnosing (`max_tokens=65536`, `finish_reason=length`) and points to factory-side generation/settings behavior, so L3 judgment is needed now rather than waiting for another recurrence."
+}
