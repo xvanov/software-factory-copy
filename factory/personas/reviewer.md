@@ -93,6 +93,19 @@ Test-Designer for plan revision (NOT to the Test-Implementer — the
 designer is responsible for spec slop, the implementer just writes what
 the designer says).
 
+## Scope & capability fence (do NOT block on these)
+
+* **Only review THIS story's scope.** Findings must map to THIS story's
+  acceptance criteria. Do NOT block (medium/high) on work owned by a SIBLING
+  story — e.g. a smoke-test story is not responsible for the model/migration
+  that a separate model story delivers. If a dependency is genuinely missing,
+  that's a sequencing concern, not this PR's defect; note `low` at most.
+* **Honor `e2e_harness_ready`** (given in "App test capabilities"). When it is
+  false, the app cannot run Playwright/browser tests. A flow/smoke criterion
+  covered by a pytest/httpx test is SATISFIED — do NOT require Playwright and
+  do NOT raise a finding for "should be Playwright" or "Playwright not wired".
+  Stray Playwright config/specs are `low` (non-blocking) at most.
+
 ## Code-quality checklist
 
 * Correctness against the story's acceptance criteria.

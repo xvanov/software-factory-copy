@@ -2598,11 +2598,23 @@ def handle_review(
         pr_diff = _fetch_pr_diff_for_review(
             story, app_config, software_factory_root
         )
+        rcaps = (
+            "## App test capabilities (HONOR when judging test choices)\n\n"
+            f"* `e2e_harness_ready`: {str(app_config.gates.e2e_harness_ready).lower()}\n"
+            "* If false, this app has NO runnable Playwright/browser harness. Do "
+            "NOT require Playwright/E2E and do NOT flag a finding because a smoke/"
+            "flow test was written as pytest/httpx instead of Playwright — that "
+            "is the CORRECT choice here, and a backend test that covers the "
+            "behavior fully satisfies the acceptance criterion. Treat any stray "
+            "Playwright config/spec or 'playwright not wired' as NON-blocking "
+            "(`low`), never `medium`/`high`.\n\n"
+        )
         full_prompt = (
             f"{persona_prompt.rstrip()}\n\n"
             "---\n\n"
             "## Context\n\n"
             f"{prelude.rstrip()}\n\n"
+            f"{rcaps}"
             "## Story\n\n"
             f"{story_content}\n\n"
             "## Test plan\n\n"
