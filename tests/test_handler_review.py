@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from factory.app_config import AppConfig
-from factory.chain.handlers import handle_review, persist_story
+from factory.chain.handlers import _MAX_REVIEW_STUCK, handle_review, persist_story
 from factory.chain.state_machine import StoryRecord, StoryState
 
 
@@ -170,18 +170,74 @@ def test_guard_does_not_fire_below_max(temp_root: Path, app_config: AppConfig) -
     assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
 
 
-def test_guard_blocks_at_max_cycles(temp_root: Path, app_config: AppConfig) -> None:
-    """The 3rd request-changes verdict routes to the terminal blocked state."""
-    s = _story_at_tests_green_with_cycles(temp_root, 2)
+def test_guard_blocks_on_repeated_identical_findings(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    """Convergence is stability-based: the SAME findings 3 cycles in a row is
+    genuine churn → terminal block. (Replaces the old raw-count cap.)"""
+    s = _story_at_tests_green_with_cycles(temp_root, 0)
     db = temp_root / "state" / "factory.db"
-    result = handle_review(
-        s, app_config, temp_root, dry_run=True, db_path=db,
-        fixture=_REQUEST_CHANGES_FIXTURE,
-    )
-    assert s.reviewer_cycles == 3
-    assert result.next_state == StoryState.BLOCKED_REVIEW_NONCONVERGENT
-    assert s.state == StoryState.BLOCKED_REVIEW_NONCONVERGENT.value
-    assert s.error is not None and "did not converge" in s.error
+    last = None
+    for _ in range(_MAX_REVIEW_STUCK):
+        s.state = StoryState.TESTS_GREEN.value  # chain re-dispatches reviewer
+        persist_story(s, db)
+        last = handle_review(
+            s, app_config, temp_root, dry_run=True, db_path=db,
+            fixture=_REQUEST_CHANGES_FIXTURE,  # identical findings every cycle
+        )
+    assert last is not None
+    assert last.next_state == StoryState.BLOCKED_REVIEW_NONCONVERGENT
+    assert s.error is not None and "stuck" in s.error
+
+
+def test_guard_does_not_block_when_findings_change(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    """DIFFERENT findings each cycle = progress, not churn → keeps routing,
+    never blocks (until the hard backstop). This is the story-15 fix: mixed
+    code+test findings get the cycles they need to converge."""
+    s = _story_at_tests_green_with_cycles(temp_root, 0)
+    db = temp_root / "state" / "factory.db"
+    for i in range(_MAX_REVIEW_STUCK + 1):
+        s.state = StoryState.TESTS_GREEN.value
+        persist_story(s, db)
+        fixture = {
+            "verdict": "request_changes",
+            "findings": [{"severity": "high", "location": "src/x.py:42",
+                          "what": f"distinct issue #{i}", "fix_suggestion": "fix"}],
+            "test_quality_score": 0.85,
+            "test_quality_findings": [],
+            "comments_to_post": [],
+            "summary": "changes",
+        }
+        result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
+        # Never blocks on progress (each cycle's findings differ).
+        assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
+
+
+def test_test_only_findings_route_to_test_loop_even_with_high_score(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    """Findings that point only at test files route to the test loop even when
+    the reviewer reports a healthy test_quality_score (the story-15 root cause:
+    dev cannot edit test files)."""
+    s = _story_at_tests_green_with_cycles(temp_root, 0)
+    db = temp_root / "state" / "factory.db"
+    fixture = {
+        "verdict": "request_changes",
+        "findings": [
+            {"severity": "high", "location": "backend/tests/test_uploads.py:10",
+             "what": "tests do not cover SHA-256 behavior", "fix_suggestion": "add coverage"},
+            {"severity": "low", "location": "tests/conftest.py:5",
+             "what": "suite builds its own engine", "fix_suggestion": "reuse fixture"},
+        ],
+        "test_quality_score": 0.9,  # reviewer wrongly reports healthy score
+        "test_quality_findings": [],
+        "comments_to_post": [],
+        "summary": "test issues",
+    }
+    result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
+    assert result.next_state == StoryState.TEST_DESIGN_DONE
 
 
 def test_request_changes_low_score_routes_to_test_loop(
