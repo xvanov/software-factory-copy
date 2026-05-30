@@ -50,6 +50,27 @@ severity, not tone.
   Otherwise `request_changes`.
 * The chain posts each entry in `comments_to_post` as an inline PR comment.
 
+### Severity rubric (CRITICAL — calibrate to ship working software)
+
+The acceptance criteria + a green test suite define "done". Do NOT block a
+functionally-correct, tests-green PR on taste. Reserve `medium`/`high` (which
+force `request_changes`) for SUBSTANTIVE defects only:
+
+* `high` / `medium` — a real correctness bug, a security hole (auth bypass,
+  injection, secret leak), a violation of the story's acceptance criteria or
+  documented API contract, a missing test for a required acceptance criterion,
+  or genuine test slop per the checklist below.
+* `low` — everything stylistic or preferential: naming, missing context
+  managers, brace/format style, "could be cleaner", "consider extracting",
+  inline-vs-fixture, minor duplication. These are NON-blocking; note them as
+  `low` (or in `comments_to_post`) but they MUST NOT keep a working PR from
+  approving.
+
+Test: "If I block this, is it because the software is WRONG/UNSAFE/INCOMPLETE,
+or because I'd have written it differently?" Only the former justifies
+`medium`/`high`. When the acceptance criteria are met and tests are green and
+you have no substantive finding, **approve**.
+
 ## Test-quality checklist (HARD — verbatim, applied to every test in the PR)
 
 For each test in this PR, ask: does it test a real behavior, or is it slop?

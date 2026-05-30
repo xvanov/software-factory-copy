@@ -301,3 +301,26 @@ def test_blocked_review_nonconvergent_is_terminal() -> None:
     from factory.chain.state_machine import is_terminal
 
     assert is_terminal(StoryState.BLOCKED_REVIEW_NONCONVERGENT)
+
+
+def test_code_finding_with_low_score_routes_to_dev_not_test_loop(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    """A CODE-file finding routes to dev even when test_quality_score < 0.7 —
+    test_impl cannot fix code, so a low score must not strand a code defect."""
+    s = _story_at_tests_green_with_cycles(temp_root, 0)
+    db = temp_root / "state" / "factory.db"
+    fixture = {
+        "verdict": "request_changes",
+        "findings": [
+            {"severity": "high", "location": "backend/app/services/uploads.py:63",
+             "what": "writes to disk before the DB transaction commits",
+             "fix_suggestion": "reorder: persist row then write file"}
+        ],
+        "test_quality_score": 0.38,  # low, but the finding is a CODE defect
+        "test_quality_findings": [],
+        "comments_to_post": [],
+        "summary": "code ordering bug",
+    }
+    result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
+    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES  # → dev, not test loop
