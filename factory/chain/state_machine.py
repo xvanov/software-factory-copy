@@ -283,6 +283,14 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
         EVENT_HARNESS_PRECHECK_FAIL,
     ): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
     (StoryState.TESTS_RED, EVENT_DEV_STARTED): StoryState.DEV_IN_PROGRESS,
+    # Loop-4 (dev-owns-tests rewrite): SM_DONE dispatches dev DIRECTLY. The
+    # dev persona writes BOTH production code and its tests in one context and
+    # runs them; there is no separate test_design/test_impl phase and no frozen
+    # test artifact authored by another agent. The historical
+    # SM_DONE → test_design → test_impl → TESTS_RED → dev path is retained in
+    # this table (and in the enum) only so legacy in-flight rows and the docs
+    # chain keep resolving; new tdd stories never enter it.
+    (StoryState.SM_DONE, EVENT_DEV_STARTED): StoryState.DEV_IN_PROGRESS,
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_TESTS_GREEN): StoryState.TESTS_GREEN,
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_TESTS_RED): StoryState.DEV_RETRY,
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_EXHAUSTED): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,

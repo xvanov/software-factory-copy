@@ -71,19 +71,15 @@ def test_terminal_state_returns_none() -> None:
 
 
 def test_tdd_chain_dispatch_unchanged_by_chain_kind_branch() -> None:
-    """A TDD-kind story at SM_DONE still routes to ``test_design`` — the
-    chain_kind branch only fires at STORY_CREATED. Anywhere else, the static
-    dispatch table is authoritative.
+    """Loop-4 (dev-owns-tests): a TDD-kind story at SM_DONE routes DIRECTLY to
+    ``dev`` — there is no longer a separate ``test_design``/``test_impl`` phase.
+    The chain_kind branch still only fires at STORY_CREATED; everywhere else
+    the static dispatch table is authoritative.
 
-    Guards against the subtle bug where ``_dispatch_for_story`` would over-
-    apply the chain_kind branch and break the historical TDD pipeline.
-
-    Item 4 added a TESTS_RED branch: the FIRST visit routes to
-    ``harness_precheck`` to fail fast on env/collection issues; once the
-    precheck passes (``harness_precheck_passed`` flips True) the story
-    routes to ``dev``. Both shapes verified below.
+    The legacy TESTS_RED → harness_precheck → dev path remains wired for any
+    in-flight rows that predate the rewrite, and is verified below.
     """
-    assert _dispatch_for_story(_story(StoryState.SM_DONE, chain_kind="tdd")) == "test_design"
+    assert _dispatch_for_story(_story(StoryState.SM_DONE, chain_kind="tdd")) == "dev"
     # First TESTS_RED visit: precheck hasn't run yet → harness_precheck.
     assert (
         _dispatch_for_story(_story(StoryState.TESTS_RED, chain_kind="tdd"))

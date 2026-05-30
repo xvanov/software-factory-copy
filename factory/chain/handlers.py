@@ -47,7 +47,6 @@ from factory.chain.state_machine import (
     EVENT_REVIEWER_APPROVE,
     EVENT_REVIEWER_REQUEST_CHANGES,
     EVENT_REVIEWER_STARTED,
-    EVENT_REVIEWER_TEST_QUALITY,
     EVENT_SM_DONE,
     EVENT_SM_STARTED,
     EVENT_TECH_WRITER_DONE,
@@ -58,7 +57,6 @@ from factory.chain.state_machine import (
     EVENT_TEST_IMPL_SLOP,
     EVENT_TEST_IMPL_SLOP_RETRY,
     EVENT_TEST_IMPL_STARTED,
-    EVENT_TESTS_NEED_CLARIFICATION,
     EVENT_TESTS_RED,
     StoryRecord,
     StoryState,
@@ -1704,11 +1702,7 @@ def handle_dev(
             payload["test_run_passed"] = False
             payload["summary"] = "Dry-run dev failure: tests still red."
     else:
-        from factory.chain.branch import (
-            _run_git,
-            feature_branch_name,
-            find_test_files_in_diff,
-        )
+        from factory.chain.branch import feature_branch_name
         from factory.runner import LLMConfig, sandbox_run
 
         # Dev runs in the same per-story worktree test_impl already created.
@@ -1722,13 +1716,6 @@ def handle_dev(
         branch = feature_branch_name(story.github_issue_number, story.slug)
         story.github_branch = branch
         persist_story(story, db)
-
-        # Snapshot the pre-dev tip so we can diff post-dev commits to enforce
-        # the "Dev must not modify test files" invariant. The persona prompt
-        # carries the rule for the LLM; this check is the chain-side
-        # enforcement that catches violations regardless of what the model
-        # decided to do.
-        pre_dev_sha = _run_git(target_repo, "rev-parse", "HEAD").stdout.strip()
 
         dev_direction = find_direction_for_story(story, software_factory_root)
         from factory.directions.parser import get_direction_chain
@@ -1868,31 +1855,12 @@ def handle_dev(
                 error=story.error,
             )
 
-        # If Dev touched any test file, abort to BLOCKED_TESTS_NEED_CLARIFICATION.
-        # Test files are frozen during the Dev run; if a test is wrong, the
-        # persona prompt requires writing ``TESTS_NEED_CLARIFICATION:`` so the
-        # chain can route back to Test-Designer. A silently-modified test that
-        # then "passes" would be the worst possible regression.
-        touched_tests = find_test_files_in_diff(target_repo, base_ref=pre_dev_sha)
-        if touched_tests:
-            story.state = advance(story, EVENT_DEV_EXHAUSTED).value
-            story.error = f"dev modified test files (forbidden); paths={touched_tests[:5]}"
-            persist_story(story, db)
-            return HandlerResult(
-                next_state=StoryState(story.state),
-                payload={
-                    "files_changed": run_res.files_changed,
-                    "test_run_passed": False,
-                    "tests_modified_by_dev": touched_tests,
-                    "summary": (
-                        f"Dev modified test files: {', '.join(touched_tests[:5])}. "
-                        "Test files are frozen during dev runs; routing back to "
-                        "Test-Designer for clarification."
-                    ),
-                },
-                error=story.error,
-            )
-
+        # Loop-4 (dev-owns-tests): the dev persona writes BOTH production code
+        # and its tests, so there is no "tests are frozen" invariant to enforce
+        # and no Test-Designer to route a clarification back to. A failed run is
+        # simply a dev retry (below). Test *quality* (no slop, meaningful
+        # assertions) is gated downstream by the reviewer + programmatic slop
+        # detector, not here.
         tests_green = bool(run_res.test_run_passed)
         payload = {
             "files_changed": run_res.files_changed,
@@ -1900,151 +1868,12 @@ def handle_dev(
             "summary": run_res.summary[-2000:],
         }
 
-        # Dev's escape hatch when the test_implementer wrote impossible /
-        # contradictory tests: emit ``TESTS_NEED_CLARIFICATION:`` and the
-        # chain routes back to the test_designer/test_implementer flow
-        # instead of burning more dev retries. The token is documented in
-        # ``factory/personas/dev.md`` — this is the chain-side wiring that
-        # actually catches it.
-        if not tests_green and "TESTS_NEED_CLARIFICATION:" in (run_res.summary or ""):
-            tail = run_res.summary or ""
-            idx = tail.find("TESTS_NEED_CLARIFICATION:")
-            clarification = tail[idx : idx + 800].splitlines()[0]
-            # Route back to test_implementer via TEST_DESIGN_DONE — the next
-            # tick dispatches handle_test_implementation which re-writes the
-            # tests. dev_retries is NOT bumped so the budget is preserved
-            # for the post-clarification dev run.
-            story.state = advance(story, EVENT_TESTS_NEED_CLARIFICATION).value
-            story.last_rejection_reason = f"tests_need_clarification: {clarification[:150]}"
-            payload["tests_need_clarification"] = clarification
-            persist_story(story, db)
-            log_story_event(
-                story.id,
-                "tests_need_clarification",
-                {"clarification": clarification[:300], "attempt": story.dev_retries + 1},
-                software_factory_root=software_factory_root,
-                slug_hint=story.slug,
-            )
-            return HandlerResult(
-                next_state=StoryState(story.state),
-                payload=payload,
-                error=story.error,
-            )
-
-        # Objective "dev cannot fix this with code" signal: the run produced
-        # NO file changes yet tests are still red. Re-dispatching dev is
-        # pointless — unchanged code reproduces the identical failure (this is
-        # exactly the no-op retry storm that marched stories 16/18/20/25/26
-        # into terminal blocks). The overwhelmingly common cause is a
-        # test-quality defect the test_implementer must repair (contradictory
-        # / impossible / contract-mismatched tests); dev's SELF_SUMMARY usually
-        # says so outright, but the literal TESTS_NEED_CLARIFICATION: token
-        # above is too brittle to depend on. Route back to the test loop with
-        # dev's diagnosis as the repair brief, capped, WITHOUT consuming the
-        # dev retry budget.
-        if not tests_green and not (run_res.files_changed or []):
-            from factory.chain.event_log import read_story_events
-
-            prior_repairs = sum(
-                1
-                for e in read_story_events(
-                    story.id,
-                    software_factory_root=software_factory_root,
-                    slug_hint=story.slug,
-                )
-                if e.get("event") == "dev_nochange_test_repair"
-            )
-            diagnosis = (
-                (getattr(run_res, "self_summary", "") or "")
-                or (getattr(run_res, "last_assistant_message", "") or "")
-                or (run_res.summary or "")
-                or "Dev made no code changes and the tests stayed red."
-            )
-            if prior_repairs < _MAX_DEV_NOCHANGE_TEST_REPAIRS:
-                # Same channel the slop path uses: handle_test_implementation
-                # reads ``reviewer_result_json.test_quality_findings`` and
-                # rewrites the failing tests with this brief instead of
-                # regenerating blindly.
-                story.reviewer_result_json = json.dumps(
-                    {
-                        "summary": (
-                            "Dev made NO code changes this run and the tests "
-                            "stayed red — a strong signal the TESTS are wrong "
-                            "(contradictory / impossible / mismatched to the "
-                            "story contract), not the implementation. Rewrite "
-                            "the failing tests so they are mutually consistent "
-                            "and satisfiable by a correct implementation."
-                        ),
-                        "test_quality_findings": [
-                            {
-                                "test_name": "(dev-reported test-quality defect)",
-                                "issue": diagnosis[:1200],
-                                "fix_suggestion": (
-                                    "Ensure a single input maps to a single "
-                                    "expected outcome and no two tests assert "
-                                    "contradictory results for the same request."
-                                ),
-                            }
-                        ],
-                    }
-                )
-                story.state = advance(story, EVENT_TESTS_NEED_CLARIFICATION).value
-                story.last_rejection_reason = (
-                    f"dev_nochange_test_repair: {diagnosis[:150]}"
-                )
-                persist_story(story, db)
-                log_story_event(
-                    story.id,
-                    "dev_nochange_test_repair",
-                    {
-                        "attempt": prior_repairs + 1,
-                        "cap": _MAX_DEV_NOCHANGE_TEST_REPAIRS,
-                        "diagnosis": diagnosis[:300],
-                    },
-                    software_factory_root=software_factory_root,
-                    slug_hint=story.slug,
-                )
-                payload["tests_need_clarification"] = diagnosis[:300]
-                return HandlerResult(
-                    next_state=StoryState(story.state),
-                    payload=payload,
-                    error=story.error,
-                )
-            # Cap hit — repairing the tests didn't converge. The story's
-            # contract is likely unsatisfiable as written; block with a
-            # SPECIFIC signal so the operator/FMS sees the real cause rather
-            # than a generic dev-exhaustion.
-            story.state = advance(story, EVENT_DEV_EXHAUSTED).value
-            story.error = (
-                f"dev made no code changes across {_MAX_DEV_NOCHANGE_TEST_REPAIRS} "
-                f"test-repair cycles; tests appear contradictory/unsatisfiable: "
-                f"{diagnosis[:200]}"
-            )
-            persist_story(story, db)
-            log_story_event(
-                story.id,
-                "factory_needs_redesign",
-                {
-                    "kind": "tests_unsatisfiable_no_dev_progress",
-                    "repairs_attempted": prior_repairs,
-                    "diagnosis": diagnosis[:400],
-                    "suggestions": [
-                        "Dev produced zero code changes across multiple "
-                        "test-repair cycles — the tests are contradictory or "
-                        "the story's contract is unsatisfiable as written. "
-                        "Revisit the acceptance criteria and the "
-                        "test_implementer output together; more dev retries "
-                        "cannot fix this.",
-                    ],
-                },
-                software_factory_root=software_factory_root,
-                slug_hint=story.slug,
-            )
-            return HandlerResult(
-                next_state=StoryState(story.state),
-                payload=payload,
-                error=story.error,
-            )
+        # Loop-4: a dev run that ends red — including one that made no code
+        # changes — is just a failed attempt and consumes a retry below. There
+        # is no longer a separate test author to route a "tests are wrong"
+        # signal back to: the dev owns the tests and fixes them on the next
+        # attempt. The no-change case still exhausts the budget quickly because
+        # ``_MAX_DEV_RETRIES`` caps total attempts.
 
     if tests_green:
         story.state = advance(story, EVENT_DEV_TESTS_GREEN).value
@@ -2549,6 +2378,56 @@ def _dry_run_review(story: StoryRecord) -> dict[str, Any]:
     }
 
 
+def _slop_findings_for_story(
+    story: StoryRecord, app_config: AppConfig, software_factory_root: Path
+) -> list[dict[str, Any]]:
+    """Programmatically scan the dev-written test files for slop anti-patterns.
+
+    Loop-4 backstop for the dev-owns-tests model: scans the test files this
+    story's branch changed (relative to ``origin/main``) with the pure
+    ``slop_detector``. Returns a list of ``test_quality_findings``-shaped dicts
+    (empty when clean). Defensive: any git/IO failure returns ``[]`` so a
+    transient infra problem never blocks a review — the LLM reviewer remains
+    the primary judge; this only ADDS deterministic vetoes, never removes them.
+    """
+    try:
+        from factory.chain.branch import find_test_files_in_diff
+        from factory.chain.slop_detector import scan_file
+
+        worktree = _writing_worktree(app_config, software_factory_root, story)
+        base_ref = None
+        for candidate in ("origin/main", "main", "HEAD~1"):
+            try:
+                from factory.chain.branch import _run_git
+
+                _run_git(worktree, "rev-parse", "--verify", candidate)
+                base_ref = candidate
+                break
+            except Exception:
+                continue
+        if base_ref is None:
+            return []
+        test_paths = find_test_files_in_diff(worktree, base_ref=base_ref)
+        findings: list[dict[str, Any]] = []
+        for rel in test_paths:
+            for f in scan_file(worktree / rel):
+                findings.append(
+                    {
+                        "test_name": f"{f.path}:{f.line}",
+                        "issue": f"slop: {f.kind} — {f.why_slop}",
+                        "fix_suggestion": (
+                            "Replace this with an assertion on the real behavior "
+                            "of the code under test. Make the test fail against an "
+                            "absent/empty implementation first, then pass."
+                        ),
+                        "code_excerpt": f.code_excerpt,
+                    }
+                )
+        return findings
+    except Exception:  # pragma: no cover - defensive; never block on infra
+        return []
+
+
 def handle_review(
     story: StoryRecord,
     app_config: AppConfig,
@@ -2660,6 +2539,24 @@ def handle_review(
 
     verdict = result.get("verdict", "request_changes")
     score = float(result.get("test_quality_score", 0.0))
+
+    # Loop-4 programmatic slop gate. The dev now writes its own tests, so a
+    # deterministic scan of the changed test files is the backstop against the
+    # classic failure mode (tautological / assert-True / mock-only tests that
+    # pass before any real implementation). This runs BEFORE the approve check
+    # and can veto an LLM "approve": slop is a hard block routed back to dev.
+    if not dry_run and fixture is None:
+        slop_findings = _slop_findings_for_story(story, app_config, software_factory_root)
+        if slop_findings:
+            verdict = "request_changes"
+            score = min(score, 0.3)
+            result["verdict"] = "request_changes"
+            result["test_quality_score"] = score
+            result.setdefault("test_quality_findings", [])
+            result["test_quality_findings"].extend(slop_findings)
+            result["slop_detector_findings"] = slop_findings
+            story.reviewer_result_json = json.dumps(result)
+
     if verdict == "approve" and score >= 0.7:
         story.state = advance(story, EVENT_REVIEWER_APPROVE).value
     else:
@@ -2725,29 +2622,13 @@ def handle_review(
                     )
                 except Exception:  # pragma: no cover - real-run path
                     pass
-        elif _findings_target_tests(result) or (
-            score < 0.7 and not _findings_target_code(result)
-        ):
-            # Route to the TEST loop ONLY when the work is test work: findings
-            # point purely at test files, OR it's a pure test-quality/slop
-            # rejection (score<0.7) with NO code findings to fix. Crucially, a
-            # CODE finding always wins routing to dev below — even with a low
-            # test_quality_score — so a real code defect (e.g. "writes to disk
-            # before the DB transaction") is never stranded in test_impl, which
-            # cannot fix code. (test_impl can't fix code; dev can't edit tests.)
-            story.state = advance(story, EVENT_REVIEWER_TEST_QUALITY).value
-            if (
-                not dry_run
-                and github_client is not None
-                and story.github_pr_number is not None
-            ):
-                try:
-                    repo = github_client.get_repo(app_config.repo)
-                    pr = repo.get_pull(story.github_pr_number)
-                    pr.add_to_labels("needs-test-quality-fix")
-                except Exception:  # pragma: no cover - real-run path
-                    pass
         else:
+            # Loop-4: dev owns BOTH code and tests, so every actionable
+            # rejection — code defects AND test-quality/slop findings — routes
+            # back to dev. There is no longer a separate test author to route a
+            # test-quality finding to. dev's prompt receives both ``findings``
+            # and ``test_quality_findings`` (see handle_dev's reviewer_findings
+            # plumbing), so it knows what to fix in code and in tests.
             story.state = advance(story, EVENT_REVIEWER_REQUEST_CHANGES).value
             if (
                 not dry_run

@@ -327,24 +327,22 @@ def test_dev_passes_prior_attempts_into_next_sandbox(
     assert prior[0]["attempt"] == 1
 
 
-def test_tests_need_clarification_routes_back_to_test_design_done(
+def test_red_run_is_a_normal_retry_no_clarification_route(
     temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When dev emits the escape token, story goes to TEST_DESIGN_DONE
-    (re-invokes test_implementer) and dev_retries does NOT increment."""
+    """Loop-4: there is no longer a TESTS_NEED_CLARIFICATION escape token or a
+    route back to a separate test author — the dev owns the tests. A red run
+    is just a normal retry that increments dev_retries."""
     story = _story_at(StoryState.TESTS_RED, temp_root)
     db = temp_root / "state" / "factory.db"
 
     async def _fake_sandbox(*args: object, **kwargs: object) -> RunResult:
         return RunResult(
             success=False,
-            files_changed=[],
+            files_changed=["src/widget.py"],
             test_run_passed=False,
             error=None,
-            summary=(
-                "I tried for a while but the tests don't make sense.\n"
-                "TESTS_NEED_CLARIFICATION: test_widget asserts impossible behavior."
-            ),
+            summary="Adjusted widget; one assertion still red.",
         )
 
     monkeypatch.setattr(runner_module, "sandbox_run", _fake_sandbox, raising=True)
@@ -352,7 +350,5 @@ def test_tests_need_clarification_routes_back_to_test_design_done(
 
     result = handle_dev(story, app_config, temp_root, dry_run=False, db_path=db)
 
-    assert result.next_state == StoryState.TEST_DESIGN_DONE
-    assert story.dev_retries == 0, "clarification preserves retry budget"
-    assert story.last_rejection_reason is not None
-    assert "tests_need_clarification" in story.last_rejection_reason
+    assert result.next_state == StoryState.DEV_RETRY
+    assert story.dev_retries == 1

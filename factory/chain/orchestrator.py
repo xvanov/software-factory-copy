@@ -99,7 +99,12 @@ class TickSummary:
 # ``docs_sm`` here; chain_kind="tdd" (default) routes to ``sm``.
 _DISPATCH = {
     StoryState.STORY_CREATED: "sm",  # TDD default; overridden for docs chain
-    StoryState.SM_DONE: "test_design",
+    # Loop-4 (dev-owns-tests rewrite): SM_DONE dispatches dev DIRECTLY. The dev
+    # persona writes production code + its tests in one pass; there is no
+    # separate test_design/test_impl phase. The TEST_DESIGN_DONE/TESTS_RED
+    # entries below are retained only for legacy in-flight rows and are
+    # unreachable for new tdd stories.
+    StoryState.SM_DONE: "dev",
     # TODO(phase-3-or-4): Insert "architect" before test_design when the PM's
     # ``child_stories`` count crosses the architectural threshold or the
     # story scope is ``infra``. See ``factory/personas/architect.md`` for the

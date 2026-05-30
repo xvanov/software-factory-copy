@@ -148,9 +148,10 @@ def _seed_story(root: Path, direction_id: str, slug: str) -> StoryRecord:
 
 def test_fix_only_mode_allows_bug_direction(factory_root_with_bug_direction: Path) -> None:
     """In fix-only mode, a bug-typed direction's story advances through the
-    bug-aware handlers (``sm``, ``test_design``, ``test_impl``, ``dev``,
-    ``review``). It still parks at ``tech_writer`` because tech_writer has
-    no bug variant — that's the enforcer's contract, not a bug-tag failure."""
+    bug-aware handlers. Loop-4 collapsed the chain to ``sm`` → ``dev`` →
+    ``review`` (no separate ``test_design``/``test_impl``), so the story makes
+    3 advances and then parks at ``tech_writer`` because tech_writer has no bug
+    variant — that's the enforcer's contract, not a bug-tag failure."""
     from factory.settings.loader import reload_settings
     from factory.settings.modes import set_mode
 
@@ -161,17 +162,17 @@ def test_fix_only_mode_allows_bug_direction(factory_root_with_bug_direction: Pat
 
     summary = tick(root, "sacrifice", dry_run=True)
 
-    # The bug-aware handlers must all advance: sm, test_design, test_impl,
-    # dev, review (5 transitions). Without bug-tag plumbing, the FIRST sm
+    # The bug-aware handlers must all advance: sm, dev, review (3 transitions
+    # in the collapsed Loop-4 chain). Without bug-tag plumbing, the FIRST sm
     # dispatch would have been rejected by ``mode_fix_only_blocks_sm``.
-    assert summary.stories_advanced >= 5, (
-        f"expected >= 5 advances (bug-aware chain), got "
+    assert summary.stories_advanced >= 3, (
+        f"expected >= 3 advances (bug-aware chain), got "
         f"{summary.stories_advanced}; runs={summary.handler_runs!r}"
     )
     # Specifically: no rejection mentioning mode_fix_only_blocks_sm /
     # _blocks_dev / _blocks_review (the bug-aware handler kinds).
     blocking_reasons = {r for _, r in summary.rejected}
-    for blocked_kind in ("sm", "dev", "test_design", "test_impl", "review"):
+    for blocked_kind in ("sm", "dev", "review"):
         assert f"mode_fix_only_blocks_{blocked_kind}" not in blocking_reasons, (
             f"bug story should not be blocked by fix-only at {blocked_kind!r}"
         )

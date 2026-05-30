@@ -55,11 +55,12 @@ def test_high_quality_approve_advances_to_reviewer_done(
     assert s.state == StoryState.REVIEWER_DONE.value
 
 
-def test_low_test_quality_score_routes_to_test_loop(
+def test_low_test_quality_score_routes_to_dev(
     temp_root: Path, app_config: AppConfig
 ) -> None:
-    """Score below 0.7 routes to the TEST loop (test_implementer rewrites the
-    tests), NOT to dev — dev cannot edit frozen test files."""
+    """Loop-4: score below 0.7 routes back to DEV. The dev now owns the tests,
+    so a test-quality rejection is dev's to fix (alongside any code findings) —
+    there is no separate test author to route to."""
     s = _story_at_tests_green(temp_root)
     db = temp_root / "state" / "factory.db"
     fixture = {
@@ -77,7 +78,7 @@ def test_low_test_quality_score_routes_to_test_loop(
         "summary": "slop tests",
     }
     result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
-    assert result.next_state == StoryState.TEST_DESIGN_DONE
+    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
     # Reviewer persisted the JSON for later inspection.
     assert s.reviewer_result_json is not None
     assert "0.42" in s.reviewer_result_json or "0.4" in s.reviewer_result_json
@@ -215,12 +216,11 @@ def test_guard_does_not_block_when_findings_change(
         assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
 
 
-def test_test_only_findings_route_to_test_loop_even_with_high_score(
+def test_test_only_findings_route_to_dev_even_with_high_score(
     temp_root: Path, app_config: AppConfig
 ) -> None:
-    """Findings that point only at test files route to the test loop even when
-    the reviewer reports a healthy test_quality_score (the story-15 root cause:
-    dev cannot edit test files)."""
+    """Loop-4: findings that point only at test files route back to DEV (who
+    owns the tests now), regardless of the reported test_quality_score."""
     s = _story_at_tests_green_with_cycles(temp_root, 0)
     db = temp_root / "state" / "factory.db"
     fixture = {
@@ -237,13 +237,14 @@ def test_test_only_findings_route_to_test_loop_even_with_high_score(
         "summary": "test issues",
     }
     result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
-    assert result.next_state == StoryState.TEST_DESIGN_DONE
+    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
 
 
-def test_request_changes_low_score_routes_to_test_loop(
+def test_request_changes_low_score_routes_to_dev(
     temp_root: Path, app_config: AppConfig
 ) -> None:
-    """request_changes with test_quality_score < 0.7 → test loop, not dev."""
+    """Loop-4: request_changes with test_quality_score < 0.7 → dev (who owns
+    both code and tests now)."""
     s = _story_at_tests_green_with_cycles(temp_root, 0)
     db = temp_root / "state" / "factory.db"
     fixture = {
@@ -261,7 +262,7 @@ def test_request_changes_low_score_routes_to_test_loop(
         "summary": "tests are weak",
     }
     result = handle_review(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
-    assert result.next_state == StoryState.TEST_DESIGN_DONE
+    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
     assert s.reviewer_cycles == 1  # still counts toward the convergence guard
 
 

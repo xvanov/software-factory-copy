@@ -108,42 +108,36 @@ def _commit_in_repo(repo: Path, file_path: str, content: str, *, message: str = 
 # --------------------------------------------------------------------------- #
 
 
-def test_dev_modifying_test_file_aborts_to_blocked(
+def test_dev_modifying_test_file_is_allowed(
     factory_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When Dev's diff includes any test file, the chain transitions to
-    ``BLOCKED_TESTS_NEED_CLARIFICATION`` instead of continuing.
-
-    The handler computes the diff from pre-Dev HEAD to post-Dev HEAD against
-    the target app repo. Our mocked ``sandbox_run`` simulates Dev by
-    committing both a code change AND a test edit; the post-sandbox check
-    must catch the test edit and abort.
+    """Loop-4 (dev-owns-tests): Dev now WRITES the tests, so a diff that
+    includes test files is expected and must NOT abort. A green run with both
+    code and test edits proceeds to ``TESTS_GREEN``.
     """
     factory_root, target = factory_tree
     app_cfg = _make_app_config(target)
     story = _story_at_tests_red(factory_root)
 
     def _fake_sandbox_run(*args: object, **kwargs: object) -> RunResult:
-        # Simulate Dev's actions: commit a code edit AND a test edit. Post the
-        # worktree refactor the sandbox runs inside a per-story worktree, not
-        # the source repo, so we commit there — that's the tree the handler
-        # diffs against ``pre_dev_sha``.
+        # Simulate Dev's actions: commit a code edit AND the test that proves
+        # it — both belong to dev now.
         worktree = Path(kwargs["repo_path"])  # type: ignore[index]
         _commit_in_repo(worktree, "src/app.py", "# code\n", message="implement")
         _commit_in_repo(
             worktree,
             "tests/test_app.py",
-            "def test_x(): assert False\n",  # weaker assertion
-            message="WRONG: dev edits a test file",
+            "def test_x(): assert app() == 1\n",
+            message="dev writes the test that proves the code",
         )
         return RunResult(
             success=True,
             files_changed=["src/app.py", "tests/test_app.py"],
-            test_run_passed=True,  # would otherwise let chain through happy-path
+            test_run_passed=True,
             tokens_in=100,
             tokens_out=10,
             cost_usd=0.001,
-            summary="dev pretended to win",
+            summary="dev wrote code + tests, suite green",
         )
 
     async def _async_wrap(*a: object, **kw: object) -> RunResult:
@@ -155,14 +149,15 @@ def test_dev_modifying_test_file_aborts_to_blocked(
     db = factory_root / "state" / "factory.db"
     result = handle_dev(story, app_cfg, factory_root, dry_run=False, db_path=db)
 
-    assert result.next_state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION, (
-        f"Expected abort to BLOCKED_TESTS_NEED_CLARIFICATION; got {result.next_state}. "
+    assert result.next_state == StoryState.TESTS_GREEN, (
+        f"Expected TESTS_GREEN (dev owns tests, no abort); got {result.next_state}. "
         f"Error: {result.error}"
     )
     payload = result.payload
     assert payload is not None
-    assert "tests/test_app.py" in payload.get("tests_modified_by_dev", [])
-    assert "Dev modified test files" in payload.get("summary", "")
+    # The legacy "tests_modified_by_dev" abort signal must be gone.
+    assert payload.get("tests_modified_by_dev") is None
+    assert payload.get("test_run_passed") is True
 
 
 # --------------------------------------------------------------------------- #
@@ -219,22 +214,23 @@ def test_dev_editing_only_code_is_not_aborted(
 # --------------------------------------------------------------------------- #
 
 
-def test_dev_persona_prompt_declares_frozen_tests_rule() -> None:
-    """The persona file must spell out the rule so the LLM has it in context.
-
-    The chain-side diff check is the safety net; the prompt is the first line
-    of defense. Future edits to the persona must preserve both the
-    ``TESTS_NEED_CLARIFICATION:`` channel and the explicit glob list.
+def test_dev_persona_prompt_declares_dev_owns_tests_rule() -> None:
+    """Loop-4: the persona must tell the dev it owns BOTH code and tests, and
+    must warn against the slop anti-patterns the reviewer's slop detector
+    rejects. It must NOT carry the obsolete frozen-tests / clarification rule.
     """
     prompt = (Path(__file__).parent.parent / "factory" / "personas" / "dev.md").read_text(
         encoding="utf-8"
     )
 
-    # Must mention the prefix the LLM should emit when it needs to escalate.
-    assert "TESTS_NEED_CLARIFICATION:" in prompt, (
-        "Dev prompt missing the escalation channel — chain has no way to "
-        "distinguish 'dev gave up cleanly' from 'dev got stuck'."
+    # Must declare that dev owns the tests.
+    assert "code AND its tests" in prompt or "code and the tests" in prompt, (
+        "Dev prompt must state the dev writes both code and tests."
     )
-    # Must mention at least the python + ts test-file globs explicitly.
-    for marker in ("test_*.py", "*.test.ts", "tests/"):
-        assert marker in prompt, f"Dev prompt is missing glob marker: {marker!r}"
+    # Must warn against the headline slop pattern + the red-first discipline.
+    assert "assert True" in prompt, "Dev prompt must warn against tautological tests."
+    assert "slop" in prompt.lower(), "Dev prompt must reference the slop gate."
+    # The obsolete frozen-tests escalation channel must be gone.
+    assert "TESTS_NEED_CLARIFICATION:" not in prompt, (
+        "Dev prompt still carries the obsolete frozen-tests escalation channel."
+    )
