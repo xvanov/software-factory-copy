@@ -15,6 +15,7 @@ the story for this tick; an operator can inspect via ``factory why``.
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -625,7 +626,6 @@ def tick(
     # isolation — they own the DB they hand in.
     _dry_run_db_temp: Path | None = None
     if dry_run and db_path is None and db.exists():
-        import os
         import shutil
         import tempfile
 
@@ -723,6 +723,25 @@ def tick(
                 )
 
         stories = H.stories_in_flight(app, db)
+
+        # Optional shard partitioning for safe multi-loop parallelism. Several
+        # concurrent ``drive_chain`` loops each take the SAME ordered in-flight
+        # snapshot and, as the queue drains, converge on the same front story —
+        # racing to dispatch it into the same per-story worktree (observed:
+        # three loops all running dev on story 16). There is no atomic claim at
+        # dispatch, so the only safe way to run N loops is to give each a
+        # DISJOINT slice of the story space. ``FACTORY_SHARD="k/n"`` keeps only
+        # stories whose id ≡ k (mod n); run one loop per k with the same n and
+        # the loops can never touch the same story. Unset → process everything
+        # (single-loop default, unchanged behaviour).
+        _shard = os.environ.get("FACTORY_SHARD", "").strip()
+        if _shard:
+            try:
+                _k, _n = (int(x) for x in _shard.split("/"))
+                if _n > 0:
+                    stories = [s for s in stories if s.id is not None and s.id % _n == _k]
+            except (ValueError, ZeroDivisionError):
+                pass  # malformed shard spec → no filtering (fail-open)
 
         # ---- Signal: queue snapshot + spend snapshot ---------------------------
         try:
