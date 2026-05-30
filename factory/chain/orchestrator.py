@@ -338,6 +338,41 @@ def _count_app_docs_active(db: Path, app: str, exclude_story_id: int | None = No
     )
 
 
+def _direction_deps_pending(db: Path, story: StoryRecord) -> list[int]:
+    """Return lower-id stories in the same direction that are NOT yet deployed.
+
+    Dependency ordering. Within a direction the SM emits stories
+    foundational-first (model → service → endpoint → smoke → UI → docs), so the
+    story-id order IS the build/dependency order. A dependent story (e.g. a
+    smoke test, or a UI story) cannot build correctly until the foundations it
+    relies on are merged to main — building it early surfaces "endpoint missing
+    / test failing / no migration" defects that are really just out-of-order
+    construction (the root cause that stranded the interdependent D008-D010
+    batch). A story is dependency-ready only when every lower-id story in its
+    own direction has reached ``deployed``. Empty list == ready.
+
+    Pure read; no schema change. Cross-direction ordering is intentionally NOT
+    enforced here (directions are treated as independent features).
+    """
+    if story.id is None:
+        return []
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        siblings = session.exec(
+            select(StoryRecord).where(
+                StoryRecord.app == story.app,
+                StoryRecord.direction_id == story.direction_id,
+            )
+        ).all()
+    return sorted(
+        s.id
+        for s in siblings
+        if s.id is not None
+        and s.id < story.id
+        and s.state != StoryState.DEPLOYED.value
+    )
+
+
 # Mapping from a stranded ``*_in_progress`` state back to its
 # dispatch-eligible predecessor. Used by ``_prune_stale_in_progress`` to
 # recover rows that didn't reach the handler's normal exit (process kill,
@@ -827,6 +862,29 @@ def tick(
                 if handler_name is None:
                     # No handler for this state — either in-progress (waiting on
                     # webhook) or terminal. Stop driving.
+                    break
+
+                # Dependency-ordering gate. A story does not build until every
+                # lower-id story in its own direction is deployed (id order ==
+                # SM build order: foundations first). This stops a dependent
+                # story (smoke test / UI / endpoint) from being constructed
+                # before the model/service/endpoint it relies on exists on
+                # main — the out-of-order construction that stranded the
+                # interdependent D008-D010 batch. Defer (not block): the story
+                # waits in its current state until its foundations deploy.
+                _deps_pending = _direction_deps_pending(db, story)
+                if _deps_pending:
+                    log_story_event(
+                        story.id,
+                        "dependency_deferred",
+                        {
+                            "direction": story.direction_id,
+                            "waiting_on_story_ids": _deps_pending[:10],
+                            "state": story.state,
+                        },
+                        software_factory_root=root,
+                        slug_hint=story.slug,
+                    )
                     break
 
                 # Docs-chain serialization gate. A docs story may only LEAVE
