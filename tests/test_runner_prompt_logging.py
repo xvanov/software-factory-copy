@@ -74,6 +74,39 @@ def test_log_prompt_metadata_writes_record(tmp_path: Path) -> None:
     assert "body" not in json.dumps(rec)
 
 
+def test_manager_persona_prompts_are_not_marker_scanned(tmp_path: Path) -> None:
+    """A manager_* prompt that contains marker strings (because it echoes the
+    placeholder_prompts detector's own flagged rows as analysis input) must be
+    logged with an EMPTY marker list — otherwise the detector re-surfaces the
+    watcher's own prompt in a self-sustaining false-positive loop."""
+    prompt = (
+        "## Detector results\n"
+        "placeholder_prompts surfaced a reviewer leak: "
+        "(fetched from GitHub by the chain — placeholder for real-run), (see {x})\n"
+    )
+    _log_prompt_metadata(
+        persona="manager_watcher",
+        prompt=prompt,
+        model_id="stub/model",
+        story_id=None,
+        software_factory_root=tmp_path,
+    )
+    rec = _read_prompts_stream(tmp_path)[0]
+    assert rec["persona"] == "manager_watcher"
+    assert rec["placeholder_markers_found"] == []
+    # The chain-persona path is unchanged: same prompt, real markers stamped.
+    _log_prompt_metadata(
+        persona="reviewer",
+        prompt=prompt,
+        model_id="stub/model",
+        story_id=99,
+        software_factory_root=tmp_path,
+    )
+    chain_rec = _read_prompts_stream(tmp_path)[1]
+    assert chain_rec["persona"] == "reviewer"
+    assert "(fetched from GitHub by the chain" in chain_rec["placeholder_markers_found"]
+
+
 def test_log_prompt_metadata_never_raises_on_bad_root(tmp_path: Path) -> None:
     """A missing/unwritable root must not raise — best-effort logging only."""
     # Use a path that doesn't exist and where mkdir would fail (parent is a file).

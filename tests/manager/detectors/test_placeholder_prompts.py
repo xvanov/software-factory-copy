@@ -75,6 +75,37 @@ def test_respects_since_window(tmp_path: Path) -> None:
     assert out[0]["ts"] == in_window
 
 
+def test_skips_manager_personas_to_break_amplification_loop(tmp_path: Path) -> None:
+    """Manager prompts echo this detector's own rows back, so scanning them
+    self-triggers. The detector must ignore ``manager_*`` personas even when
+    their records carry markers, while still surfacing real chain leaks."""
+    stream = tmp_path / "state" / "events" / "prompts.ndjson"
+    _write_events(
+        stream,
+        [
+            {
+                "ts": NOW.isoformat(),
+                "event": "prompt",
+                "persona": "manager_watcher",
+                "placeholder_markers_found": [
+                    "(fetched from GitHub by the chain",
+                    "placeholder for real-run",
+                    "(see {",
+                ],
+            },
+            {
+                "ts": NOW.isoformat(),
+                "event": "prompt",
+                "persona": "reviewer",
+                "placeholder_markers_found": ["(see {"],
+            },
+        ],
+    )
+    out = placeholder_prompts(root=tmp_path, since=SINCE)
+    assert len(out) == 1
+    assert out[0]["persona"] == "reviewer"
+
+
 def test_skips_malformed_lines(tmp_path: Path) -> None:
     stream = tmp_path / "state" / "events" / "prompts.ndjson"
     stream.parent.mkdir(parents=True, exist_ok=True)
