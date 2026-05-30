@@ -35,6 +35,18 @@ from sqlmodel import Field, Session, SQLModel, create_engine
 _DEFAULT_DB_PATH = Path(__file__).parent.parent / "state" / "factory.db"
 _PERSONAS_DIR = Path(__file__).parent / "personas"
 
+# Wall-clock ceiling for a single sandbox conversation run. The SDK's
+# ``max_iteration`` bounds the number of tool calls but NOT a stalled LLM call,
+# so a hung request (network stall, provider deadlock) could block a handler
+# indefinitely — one dev tick was observed stuck for 51 minutes at ~0% CPU. A
+# normal sandbox run finishes in 1-15 min; this ceiling is generous enough not
+# to false-kill legitimate long runs (e.g. a ~15 min test_implementer) while
+# still reaping a true hang. On timeout the run returns the same infra-retryable
+# shape as any other pre-model failure (success=False, test_run_passed=None,
+# zero cost), so handle_dev's infra circuit breaker re-dispatches without
+# burning the retry budget. Override via FACTORY_SANDBOX_TIMEOUT_S.
+_SANDBOX_WALL_CLOCK_TIMEOUT_S = int(os.environ.get("FACTORY_SANDBOX_TIMEOUT_S", "1800"))
+
 
 # Markers that indicate a persona prompt was assembled with literal
 # placeholders instead of real fetched data. Kept in sync with
@@ -1148,7 +1160,48 @@ async def sandbox_run(
                 cost_usd,
                 last_assistant_message,
                 recent_tool_calls,
-            ) = await loop.run_in_executor(None, _do_run)
+                # Bound the blocking executor call so a stalled LLM request can't
+                # hang the handler forever. asyncio.wait_for cancels the await on
+                # timeout; the orphaned worker thread (threads can't be force-
+                # killed in-process) is reaped when this one-shot tick process
+                # exits. The TimeoutError is handled distinctly below.
+            ) = await asyncio.wait_for(
+                loop.run_in_executor(None, _do_run),
+                timeout=_SANDBOX_WALL_CLOCK_TIMEOUT_S,
+            )
+    except TimeoutError:
+        err = (
+            f"sandbox run timed out after {_SANDBOX_WALL_CLOCK_TIMEOUT_S}s "
+            "(likely a stalled LLM call); treating as retryable infrastructure "
+            "failure"
+        )
+        _record(
+            persona=persona,
+            model=llm_config.model,
+            mode="sandbox",
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            success=False,
+            story_path=str(story_path),
+            repo_path=str(repo_path),
+            error=err,
+            db_path=db_path,
+            duration_s=_elapsed(),
+            story_id=story_id,
+            model_tier=difficulty,
+        )
+        # test_run_passed defaults to None + zero cost/tokens → matches
+        # handle_dev._is_premodel_infra_failure, so the dev circuit breaker
+        # re-dispatches without consuming the retry budget.
+        return RunResult(
+            success=False,
+            error=err,
+            summary=err,
+            last_assistant_message="",
+            recent_tool_calls=[],
+            self_summary="",
+        )
     except Exception as exc:
         err = f"sandbox run raised: {exc!r}"
         _record(

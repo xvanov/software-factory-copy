@@ -346,6 +346,37 @@ def _pr_terminally_unmergeable(
     return state in ("CLOSED", "MERGED") or mergeable == "CONFLICTING" or merge_status == "DIRTY"
 
 
+def _attempt_pr_reconcile(*, app_config: AppConfig, pr_number: int) -> bool:
+    """Try to make a stale PR mergeable by merging the base branch into it.
+
+    Uses ``gh pr update-branch`` — a MERGE of the base into the PR head (never a
+    force-push / history rewrite), so it's safe to run automatically on the
+    factory's own story branches. This fixes the common auto-merge failure where
+    the PR fell BEHIND a moved base (e.g. two docs PRs touching adjacent context
+    files); it canNOT resolve true content conflicts (those return non-zero and
+    fall through to the terminal-block path for regeneration/human handling).
+
+    Returns True if the update command succeeded (branch advanced).
+    """
+    import subprocess  # pragma: no cover - real-run path
+
+    try:  # pragma: no cover - real-run path
+        subprocess.run(
+            ["gh", "pr", "update-branch", str(pr_number), "--repo", app_config.repo],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        return True
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):  # pragma: no cover - real-run path
+        return False
+
+
 def auto_merge_tick(
     software_factory_root: Path,
     app: str,
@@ -529,24 +560,60 @@ def auto_merge_tick(
                 app_config=cfg, pr_number=action.pr_number, github_client=github_client
             )
         ):
-            # The PR can never be merged (closed / already-merged / conflicting).
-            # Sink the story to BLOCKED_DEPLOY_FAILED so the worker stops retrying
-            # it every tick and drive_chain's dispatchable count can drain to DONE.
+            # The PR can never be merged AS-IS. Before sinking, make ONE safe
+            # attempt to reconcile a merely-stale branch by merging the base in
+            # (gh pr update-branch — no force-push). Many "un-mergeable" PRs are
+            # only BEHIND a moved base, not truly conflicting; this recovers them
+            # without human intervention. Gated to a single attempt per story via
+            # the event log so a genuinely-conflicting PR can't loop forever.
+            from factory.chain.event_log import log_story_event, read_story_events
             from factory.chain.state_machine import EVENT_PR_UNMERGEABLE, advance
 
-            try:
-                f.story.state = advance(f.story, EVENT_PR_UNMERGEABLE).value
-                f.story.error = (
-                    f"auto-merge gave up: PR #{action.pr_number} is terminally "
-                    f"un-mergeable (closed/merged/conflicting). Needs human "
-                    f"resolution."
+            _already_tried = any(
+                e.get("event") == "auto_merge_reconcile_attempt"
+                for e in read_story_events(
+                    f.story.id, software_factory_root=root, slug_hint=f.story.slug
                 )
-                eng = _engine(db)
-                with Session(eng) as session:
-                    session.add(f.story)
-                    session.commit()
-            except Exception:
-                pass
+            )
+            if not _already_tried and not dry_run and _attempt_pr_reconcile(
+                app_config=cfg, pr_number=action.pr_number
+            ):
+                # Branch advanced — skip sinking; re-evaluate mergeability on the
+                # next tick instead of blocking.
+                try:
+                    log_story_event(
+                        f.story.id,
+                        "auto_merge_reconcile_attempt",
+                        {"pr_number": action.pr_number, "result": "branch_updated"},
+                        software_factory_root=root,
+                        slug_hint=f.story.slug,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                # Truly conflicting (or reconcile already tried). Sink so the
+                # worker stops retrying and drive_chain can drain to DONE.
+                try:
+                    if not dry_run and not _already_tried:
+                        log_story_event(
+                            f.story.id,
+                            "auto_merge_reconcile_attempt",
+                            {"pr_number": action.pr_number, "result": "still_conflicting"},
+                            software_factory_root=root,
+                            slug_hint=f.story.slug,
+                        )
+                    f.story.state = advance(f.story, EVENT_PR_UNMERGEABLE).value
+                    f.story.error = (
+                        f"auto-merge gave up: PR #{action.pr_number} is terminally "
+                        f"un-mergeable (closed/merged/conflicting) after a branch-"
+                        f"update attempt. Needs regeneration or human resolution."
+                    )
+                    eng = _engine(db)
+                    with Session(eng) as session:
+                        session.add(f.story)
+                        session.commit()
+                except Exception:
+                    pass
         # Emit auto_merge_attempt signal — best-effort, never raises.
         try:
             from factory.manager.signals import write_git_event as _wge_am

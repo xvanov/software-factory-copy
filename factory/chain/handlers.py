@@ -1389,9 +1389,60 @@ _MAX_TEST_IMPL_SLOP_RETRIES = 3
 
 # Hard convergence guard. A healthy story converges within a few review
 # rounds; beyond this many request-changes verdicts the dev<->reviewer loop
-# is judged non-converging and routed to BLOCKED_REVIEW_NONCONVERGENT instead
-# of looping back to dev indefinitely. Counted by ``story.reviewer_cycles``.
-_MAX_REVIEW_CYCLES = 3
+# Review convergence is judged by finding STABILITY, not raw cycle count. A
+# cycle that surfaces DIFFERENT findings is making progress — mixed code+test
+# findings legitimately need several cycles (test_implementer fixes the test
+# findings, dev fixes the code findings, each addressed in turn), and capping
+# purely on count blocked stories that were still converging (story 15: a code
+# "verify ownership" finding could never reach dev because the low test score
+# kept routing every cycle to the test loop). We block only when the reviewer
+# returns the SAME findings _MAX_REVIEW_STUCK times in a row (genuine churn —
+# "nothing loops unproductively >3"), with a hard absolute backstop so a
+# slowly-mutating loop can't run forever.
+_MAX_REVIEW_STUCK = 3
+_MAX_REVIEW_CYCLES = 6  # hard absolute backstop on total reviewer cycles
+
+
+def _findings_signature(result: dict[str, Any]) -> str:
+    """Stable hash of a review's actionable findings (order-independent).
+
+    Two review cycles with the same set of finding ``what`` texts produce the
+    same signature — the signal that the dev<->reviewer loop is stuck rather
+    than progressing.
+    """
+    import hashlib
+
+    parts = []
+    for f in (result.get("findings") or []) + (result.get("test_quality_findings") or []):
+        if isinstance(f, dict):
+            parts.append(((f.get("what") or f.get("issue") or "")).strip().lower()[:160])
+    digest = hashlib.sha256(" ".join(sorted(parts)).encode("utf-8", "replace"))
+    return digest.hexdigest()[:16]
+
+
+def _findings_target_tests(result: dict[str, Any]) -> bool:
+    """True when every actionable code finding points at a TEST file.
+
+    Dev is forbidden from editing test files, so a review whose findings live
+    entirely under tests/ (or conftest / *.test.* / *.spec.*) must be routed to
+    the test loop regardless of the reviewer's self-reported test_quality_score
+    — otherwise dev loops trying to satisfy findings it structurally cannot fix.
+    """
+    findings = result.get("findings") or []
+    if not findings:
+        return False
+    test_re = re.compile(r"(^|/)tests?/|test_|_test\.|conftest|\.test\.|\.spec\.")
+    located = 0
+    test_located = 0
+    for f in findings:
+        loc = (f.get("location") or "") if isinstance(f, dict) else ""
+        path = loc.split(":")[0]
+        if not path:
+            continue
+        located += 1
+        if test_re.search(path):
+            test_located += 1
+    return located > 0 and test_located == located
 
 # Pre-model sandbox infrastructure-error cap. A dev sandbox that fails BEFORE
 # any model work (``success=False`` with zero tokens/cost and tests never run)
@@ -2457,17 +2508,48 @@ def handle_review(
     if verdict == "approve" and score >= 0.7:
         story.state = advance(story, EVENT_REVIEWER_APPROVE).value
     else:
-        # Hard convergence guard: count this request-changes verdict. Once a
-        # story has accrued _MAX_REVIEW_CYCLES of them without converging, the
-        # dev<->reviewer ping-pong is non-converging — stop looping back to dev
-        # (which burns budget unbounded) and route to a terminal blocked state
-        # for human review instead.
+        # Convergence guard based on finding STABILITY. A cycle whose findings
+        # differ from the last is progress; only identical findings repeating
+        # _MAX_REVIEW_STUCK times is true churn. A hard backstop on total cycles
+        # prevents a slowly-mutating loop from running unbounded.
         story.reviewer_cycles += 1
-        if story.reviewer_cycles >= _MAX_REVIEW_CYCLES:
+        sig = _findings_signature(result)
+        from factory.chain.event_log import read_story_events
+
+        consecutive_same = 1  # this cycle
+        for e in reversed(
+            read_story_events(
+                story.id, software_factory_root=software_factory_root, slug_hint=story.slug
+            )
+        ):
+            if e.get("event") != "reviewer_cycle":
+                continue
+            if e.get("sig") == sig:
+                consecutive_same += 1
+            else:
+                break
+        stuck = consecutive_same >= _MAX_REVIEW_STUCK
+        log_story_event(
+            story.id,
+            "reviewer_cycle",
+            {
+                "sig": sig,
+                "cycle": story.reviewer_cycles,
+                "consecutive_same": consecutive_same,
+                "score": score,
+            },
+            software_factory_root=software_factory_root,
+            slug_hint=story.slug,
+        )
+        if stuck or story.reviewer_cycles >= _MAX_REVIEW_CYCLES:
             story.state = advance(story, EVENT_REVIEW_NONCONVERGENT).value
+            reason = (
+                f"same findings repeated {consecutive_same}x (stuck)"
+                if stuck
+                else f"hit hard cap of {_MAX_REVIEW_CYCLES} cycles"
+            )
             story.error = (
-                f"Review did not converge after {story.reviewer_cycles} reviewer "
-                f"cycles (max {_MAX_REVIEW_CYCLES}); routed to "
+                f"Review did not converge ({reason}); routed to "
                 f"{StoryState.BLOCKED_REVIEW_NONCONVERGENT.value} for human review."
             )
             if (
@@ -2488,12 +2570,15 @@ def handle_review(
                     )
                 except Exception:  # pragma: no cover - real-run path
                     pass
-        elif score < 0.7:
+        elif score < 0.7 or _findings_target_tests(result):
             # Test-quality rejection: the tests themselves are wrong,
             # insufficient, or misplaced. Route to the TEST loop so
             # test_implementer rewrites them — NOT to dev, which is forbidden
             # from editing test files and would only block trying to satisfy
             # test-focused findings (the failure mode that re-blocked story 5).
+            # The ``_findings_target_tests`` override catches the case where the
+            # reviewer flags only test files but still reports a healthy
+            # test_quality_score (story 15) — dev still can't act on those.
             story.state = advance(story, EVENT_REVIEWER_TEST_QUALITY).value
             if (
                 not dry_run

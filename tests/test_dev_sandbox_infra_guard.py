@@ -96,6 +96,43 @@ def _infra_failure_sandbox() -> object:
     return _fake
 
 
+def _timeout_sandbox():
+    """Fake sandbox_run mimicking the wall-clock-timeout return shape."""
+
+    async def _fake(*args: object, **kwargs: object) -> RunResult:
+        return RunResult(
+            success=False,
+            files_changed=[],
+            test_run_passed=None,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            error="sandbox run timed out after 1800s (likely a stalled LLM call)",
+            summary="sandbox run timed out after 1800s (likely a stalled LLM call)",
+        )
+
+    return _fake
+
+
+def test_sandbox_timeout_routes_as_infra_retry(
+    temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wall-clock timeout returns the pre-model infra shape, so the dev
+    circuit breaker re-dispatches without burning the retry budget."""
+    story = _story_at(StoryState.TESTS_RED, temp_root)
+    db = temp_root / "state" / "factory.db"
+    monkeypatch.setattr(runner_module, "sandbox_run", _timeout_sandbox(), raising=True)
+    monkeypatch.setattr(handlers_module, "route", lambda *a, **kw: "azure/gpt-5.4")
+
+    result = handle_dev(story, app_config, temp_root, dry_run=False, db_path=db)
+
+    assert result.next_state is StoryState.DEV_RETRY
+    assert story.dev_retries == 0
+    events = read_story_events(story.id, software_factory_root=temp_root, slug_hint=story.slug)
+    infra = [e for e in events if e.get("event") == "dev_sandbox_infra_error"]
+    assert len(infra) == 1 and "timed out" in infra[0]["error"]
+
+
 def test_infra_failure_does_not_burn_retry_and_bounces_back(
     temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

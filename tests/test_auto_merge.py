@@ -242,3 +242,42 @@ def test_tdd_chain_still_requires_all_ten_gates(factory_root: Path) -> None:
     assert not actions[0].merged
     assert "missing gate labels" in actions[0].reason
     assert "docs-current" in actions[0].reason
+
+
+# --------------------------------------------------------------------------- #
+# _attempt_pr_reconcile — safe branch-update (gh pr update-branch) before sink
+# --------------------------------------------------------------------------- #
+
+
+def test_attempt_pr_reconcile_returns_true_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from factory.app_config import AppConfig
+    from factory.chain import auto_merge as am
+
+    calls: dict[str, list] = {}
+
+    def _fake_run(cmd, **kw):
+        calls["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run, raising=True)
+    cfg = AppConfig(name="sacrifice", repo="x/sacrifice", default_branch="main")
+    assert am._attempt_pr_reconcile(app_config=cfg, pr_number=90) is True
+    # Uses gh pr update-branch (a merge, never --force).
+    assert calls["cmd"][:3] == ["gh", "pr", "update-branch"]
+    assert "90" in calls["cmd"] and "--force" not in calls["cmd"]
+
+
+def test_attempt_pr_reconcile_returns_false_on_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from factory.app_config import AppConfig
+    from factory.chain import auto_merge as am
+
+    def _fake_run(cmd, **kw):
+        raise subprocess.CalledProcessError(1, cmd, "", "merge conflict")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run, raising=True)
+    cfg = AppConfig(name="sacrifice", repo="x/sacrifice", default_branch="main")
+    assert am._attempt_pr_reconcile(app_config=cfg, pr_number=90) is False

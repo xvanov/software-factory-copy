@@ -12,7 +12,10 @@ caps:
   # waiting on next tick, etc.) don't accidentally throttle dispatch.
   per_repo_concurrent_agents: 10
   daily_spend_usd: 200
-  hourly_spend_usd: 15
+  # Operator-approved 2026-05-30: raised 15 -> 40 to let the ~29 re-dispatched
+  # stories reprocess in parallel without constant hourly-cap throttling.
+  # Daily $200 cap (chain stops at $180) remains the real spend ceiling.
+  hourly_spend_usd: 40
 queues:
   human_review_max_open_prs: 5
   failing_ci_pause_threshold: 3
