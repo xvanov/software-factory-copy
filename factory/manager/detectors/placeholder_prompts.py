@@ -71,6 +71,19 @@ def placeholder_prompts(*, root: Path, since: datetime) -> list[dict]:
             markers = rec.get("placeholder_markers_found") or []
             if not markers:
                 continue
+            # Skip the FMS's own personas. Manager prompts (manager_watcher,
+            # _summarizer, _diagnostician) ECHO the rows this very detector
+            # returns — including their literal marker strings — back into the
+            # next prompt as analysis input. Without this guard a single
+            # flagged chain record gets re-echoed into the watcher prompt,
+            # which then trips the marker scan on ITSELF, and the detector
+            # re-surfaces that watcher prompt next tick: a self-sustaining
+            # false-positive loop that burned 10 L2/L3 escalations in one
+            # window. The marker scan's semantics ("a literal placeholder ==
+            # a leak") only hold for chain personas that fetch real data.
+            persona = rec.get("persona") or ""
+            if persona.startswith("manager_"):
+                continue
             ts = rec.get("ts", "")
             if ts < since_iso:
                 continue

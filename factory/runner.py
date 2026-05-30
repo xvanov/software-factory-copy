@@ -90,7 +90,17 @@ def _log_prompt_metadata(
 
         from factory.manager.signals import write_event
 
-        markers_found = [m for m in _BROKEN_PROMPT_MARKERS if m in prompt]
+        # The marker scan catches CHAIN personas (dev/review/tech_writer)
+        # shipping literal placeholders in place of real fetched data. It does
+        # NOT apply to the FMS's own manager_* personas: their prompts echo the
+        # placeholder_prompts detector's flagged rows — marker strings and all —
+        # back as analysis input, so scanning them produces guaranteed false
+        # positives that the detector then re-escalates in a self-sustaining
+        # loop. Never stamp markers on a manager_* prompt at the source.
+        if persona.startswith("manager_"):
+            markers_found: list[str] = []
+        else:
+            markers_found = [m for m in _BROKEN_PROMPT_MARKERS if m in prompt]
         section_lengths = _summarize_prompt_sections(prompt)
         digest = hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()[:16]
         write_event(
