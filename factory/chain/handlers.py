@@ -54,6 +54,7 @@ from factory.chain.state_machine import (
     EVENT_TECH_WRITER_STARTED,
     EVENT_TEST_DESIGN_DONE,
     EVENT_TEST_DESIGN_STARTED,
+    EVENT_TEST_IMPL_REPLAN,
     EVENT_TEST_IMPL_SLOP,
     EVENT_TEST_IMPL_SLOP_RETRY,
     EVENT_TEST_IMPL_STARTED,
@@ -852,12 +853,19 @@ def handle_test_design(
             "for pure-frontend/UI behavior with no backend slice, say so in the "
             "summary and omit it rather than emitting an unrunnable E2E test.\n\n"
         )
+        replan_note = ""
+        if story.last_rejection_reason and story.last_rejection_reason.startswith("REPLAN:"):
+            replan_note = (
+                "## Re-plan feedback (your previous plan was rejected — FIX THIS)\n\n"
+                f"{story.last_rejection_reason}\n\n"
+            )
         full_prompt = (
             f"{persona_prompt.rstrip()}\n\n"
             "---\n\n"
             "## Context\n\n"
             f"{prelude.rstrip()}\n\n"
             f"{caps}"
+            f"{replan_note}"
             "## Story\n\n"
             f"{story_file_content}\n\n"
             "---\n\n"
@@ -1100,12 +1108,43 @@ def handle_test_implementation(
             )
             return HandlerResult(next_state=StoryState(story.state), payload=result)
 
-        # Cap hit — the test loop couldn't produce non-vacuous tests. Block for
-        # human attention.
+        # Cap hit on test_impl rewrites. Repeated slop usually means the PLAN
+        # is wrong (specifies vacuous / non-red tests), not the implementation.
+        # Route to the Test-Designer for ONE re-plan (with the slop as
+        # feedback) before blocking — the designer's contract-grounding/scope/
+        # red-first rules can fix the plan at the source. Bounded by prior
+        # ``test_impl_replan`` events so it can't loop.
+        prior_replans = sum(
+            1
+            for e in read_story_events(
+                story.id, software_factory_root=software_factory_root, slug_hint=story.slug
+            )
+            if e.get("event") == "test_impl_replan"
+        )
+        if prior_replans < 1:
+            story.state = advance(story, EVENT_TEST_IMPL_REPLAN).value
+            story.last_rejection_reason = (
+                f"REPLAN: the previous test plan produced slop — tests passed "
+                f"before any implementation existed across {prior_slop_retries} "
+                "rewrites, so the plan specifies vacuous/non-red tests. Re-plan "
+                "with tests that FAIL RED against the story's NEW unimplemented "
+                "behavior (assert the new API/behavior, not existing/trivial state)."
+            )
+            persist_story(story, db)
+            log_story_event(
+                story.id,
+                "test_impl_replan",
+                {"reason": "slop_cap", "slop_retries": prior_slop_retries},
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
+            )
+            return HandlerResult(next_state=StoryState(story.state), payload=result)
+
+        # Already re-planned once and STILL slop → block for human attention.
         story.state = advance(story, EVENT_TEST_IMPL_SLOP).value
         story.error = (
             f"tests passed pre-implementation (slop) after "
-            f"{prior_slop_retries} test_implementer retries"
+            f"{prior_slop_retries} test_implementer retries + 1 re-plan"
         )
         persist_story(story, db)
         return HandlerResult(

@@ -181,6 +181,12 @@ EVENT_TEST_IMPL_SLOP = "test_impl_slop"
 # at _MAX_TEST_IMPL_SLOP_RETRIES per the "nothing loops >3" rule; the EVENT_
 # TEST_IMPL_SLOP edge above is the terminal block taken once the cap is hit.
 EVENT_TEST_IMPL_SLOP_RETRY = "test_impl_slop_retry"
+# Re-plan: when re-running the Test-Implementer can't resolve slop/test-quality
+# (cap hit), the defect is usually in the PLAN, not the implementation. Route
+# back to the Test-Designer (via SM_DONE → test_design) for ONE re-plan with
+# the failure as feedback, before blocking. Leverages the designer's
+# contract-grounding/scope/e2e-gating rules to fix the plan at the source.
+EVENT_TEST_IMPL_REPLAN = "test_impl_replan"
 # Item 4 — harness precheck events. Started fires on the
 # TESTS_RED→HARNESS_PRECHECK_IN_PROGRESS edge; PASS routes to DEV_IN_PROGRESS;
 # FAIL routes to BLOCKED_TESTS_NEED_CLARIFICATION (same terminal blocked
@@ -252,6 +258,12 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
         StoryState.TEST_IMPLEMENTATION_IN_PROGRESS,
         EVENT_TEST_IMPL_SLOP_RETRY,
     ): StoryState.TEST_DESIGN_DONE,
+    # Slop/test-quality un-resolvable by the implementer → re-plan via the
+    # Test-Designer (SM_DONE dispatches test_design), once, before blocking.
+    (
+        StoryState.TEST_IMPLEMENTATION_IN_PROGRESS,
+        EVENT_TEST_IMPL_REPLAN,
+    ): StoryState.SM_DONE,
     # Item 4 — harness precheck between TESTS_RED and DEV. Runs ONCE
     # per story (the orchestrator's dispatch table reads
     # ``story.harness_precheck_passed`` and skips re-running on

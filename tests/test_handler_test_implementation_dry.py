@@ -122,7 +122,18 @@ def test_dry_run_slop_blocks_only_after_retry_cap(
         result = handle_test_implementation(s, app_config, temp_root, dry_run=True, db_path=db)
         assert result.next_state == StoryState.TEST_DESIGN_DONE
 
-    # The next slop exhausts the cap and blocks for human attention.
+    # At the cap, route to the Test-Designer for ONE re-plan (SM_DONE) before
+    # blocking — the plan is the likely root of persistent slop.
+    result = handle_test_implementation(s, app_config, temp_root, dry_run=True, db_path=db)
+    assert result.next_state == StoryState.SM_DONE
+    assert s.last_rejection_reason and s.last_rejection_reason.startswith("REPLAN:")
+
+    # Simulate the designer re-plan completing (SM_DONE → test_design →
+    # TEST_DESIGN_DONE) so test_impl is dispatched again.
+    s.state = StoryState.TEST_DESIGN_DONE.value
+    persist_story(s, db)
+
+    # Still slop after the re-plan → block for human attention.
     result = handle_test_implementation(s, app_config, temp_root, dry_run=True, db_path=db)
     assert result.next_state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION
     assert s.state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value
