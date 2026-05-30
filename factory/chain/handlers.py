@@ -798,6 +798,49 @@ def _dry_run_test_design(story: StoryRecord) -> dict[str, Any]:
     }
 
 
+def _validate_test_plan(
+    plan: dict[str, Any], story: StoryRecord, gates: Any
+) -> list[str]:
+    """Programmatic backstop for the test_designer's contract/scope rules.
+
+    Catches the robustly-detectable plan defects that strand stories:
+      * Playwright/E2E tests when the app has no working harness
+        (``e2e_harness_ready`` false) — they produce harness-breakage "reds".
+      * ``e2e_required`` set against a missing harness.
+      * Backend (pytest) tests authored for a ``frontend``-scoped story — they
+        belong to sibling backend stories and stay red until those land.
+
+    Returns a list of human-readable violation strings (empty == clean).
+    """
+    violations: list[str] = []
+    harness_ready = bool(getattr(gates, "e2e_harness_ready", False))
+    tests = plan.get("test_plan") or []
+    if plan.get("e2e_required") and not harness_ready:
+        violations.append(
+            "e2e_required=true but the app has no working E2E harness "
+            "(e2e_harness_ready=false) — set e2e_required=false."
+        )
+    test_path_re = re.compile(r"(^|/)tests?/|test_|_test\.|\.py$")
+    for t in tests:
+        if not isinstance(t, dict):
+            continue
+        tool = (t.get("tool") or "").lower()
+        path = t.get("file_path") or ""
+        name = t.get("name") or path or "(unnamed)"
+        if tool == "playwright" and not harness_ready:
+            violations.append(
+                f"test '{name}' uses tool=playwright but no E2E harness exists "
+                "— use pytest/httpx for the backend slice or drop it."
+            )
+        if story.scope == "frontend" and tool == "pytest" and test_path_re.search(path):
+            violations.append(
+                f"test '{name}' is a backend pytest test ({path}) in a "
+                "frontend-scoped story — out of scope; it belongs to a backend "
+                "story and will stay red here."
+            )
+    return violations
+
+
 def handle_test_design(
     story: StoryRecord,
     app_config: AppConfig,
@@ -872,20 +915,45 @@ def handle_test_design(
             "Return the JSON object for the test plan. No prose outside the JSON."
         )
         model_id = route(persona)
-        result = text_run(
-            persona=persona,
-            prompt=full_prompt,
-            model_id=model_id,
-            schema=_TEST_DESIGN_SCHEMA,
-            max_tokens=max_output_tokens_for(model_id),
-            story_id=story.id,
-            app=story.app,
-            direction_id=story.direction_id,
-        )
-        if not isinstance(result, dict):
-            return HandlerResult(
-                next_state=StoryState(story.state),
-                error="test_designer returned non-dict",
+        # Generate the plan, then run a programmatic contract/scope validator
+        # (Phase 3 backstop for the Phase 1/2 persona rules). If the plan
+        # violates the rules — playwright tests with no harness, e2e_required
+        # against no harness, or backend tests in a frontend-scoped story —
+        # re-run the designer ONCE with the violations as explicit feedback
+        # rather than passing an unrunnable/mis-scoped plan downstream.
+        result: Any = None
+        violations: list[str] = []
+        for _attempt in range(2):
+            prompt = full_prompt
+            if violations:
+                prompt = (
+                    f"{full_prompt}\n\n## Plan validation FAILED — fix these and "
+                    f"re-emit:\n- " + "\n- ".join(violations) + "\n"
+                )
+            result = text_run(
+                persona=persona,
+                prompt=prompt,
+                model_id=model_id,
+                schema=_TEST_DESIGN_SCHEMA,
+                max_tokens=max_output_tokens_for(model_id),
+                story_id=story.id,
+                app=story.app,
+                direction_id=story.direction_id,
+            )
+            if not isinstance(result, dict):
+                return HandlerResult(
+                    next_state=StoryState(story.state),
+                    error="test_designer returned non-dict",
+                )
+            violations = _validate_test_plan(result, story, app_config.gates)
+            if not violations:
+                break
+            log_story_event(
+                story.id,
+                "test_plan_violations",
+                {"attempt": _attempt + 1, "violations": violations[:8]},
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
             )
         plan = result
 
