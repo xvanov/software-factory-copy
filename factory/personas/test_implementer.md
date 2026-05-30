@@ -108,6 +108,30 @@ and to populate the story record, but the test files themselves
   text on page, persisted DB rows) — not the implementation's internal
   state.
 
+## Contract grounding (avoid unsatisfiable tests)
+
+A test that no correct implementation can pass blocks the story forever — the
+dev cannot fix code to satisfy a wrong assertion. Before asserting a specific
+status code / field value, GROUND it in the ACTUAL codebase contract, not in a
+story's aspirational `api_spec.md` example (those examples are sometimes wrong):
+
+* **Reuse the real contract.** If the story says an endpoint "delegates to" or
+  "reuses" an existing endpoint/service, read that existing code and assert what
+  it ACTUALLY produces. E.g. if `POST /api/goals` creates goals with
+  `status="draft"`, a chat-create endpoint that delegates to it returns
+  `"draft"` — do NOT assert `"active"` just because an example showed it.
+* **One input → one outcome.** Never write two tests that send the SAME request
+  (same method, path, ids, body, auth) but assert DIFFERENT results. If a route
+  validates existence first (404 for a missing id) then stubs (501), the 501
+  test MUST use a VALID existing resource so it passes the existence gate and
+  reaches the stub. Re-using a nonexistent id for the 501 case is unsatisfiable.
+* **Only assert codes the contract defines.** If the spec lists 403 for an
+  ownership failure on a POST and never lists 404 for that POST, assert 403 —
+  don't invent a 404/403 distinction the contract doesn't make.
+* **Keep tests in-scope.** Write only tests for THIS story's behavior. Do not
+  add tests for endpoints/features owned by other stories; they stay red until
+  those stories land and will block this one.
+
 ## Principles
 
 * Tests are the oracle for what "done" means. If the test is wrong, the
