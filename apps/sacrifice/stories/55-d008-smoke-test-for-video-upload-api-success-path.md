@@ -171,6 +171,15 @@ OpenHands dev persona (Amelia)
 - `backend/uv.lock` — restored to clean c190312 baseline (CR #5)
 - `backend/tests/test_video_upload_smoke.py` — existing, no modifications (frozen)
 
+## Reviewer pass (attempt 7) completion notes
+
+1. CRs #2 and #3 resolved in production code:
+   - CR #2 (`duration_seconds` validation): Added `gt=0` to `Form(...)` at `backend/app/routes/uploads.py:23`. Non-positive values now rejected with 422.
+   - CR #3 (hard-coded `video/mp4` MIME type): Added `mime_type: str` parameter to `write_upload` at `backend/app/services/uploads.py:25`. Route now passes `file.content_type` through. Valid QuickTime uploads persist with `video/quicktime` instead of `video/mp4`.
+2. CR #1 (fixture path at module import, test reportedly failing): Test passes (1/1). Fixture at `e2e/fixtures/minimal.mp4` exists. Cannot modify frozen test to relocate fixture load inside test function.
+3. Test-quality 1 (duplicate coverage between pytest smoke and Playwright smoke): Frozen test — cannot deduplicate.
+4. Full suite: 223 passed, 14 failed, 3 errors — identical to pre-existing baseline, zero regressions.
+
 # Senior Developer Review
 
 ## Reviewer
