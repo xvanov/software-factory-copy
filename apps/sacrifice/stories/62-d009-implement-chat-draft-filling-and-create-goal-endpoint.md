@@ -1,42 +1,35 @@
 # Story
 
-## Title
-D009 add chat_sessions model, migration, and create-session endpoint
-
-## Scope
-backend
+## Story
+**As a** signed-in Sacrifice user
+**I want** the chat backend to collect missing goal criteria and create my goal when I confirm
+**so that** natural-language chat completes the same goal creation outcome as the existing typed API path.
 
 ## Acceptance Criteria
-- A new table `chat_sessions` persists session state with columns: `id`, `user_id`, `created_at`, `updated_at`, `messages` (JSONB list of `{role, content, action}`), `draft_goal` (JSONB partial goal payload), `status` (`active`, `goal_created`, `awaiting_goal_type`). Migration generated via Alembic autogenerate.
-- A new backend route module `backend/app/routes/chat.py` exposes the endpoints in `api_spec.md`. The router is registered in `backend/app/main.py`.
-- ### `POST /api/chat/sessions`
-- **Method:** POST
-- **Path:** `/api/chat/sessions`
-- **Request body:** `(none)`
-- **Response body (success):**
-  ```json
-  {
-    "session_id": "<uuid>",
-    "messages": [
-      {"role": "assistant", "content": "Tell me what you want to do, and I'll figure out how to track it.", "action": null}
-    ],
-    "status": "active"
-  }
-  ```
-- **Success status:** `201`
-- **Error statuses:**
-  - `401` — unauthenticated
+- Matching above confidence threshold → assistant card surfaces the matched type with required criteria fields; chat asks for each missing criterion conversationally. On all criteria filled + user confirmation, the chat backend calls the existing `POST /api/goals` and returns the new goal id.
 
 ## Tasks / Subtasks
-- [ ] Add `chat_sessions` persistence model with the exact columns named in direction acceptance criteria.
-- [ ] Generate and wire Alembic migration for `chat_sessions`.
-- [ ] Create `backend/app/routes/chat.py` route module.
-- [ ] Register chat router in `backend/app/main.py`.
-- [ ] Implement `POST /api/chat/sessions`.
-- [ ] Persist initial assistant greeting message exactly as specified.
-- [ ] Return `201` payload with `session_id`, `messages`, and `status`.
-- [ ] Enforce `401` for unauthenticated access.
-- [ ] Add backend tests for model, migration behavior, and create-session endpoint contract.
+- [ ] Extend chat turn handling so matched sessions can collect missing criteria conversationally.
+  - [ ] Determine the next missing criterion from the matched goal type.
+  - [ ] Persist each assistant prompt and user reply in `chat_sessions.messages`.
+  - [ ] Update `chat_sessions.draft_goal` server-side after each reply.
+- [ ] Emit structured `awaiting_input` assistant actions for single-field prompts.
+  - [ ] Include `field` and `prompt` in the action payload.
+- [ ] Emit structured `ready_to_create` assistant action when all required criteria are present.
+  - [ ] Include full `goal_payload` ready for existing goal creation validation.
+  - [ ] Preserve final review behavior for user confirmation.
+- [ ] Implement `POST /api/chat/sessions/{session_id}/create-goal`.
+  - [ ] Require authenticated user.
+  - [ ] Return `404` when session not found.
+  - [ ] Delegate validation to the existing `POST /api/goals` contract.
+  - [ ] On success, return `201` with `goal_id` and `status`.
+  - [ ] Mark session status as `goal_created` after successful creation.
+- [ ] Define create-goal request/response schemas matching `api_spec.md`.
+- [ ] Add tests for draft filling and create-goal behavior.
+  - [ ] Missing-criteria turns advance one criterion at a time.
+  - [ ] Completed draft returns `ready_to_create` payload.
+  - [ ] Successful create-goal call returns new goal id and updates session status.
+  - [ ] Invalid `goal_payload` returns `422` via existing goal validation.
 
 ## Dev Notes
 ### Verbatim `flow.md`
@@ -167,9 +160,8 @@ backend
   - `404` — session not found
 ```
 
-### Context pointers to load
+### Context pointers
 - [Source: context/project.md#Identity]
-- [Source: context/project.md#Stack]
 - [Source: context/project.md#Active constraints]
 - [Source: context/navigation.md#When working on backend HTTP behavior]
 
@@ -198,19 +190,21 @@ backend
 ```
 
 ## References
-- `backend/app/main.py`
-- `backend/app/config.py`
 - `backend/app/routes/goals.py`
-- `backend/app/models/goal.py`
+- `backend/app/routes/chat.py`
 - `backend/app/schemas/goal.py`
+- `backend/app/models/goal.py`
+- `backend/app/config.py`
 
 ## Dev Agent Record
-- Status: Complete
-- Notes: All implementation ACs satisfied. 6 pre-existing test failures unrelated to chat (verification/proof routes, goal_type_smoke metadata, notifications) — confirmed present on base commit c8116a1 too. No test files modified. "Add backend tests" subtask conflicts with frozen-test persona rule; test creation deferred to Test-Implementer.
-- Files: `backend/app/models/chat_session.py`, `backend/app/models/__init__.py`, `backend/app/models/user.py`, `backend/alembic/versions/e22b7086c9bd_add_chat_sessions.py`, `backend/alembic/env.py`, `backend/app/routes/chat.py`, `backend/app/main.py` 
+### Agent Model Used
+
+### Debug Log References
+
+### Completion Notes List
+
+### File List
 
 ## Senior Developer Review
-- Pending
 
 ## Review Follow-ups
-- None yet

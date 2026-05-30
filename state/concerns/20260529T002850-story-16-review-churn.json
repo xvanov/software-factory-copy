@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "title": "story-16-review-churn",
+  "description": "This is a continuation of the broader non-converging review-churn pattern, now centered on story 16. In the current window, story 16 completed another successful dev->reviewer cycle, with the reviewer run ending at 2026-05-29T00:28:07.545175+00:00. The cumulative review-churn observation cited by L1 shows 12 reviewer cycles and 15 dev cycles for this story, with total combined spend of $4.881, and marks it as active in this window.\n\nThere are no failed runs, retry clusters, aging ticks, queue-skew signals, or prompt-placeholder leaks in this bundle, so the concern is not an execution failure but repeated successful work that is not converging. The immediate downstream impact is ongoing cost and operator attention on a story that continues to re-enter review rather than progressing to closure.\n\nThe evidence is structurally clear: a healthy story should normally converge within roughly three review rounds, while story 16 is now far beyond that threshold and still active. Given the repeated successful dev/reviewer loop and the absence of competing failure signals, the most plausible explanation is a factory-side non-convergence pattern in how review feedback is being incorporated or carried across cycles, rather than a transient runtime fault.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-29T00:28:43.704551+00:00",
+      "summary_excerpt": "Story 16 completed another successful dev->reviewer cycle and is now actively churning with 12 reviewer cycles total, well past the normal convergence ceiling."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "review_churn",
+      "ts": "2026-05-29T00:28:43.704551+00:00",
+      "excerpt": "{\"noteworthy\":\"Story 16 is reviewer-active in this window with 12 reviewer cycles and 15 dev cycles ($4.881 total), indicating active non-converging churn; other high-cycle stories are parked, not active.\"}"
+    },
+    {
+      "kind": "run",
+      "id": 16,
+      "ts": "2026-05-29T00:27:46.773484+00:00",
+      "excerpt": "{\"persona\":\"dev\",\"story_id\":16,\"attempt_n\":15,\"duration_s\":389.072,\"cost_usd\":0.719933,\"success\":true,\"tokens_in\":1404886,\"tokens_out\":11660}"
+    },
+    {
+      "kind": "run",
+      "id": 16,
+      "ts": "2026-05-29T00:28:07.571128+00:00",
+      "excerpt": "{\"persona\":\"reviewer\",\"story_id\":16,\"attempt_n\":12,\"duration_s\":20.595,\"cost_usd\":0.048726000000000005,\"success\":true}"
+    }
+  ],
+  "proposed_area": "prompt",
+  "urgency": "warn",
+  "escalate_to_l3": true,
+  "escalation_reason": "Active review-churn pattern on story 16: 12 reviewer cycles, 15 dev cycles, and $4.881 cumulative cost so far, with another reviewer cycle completed in this window. This is a clear non-convergence pattern rather than a transient failure, and L3 judgment is needed because the story remains active and continues to burn cost despite repeated successful runs."
+}

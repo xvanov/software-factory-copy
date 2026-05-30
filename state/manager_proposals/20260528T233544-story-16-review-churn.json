@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "story-16-review-churn",
+  "diagnosis": "The concern shows a real non-convergence pattern, but the preloaded source does not isolate a single actionable prompt defect with high confidence. The evidence is purely behavioral: story 16 has reached 8 successful reviewer cycles, the watcher note says it remains active in-window, and both the dev and reviewer runs succeeded. That means this is not a retry/error-class problem; it is a control-loop problem where the chain continues to accept another reviewer pass instead of exiting. The L2 concern itself explicitly says the current evidence does not isolate a single mechanism.\n\nWithin the provided source, `factory/personas/manager_summarizer.md` already documents the likely prompt-side explanation for review churn: \"the most common root cause is the dev persona not receiving the full accumulated review history, so it fixes one finding while the reviewer raises the next.\" But that statement is heuristic guidance for classification, not confirmation of the actual current mechanism on story 16. None of the loaded persona files show how reviewer findings are carried into the next dev prompt, and no `factory/chain/*.py` dispatcher/handler files were included. So the likely root cause may live in dispatch/context carry-forward rather than in any one persona prompt.\n\nThe available prompt files also do not show an obvious missing convergence instruction in `factory/personas/dev.md` or `factory/personas/reviewer.md` that cleanly explains an 8-cycle loop. `dev.md` already tells Dev to follow the story file as the single source of truth, run tests after every implementation change, and emit a self-summary for the next retry. `reviewer.md` already requires structured findings with file:line citations and blocks approval only when findings or test-quality defects remain. A prompt-only tweak here would be speculative because the loop could just as plausibly be caused by the chain failing to present prior reviewer findings cumulatively, or by story-state logic that keeps requeueing review without a convergence guard.\n\nBecause the probable fix spans unprovided chain wiring and story-state behavior, any patch against the loaded prompt files would risk treating a dispatch defect as a prompt problem. The smallest reliable next step is human escalation for inspection of the reviewer\u2192dev handoff in `factory/chain/` and the story artifact that accumulates prior review follow-ups.",
+  "proposal": {
+    "kind": "dispatch_code",
+    "target": "factory/chain/",
+    "rationale": "The concern is a structural review-loop pattern, but the loaded sources do not include the reviewer\u2192dev handoff code needed to verify whether prior findings are being carried forward or whether a convergence guard is missing. A prompt edit would be speculative and risks masking the real defect in chain dispatch/state handling.",
+    "suggested_patch": "",
+    "verification": "Inspect reviewer->dev handoff and story-state transition tests in factory/chain before proposing code changes.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "Low confidence: the concern is real, but the root cause likely lives in reviewer-to-dev context carry-forward or story-state dispatch code under factory/chain/, which was not pre-loaded. Additional source for the reviewer/dev handlers and any prior failed attempts is needed to produce a reliable fix.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T233544-story-16-review-churn.json",
+  "halt_requested": false
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "title": "sm-max-tokens-truncation",
+  "description": "A single SM run for story 35 failed in this interval after a long execution, with explicit evidence that the model output hit the configured cap and was truncated before JSON could be parsed. The failed run started at 2026-05-27T13:25:16.696102+00:00 and ended at 2026-05-27T13:41:52.404626+00:00, lasting 995.709 seconds. The recorded error states `json parse failed at max_tokens=65536 finish_reason=length`, with an unterminated string at a high character offset, which is consistent with output truncation rather than an arbitrary parse error.\n\nImpact in this window appears limited to that one persona call. The failed run consumed $1.7301945 and produced 114688 output tokens before failing, but there is no evidence here of a retry storm, queue stall, anomalous tick behavior, spend spike, or broader downstream blockage. The only other observed run in scope was a successful `manager_watcher` self-run.\n\nBecause this is a single watcher-note interval with one failed SM attempt and no corroborating recurrence, the pattern is clear but not yet persistent. Plausible explanations include an oversized SM response relative to output limits or a mismatch between expected structured output size and current persona/model settings. The available evidence supports describing this as an isolated truncation event, not yet a sustained factory-wide issue.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-27T13:42:48.594884+00:00",
+      "summary_excerpt": "After a long quiet stretch, one SM run for story 35 failed in this window after about 996s with a clear max-tokens/length truncation: the model output hit the 65536 cap and the JSON parse failed on an unterminated string."
+    },
+    {
+      "kind": "run",
+      "id": 35,
+      "ts": "2026-05-27T13:41:52.409791+00:00",
+      "excerpt": "persona=sm attempt_n=2 success=false duration_s=995.709 cost_usd=1.7301945 tokens_in=31713 tokens_out=114688 error=\"json parse failed at max_tokens=65536 finish_reason=length: Unterminated string starting at: line 1 column 261696 (char 261695)\""
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-27T13:41:48.594430+00:00",
+      "excerpt": "persona=manager_watcher success=true duration_s=2.793 cost_usd=0.012309 tokens_in=5766 tokens_out=186"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-27T13:42:48.594884+00:00",
+      "excerpt": "{\"noteworthy\":\"One failed SM run for story 35 shows a clear factory-side diagnosis: output hit max_tokens=65536 with finish_reason=length, causing truncated JSON and parse failure after a long 995.7s run.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "retry_storm",
+      "ts": "2026-05-27T13:42:48.594884+00:00",
+      "excerpt": "{\"noteworthy\":\"Single failure only for (story 35, sm); not a retry storm.\"}"
+    }
+  ],
+  "proposed_area": "persona_settings",
+  "urgency": "continue",
+  "escalate_to_l3": false,
+  "escalation_reason": "no L3 needed \u2014 single event, low persistence, no corroborating repeat interval yet"
+}

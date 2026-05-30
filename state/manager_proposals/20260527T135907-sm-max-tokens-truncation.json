@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "sm-max-tokens-truncation",
+  "diagnosis": "The failure mechanism is a model-output ceiling mismatch in `factory/routes.yaml`, not a story-domain error. The concern evidence is explicit: the `sm` run failed with `max_tokens=65536`, `finish_reason=length`, then `json parse failed ... Unterminated string`, after producing 114688 output tokens over 990 seconds. That is the signature of the chain requesting a completion budget larger than the provider/model actually returns coherently for this persona's structured JSON workload, causing truncation mid-string and a downstream parse failure.\n\nThe relevant configuration is present in `factory/routes.yaml`. Under `default_provider: azure`, the `sm` persona is routed via `azure_routes.sm: azure/gpt-5.4`. In the same file, `model_limits.azure/gpt-5.4.max_output_tokens` is set to `16384`, with a comment that this model \"supports 16k output reliably\". The observed runtime cap of `65536` is therefore inconsistent with the current per-model limit table and strongly suggests that the effective call path is not respecting the `model_limits` entry for this route. Because the concern is scoped to `persona_settings`, the smallest reliable mitigation available in the provided sources is to move `sm` off the route exhibiting the 65,536-token truncation behavior and onto a model family already configured with a lower, stable output cap.\n\n`sm` is a high-output structured-text persona: it emits full BMAD story files, often with verbatim embeds of `flow.md`, `api_spec.md`, context pointers, and acceptance criteria, as required by `factory/personas/sm.md`. That explains why this persona is especially exposed to truncation. However, the root cause shown by the evidence is not that the prompt is malformed; it is that the active model/settings combination permits a long, eventually truncated response that then cannot be parsed as complete JSON. Since the route file is the only relevant settings surface in the preloaded bundle, the least-invasive fix is a persona-specific route change for `sm` under Azure.",
+  "proposal": {
+    "kind": "persona_settings",
+    "target": "factory/routes.yaml",
+    "rationale": "This changes only the `sm` Azure route, which is the persona implicated by the concern and the settings surface available in the provided sources. Routing `sm` to a model with an explicitly smaller configured output ceiling (`anthropic/claude-sonnet-4-6` direct route) reduces the risk of long truncated JSON completions while preserving a strong structured-output model for story generation.",
+    "suggested_patch": "diff --git a/factory/routes.yaml b/factory/routes.yaml\n--- a/factory/routes.yaml\n+++ b/factory/routes.yaml\n@@ -71,7 +71,7 @@ azure_routes:\n   # Structured-text personas \u2192 gpt-5.4 (general purpose, JSON-friendly)\n   pm: azure/gpt-5.4\n   analyst: azure/gpt-5.4\n-  sm: azure/gpt-5.4\n+  sm: anthropic/claude-sonnet-4-6\n   tech_writer: azure/gpt-5.4\n   onboarder: azure/gpt-5.4\n   architect: azure/gpt-5.4\n",
+    "verification": "uv run pytest tests/test_model_router.py && uv run pytest tests/test_handler_sm.py",
+    "confidence": "medium"
+  },
+  "target_class": "persona_settings",
+  "escalate_to_human": false,
+  "escalation_reason": null,
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260527T135907-sm-max-tokens-truncation.json",
+  "halt_requested": false
+}

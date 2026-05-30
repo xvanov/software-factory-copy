@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "sm-max-tokens-truncation",
+  "diagnosis": "The failure mode in the concern is explicit: `persona=sm ... error=\"json parse failed at max_tokens=65536 finish_reason=length\"`. That is not a story-domain assertion failure; it is a structured-output truncation at the model completion cap. The important mismatch is between the run evidence and the configured routing in `factory/routes.yaml`: current HEAD routes `sm` to `azure/gpt-5.4` under the active `default_provider: azure`, and to `deepseek/deepseek-chat` only under direct mode. Yet the observed failing run is `model=deepseek/deepseek-chat` while still reporting `max_tokens=65536`, a cap that does not exist for DeepSeek in `model_limits` (DeepSeek is configured at 8192). That indicates the cap seen in the error is coming from call-site behavior outside this file, not from the `model_limits` stanza shown here.\n\nThat matters because the prior failed attempts both targeted `factory/routes.yaml`: one tried to raise `anthropic/claude-sonnet-4-6` to 65536 output, and one tried to reroute `sm` away from Azure. Neither addresses the mechanism evidenced here. The first is irrelevant because the failing model was DeepSeek, not Anthropic. The second is directionally opposite to the observed state: `sm` is already configured for Azure by default, while the failure happened on a direct DeepSeek run, so changing the Azure route cannot fix a path that is already bypassing Azure.\n\nWithin the source bundle provided, there is no pre-loaded dispatch/runtime code showing where `max_tokens=65536` is assigned, no parser/retry logic, and no provider-selection implementation. The root cause is therefore most plausibly a dispatch-layer bug or fallback path that applies an oversized hard-coded completion cap to `sm` calls on DeepSeek and then attempts to parse truncated JSON. But that code is not in the provided sources, so I cannot produce a reliable one-file patch without guessing at `factory/chain/` internals or re-proposing the already-failed `routes.yaml` approach.\n\nBecause the evidence points outside the only settings file provided, the safe action is escalation. Additional context needed: the model-routing implementation that resolves provider/model for `sm`, and the text-run/completion wrapper that maps `model_limits` to request `max_tokens` and handles JSON parse failures on `finish_reason=length`.",
+  "proposal": {
+    "kind": "persona_settings",
+    "target": "factory/routes.yaml",
+    "rationale": "No safe settings-only fix is supported by the provided source. The observed failure uses DeepSeek with a 65536 cap that `factory/routes.yaml` does not define for DeepSeek, so changing this file would be speculative and would likely repeat the prior rejected attempts.",
+    "suggested_patch": "",
+    "verification": "Inspect the dispatch path that resolves `sm` model/provider and the completion wrapper that sets `max_tokens`; then run the relevant pytest target for that handler (likely under tests covering model routing / text_run) plus a smoke call for `sm` JSON generation.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The current source bundle only includes `factory/routes.yaml` and persona prompts, but the mechanism evidenced by the run (`deepseek/deepseek-chat` receiving `max_tokens=65536`) cannot be produced by the `model_limits` values visible there. Prior `routes.yaml` attempts already failed, and a different actionable fix requires the unprovided dispatch/runtime code that selects provider/model and applies per-call token caps.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260528T081721-sm-max-tokens-truncation.json",
+  "halt_requested": false
+}

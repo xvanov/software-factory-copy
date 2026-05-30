@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "title": "sm-max-tokens-truncation",
+  "description": "This is a continuation of sm-max-tokens-truncation. In the current window, the same SM failure mode recurs repeatedly: SM runs fail with explicit `max_tokens=65536` truncation and `finish_reason=length`, followed by JSON parse failure. The first in-window recurrence visible in the raw stream appears at 2026-05-28T02:26:19.293248+00:00, and the pattern continues through at least 2026-05-28T02:37:47.988293+00:00.\n\nThe evidence remains diagnostically clear for the SM path and is now sustained across multiple summarizer intervals, not a one-off. The flagged watcher note reports 12 additional SM failures in this window, and the raw stream shows repeated short SM success/fail cycles where a successful SM call is immediately followed by a failed SM call with the same truncation text. This indicates continued wasted SM attempts and repeated non-completion of that persona's output contract.\n\nThere are also many short zero-cost sandbox-style failures on onboarder, test_implementer, and dev in the same window, but those errors are comparatively ambiguous (`tests not green after run`, sometimes null) and the bundle does not tie them causally to the SM truncation issue. Queue, tick, spend, and worktree detectors are quiet or absent here, so the strongest coherent signal is still the recurring SM truncation/JSON-parse pattern rather than a proven full-factory stall.\n\nImpact is non-trivial because the same clearly named infrastructure-level failure continues after prior escalation and is retrying heavily rather than resolving. The most plausible area remains SM prompt/persona output sizing or related persona settings, because the failure text names token-cap truncation directly; however, this concern is descriptive only and does not establish a fix path.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T02:41:46.502956+00:00",
+      "summary_excerpt": "Repeated short sandbox-style failures across onboarder, test_implementer, and dev, plus repeated SM failures with the same max_tokens=65536 truncation and JSON-parse error that was previously escalated."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-28T02:41:46.502956+00:00",
+      "excerpt": "{\"noteworthy\":\"60 failed runs in scope. Most are ambiguous short sandbox/test failures, but 12 SM failures repeat the same clearly diagnosable max_tokens=65536 truncation/JSON-parse error that was previously escalated.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "retry_storm",
+      "ts": "2026-05-28T02:41:46.502956+00:00",
+      "excerpt": "{\"noteworthy\":\"Multiple retry storms are present: onboarder=36, test_implementer=12, dev=12, and sm=12 failures, all on story_id=null, indicating sustained repeated failure patterns rather than one-offs.\"}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T02:26:19.293248+00:00",
+      "excerpt": "persona=sm success=false error=\"json parse failed at max_tokens=65536 finish_reason=length: Unterminated string starting at: line 1 column 9 (char 8)\" model=deepseek/deepseek-chat attempt_n=713"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T02:31:41.988435+00:00",
+      "excerpt": "persona=sm success=false error=\"json parse failed at max_tokens=65536 finish_reason=length: Unterminated string starting at: line 1 column 9 (char 8)\" model=deepseek/deepseek-chat attempt_n=734"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T02:37:47.988293+00:00",
+      "excerpt": "persona=sm success=false error=\"json parse failed at max_tokens=65536 finish_reason=length: Unterminated string starting at: line 1 column 9 (char 8)\" model=deepseek/deepseek-chat attempt_n=749"
+    }
+  ],
+  "proposed_area": "persona_settings",
+  "urgency": "halt",
+  "escalate_to_l3": true,
+  "escalation_reason": "Recurring SM max-tokens truncation/JSON-parse failure has now persisted across at least four L2 concern intervals and continues through this window with 12 additional SM failures. L3 judgment is needed because the pattern is diagnostically clear, infrastructure-attributable, and sustained despite prior escalation."
+}

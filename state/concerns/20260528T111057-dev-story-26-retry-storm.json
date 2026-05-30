@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "title": "dev-story-26-retry-storm",
+  "description": "A repeated failure pattern is present for story 26 on the dev persona. This interval adds one more failed dev run at 2026-05-28T11:10:30.101792+00:00 with the same error text, \"tests not green after run,\" and the watcher note states this is the third quick successive failure across adjacent watcher windows. The error text does not identify a root cause, but the repetition on the same story/persona indicates a localized retry storm rather than an isolated transient.\n\nImpact appears limited to the affected story rather than the whole factory. In this window there is no corroborating queue stall, tick-duration anomaly, or meaningful spend signal, and the failed run cost is small. A git commit and push were still recorded immediately after the failed run, which suggests activity continued in the worktree despite the failed completion state.\n\nThis is not the same factory-wide truncation pattern described in prior concerns; it is a new, story-specific repeated failure with low diagnostic clarity. The most plausible reading from the available evidence is sustained trouble on one story/persona path, but the bundle does not show whether the underlying cause is factory infrastructure or story-domain test behavior.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T11:10:52.064898+00:00",
+      "summary_excerpt": "Story 26\u2019s dev run failed again with the same ambiguous error, \"tests not green after run,\" following the prior window\u2019s two similar failures; this now forms a three-attempt cluster on one story/persona."
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T11:10:30.101792+00:00",
+      "excerpt": "story 26 dev failed after 53.632s; error=\"tests not green after run\"; attempt_n=3; cost_usd=0.0433015; model=azure/deepseek-v4-pro"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "retry_storm",
+      "ts": "2026-05-28T11:10:52.064898+00:00",
+      "excerpt": "{\"noteworthy\":\"Current-window count is 1, but with the prior note\u2019s two failures this reaches three quick successive failures for story 26/dev, matching retry-storm pattern across watcher windows.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-28T11:10:52.064898+00:00",
+      "excerpt": "{\"noteworthy\":\"One new failed dev run for story 26 with the same ambiguous error seen in the prior note: \\\"tests not green after run.\\\"\"}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T11:09:52.064546+00:00",
+      "excerpt": "manager_watcher run succeeded in same window; no broad run failure evidence in underlying signals."
+    }
+  ],
+  "proposed_area": "unknown",
+  "urgency": "warn",
+  "escalate_to_l3": false,
+  "escalation_reason": "no L3 needed yet \u2014 clear retry pattern on one story/persona, but the error is ambiguous and current evidence does not localize the cause to factory infrastructure"
+}

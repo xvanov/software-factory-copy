@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "title": "manager-prompt-placeholder-leak",
+  "description": "This is a continuation of manager-prompt-placeholder-leak. A high-severity prompt placeholder leak was again reported in a manager_watcher prompt during this window, with no evidence in the bundled signals that the underlying prompt-assembly issue has been resolved. The current watcher note explicitly ties this event to the previously escalated recurring pattern.\n\nOperationally, the window was otherwise quiet. The three manager personas all completed successfully, there were no failed runs, no retry clusters, no tick or queue activity, and no spend-stream observations beyond the successful runs themselves. That means the current impact is primarily prompt-integrity and repeated recurrence of a factory-internal plumbing fault, rather than an active execution outage.\n\nBecause this leak has already persisted across multiple prior concerns and has now recurred again in the current interval, the pattern is clear and ongoing. The most plausible area remains dispatch-time prompt assembly rather than story-domain behavior, since the leak is in a manager_watcher prompt and is identified by the placeholder-prompts detector as a high-severity internal bug.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-29T18:54:59.906108+00:00",
+      "summary_excerpt": "The previously escalated high-severity prompt placeholder leak recurred again in a manager_watcher prompt at the start of the window."
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "placeholder_prompts",
+      "ts": "2026-05-29T18:54:59.906108+00:00",
+      "excerpt": "{\"noteworthy\":\"High-severity placeholder markers were again found in a manager_watcher prompt, matching the previously escalated recurring prompt leak pattern.\"}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-29T18:53:38.722557+00:00",
+      "excerpt": "{\"persona\":\"manager_watcher\",\"success\":true,\"duration_s\":6.92,\"cost_usd\":0.026363000000000004,\"attempt_n\":1655}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-29T18:53:50.034451+00:00",
+      "excerpt": "{\"persona\":\"manager_summarizer\",\"success\":true,\"duration_s\":11.273,\"cost_usd\":0.027242000000000002,\"attempt_n\":43}"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-29T18:53:59.905273+00:00",
+      "excerpt": "{\"persona\":\"manager_diagnostician\",\"success\":true,\"duration_s\":9.852,\"cost_usd\":0.059588,\"attempt_n\":158}"
+    }
+  ],
+  "proposed_area": "dispatch_code",
+  "urgency": "warn",
+  "escalate_to_l3": true,
+  "escalation_reason": "Recurring manager prompt placeholder leak has persisted across multiple watcher-note intervals, including the current window, with detector evidence identifying it as a high-severity internal prompt-assembly fault. L3 judgment is needed because the pattern is clear, factory-attributable, and remains unresolved despite repeated prior escalation."
+}

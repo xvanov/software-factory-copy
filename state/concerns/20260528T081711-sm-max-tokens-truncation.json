@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "title": "sm-max-tokens-truncation",
+  "description": "This is a continuation of sm-max-tokens-truncation. In the current window, the same SM failure mode appeared again: an `sm` run failed with explicit `json parse failed at max_tokens=65536 finish_reason=length`, which indicates the model output was truncated at the configured cap before valid JSON could be completed. The event occurred at 2026-05-28T08:16:30.840997+00:00.\n\nThe evidence in this window is narrow but clear. Other failures present here are mostly short sandbox-style `tests not green after run` events with `story_id=null`, plus one longer story 5 dev failure that does not share the same diagnostic signature. There were no tick or queue observations in this interval, and no spend increase was recorded, so the visible impact in this specific window is limited.\n\nHowever, this recurrence extends an already-established pattern from prior concerns, which had already progressed from `continue` to `warn` and then `halt` for the same truncation class. The error text continues to name a factory-side output-cap/parsing failure rather than a story-domain issue, so L3 review remains warranted even though this single occurrence had negligible direct cost in this interval.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T08:17:04.932371+00:00",
+      "summary_excerpt": "Several run failures landed in this window: four very short sandbox-style failures with no story_id, one story 5 dev run ending in \"tests not green after run,\" and one sm failure whose error explicitly says JSON parsing failed because output hit max_tokens=65536 with finish_reason=length."
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T08:16:30.840997+00:00",
+      "excerpt": "persona=sm success=false error=\"json parse failed at max_tokens=65536 finish_reason=length: Unterminated string starting at: line 1 column 9 (char 8)\" model=deepseek/deepseek-chat tokens_in=40 tokens_out=80 attempt_n=752"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T08:16:30.820247+00:00",
+      "excerpt": "persona=sm success=true model=deepseek/deepseek-chat tokens_in=20 tokens_out=40 attempt_n=751"
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T08:16:30.860031+00:00",
+      "excerpt": "persona=sm success=true model=deepseek/deepseek-chat tokens_in=10 tokens_out=20 attempt_n=753"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "runs_failed_since",
+      "ts": "2026-05-28T08:17:04.932371+00:00",
+      "excerpt": "{\"noteworthy\":\"Seven failed runs were seen; most are ambiguous \\\"tests not green after run\\\" failures, but one sm failure is diagnostically clear: output was truncated at max_tokens=65536 and JSON parse then failed.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "retry_storm",
+      "ts": "2026-05-28T08:17:04.932371+00:00",
+      "excerpt": "{\"noteworthy\":\"onboarder reached failure_count=3 in this window, but these are null-story sandbox/test-context failures with ambiguous errors, so noteworthy without being the escalation driver.\"}"
+    }
+  ],
+  "proposed_area": "persona_settings",
+  "urgency": "halt",
+  "escalate_to_l3": true,
+  "escalation_reason": "Recurring SM max-tokens truncation pattern persists into this interval, now continuing a concern previously raised through halt severity. The error class is explicit (`max_tokens=65536`, `finish_reason=length`, JSON parse failure), attributable to factory model-output settings/handling rather than story logic, and repeated across multiple prior intervals; L3 judgment is needed because the pattern is already established and unresolved."
+}

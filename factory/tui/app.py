@@ -390,6 +390,18 @@ class FactoryTUI(App[None]):
     def on_mount(self) -> None:
         self.title = "factory tui"
         self.sub_title = f"{self.app_filter or 'all apps'} — polling every {self.refresh_seconds:.0f}s"
+        # Self-heal: recompute baselines once on launch so the ETA panel works
+        # without the operator having to press ``r`` first. The Monte Carlo ETA
+        # reads its per-(persona, points) estimate from ``handler_baselines``;
+        # if that table is empty (fresh process / never recomputed) every
+        # velocity sample is dropped and the ETA falsely reports insufficient
+        # data. Cheap median pass; failures are non-fatal to the dashboard.
+        try:
+            from factory.observability.estimator import recompute_baselines
+
+            recompute_baselines(self.db_path)
+        except Exception:
+            pass
         self.refresh_data()
         self.set_interval(self.refresh_seconds, self.refresh_data)
 

@@ -1,0 +1,44 @@
+pm_result:
+  type: feature
+  priority: p0
+  has_sufficient_backpressure: false
+  missing:
+  - user_flow
+  - api_spec
+  - explore_tag_or_artifacts
+  tracker_title: "[DIRECTION] Factory Management System \u2014 LLM-in-the-loop self-monit..."
+  tracker_body: "**Factory Management System \u2014 LLM-in-the-loop self-monitoring\
+    \ & self-improvement**\n\n_(needs more backpressure: user_flow, api_spec, explore_tag_or_artifacts)_\n"
+  child_stories: []
+  labels:
+  - feature
+  - priority/p0
+  - needs-direction
+  confidence: 0.4
+validation_issues: []
+status: needs-direction
+audit:
+- ts: '2026-05-26T23:13:42.108337+00:00'
+  by: factory.chain.pm_sync(dry-run)
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+- ts: '2026-05-26T23:16:05.367971+00:00'
+  by: factory.chain.pm_sync(dry-run)
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+- ts: '2026-05-26T23:17:46.013686+00:00'
+  by: factory.chain.pm_sync(dry-run)
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts

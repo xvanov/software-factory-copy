@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "concern_title": "dev-story-26-retry-storm",
+  "diagnosis": "The concern evidence establishes a sustained retry pattern, but it does not identify a factory-side root cause with enough specificity to justify a code or prompt change. The only concrete repeated symptom is three consecutive `dev` failures for story 26 with the generic error text `\"tests not green after run\"` across attempts 6, 7, and 8, with prior watcher intervals showing the same pattern. That symptom is compatible with multiple mechanisms: a legitimate story-local implementation defect, a bad red-test baseline, an impossible test contract, or a dispatch/runtime loop that keeps re-entering `dev` without a new decision point.\n\nThe preloaded source confirms that repeated dev dispatch is an intended state-machine behavior, not by itself a bug. In `factory/chain/orchestrator.py`, `_DISPATCH` explicitly routes both `StoryState.DEV_RETRY` and `StoryState.REVIEWER_REQUESTED_CHANGES` to `\"dev\"`, and `_dispatch_for_story()` sends `StoryState.TESTS_RED` to `\"dev\"` once `harness_precheck_passed` is true. The state-machine context also confirms that `DEV_RETRY` is the designed rollback path for dev failures. So the observed repetition is consistent with normal chain semantics unless there is evidence that the story should have been blocked or exited instead.\n\nThe missing piece is the handler-level failure contract. The provided bundle does not include `factory/chain/handlers.py` or `factory/chain/state_machine.py` source lines showing when a failed dev run should transition to `DEV_RETRY` versus `BLOCKED_TESTS_NEED_CLARIFICATION`, whether there is any retry cap, or whether the generic runner error `tests not green after run` is emitted for both story-local and infrastructure-local failures. `factory/runner.py` shows that run telemetry records `error`, `attempt_n`, and conversation memory fields, but nothing in the provided source ties those signals to an orchestrator-side stop condition. Without that code, I cannot distinguish a story that is correctly retrying from a factory bug that is failing to exit cleanly.\n\nBecause the concern's `proposed_area` is `unknown` and the key control logic is not in the source bundle, any patch would be speculative. The likely real fix, if there is one, would require inspecting `handle_dev`, the state transition logic around failed dev runs, and possibly the exact story/test artifacts for story 26 to determine whether the factory should cap retries or classify this failure as `TESTS_NEED_CLARIFICATION` instead of looping.",
+  "proposal": {
+    "kind": "dispatch_code",
+    "target": "factory/chain/handlers.py",
+    "rationale": "The retry storm may originate in dev-failure handling, but that mechanism is not present in the provided source bundle. A reliable fix would require examining how `handle_dev` converts `RunResult.error == \"tests not green after run\"` into state transitions and whether a retry cap or clarification block already exists.",
+    "suggested_patch": "",
+    "verification": "Inspect `factory/chain/handlers.py` and `factory/chain/state_machine.py`; reproduce story 26 locally and review its per-story event log plus recent `runs.ndjson` records before proposing code changes.",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "The source bundle lacks the handler/state-transition code needed to determine whether repeated `dev` retries are expected story-local behavior or a factory-side loop. Additional context needed: `factory/chain/handlers.py` (especially `handle_dev`), relevant `state_machine.py` transitions, and story 26's event log/test artifacts.",
+  "request_halt": false,
+  "halt_reason": null,
+  "proposal_path": "/home/k/software-factory/state/manager_proposals/20260529T184335-dev-story-26-retry-storm.json",
+  "halt_requested": false
+}

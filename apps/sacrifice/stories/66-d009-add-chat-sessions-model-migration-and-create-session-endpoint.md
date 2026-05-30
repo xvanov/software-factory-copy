@@ -3,43 +3,46 @@
 ## Title
 D009 add chat_sessions model, migration, and create-session endpoint
 
-## Scope
-backend
+## Story
+**As a** signed-in Sacrifice user
+**I want** a persisted chat session to be created when I start goal creation
+**so that** the chat creation flow can resume on return and later turns have a stable session id.
 
 ## Acceptance Criteria
-- A new table `chat_sessions` persists session state with columns: `id`, `user_id`, `created_at`, `updated_at`, `messages` (JSONB list of `{role, content, action}`), `draft_goal` (JSONB partial goal payload), `status` (`active`, `goal_created`, `awaiting_goal_type`). Migration generated via Alembic autogenerate.
+- A new screen `frontend/screens/ChatGoalCreateScreen.tsx` is the primary "Create goal" entry from the home screen. The home screen's "Create goal" affordance routes to this screen.
+- The legacy `frontend/screens/GoalCreateScreen.tsx` is removed entirely. Any internal references (navigation routes, hook calls) are updated to route to the chat screen.
+- The chat screen presents a message list, a text input, and structured assistant affordances rendered as cards when the assistant returns a structured action (see `api_spec.md`): "Use this goal type" card, "Build a new goal type" card, "Awaiting input" prompt for a single criterion.
 - A new backend route module `backend/app/routes/chat.py` exposes the endpoints in `api_spec.md`. The router is registered in `backend/app/main.py`.
-- ### `POST /api/chat/sessions`
-- **Method:** POST
-- **Path:** `/api/chat/sessions`
-- **Request body:** `(none)`
-- **Response body (success):**
-  ```json
-  {
-    "session_id": "<uuid>",
-    "messages": [
-      {"role": "assistant", "content": "Tell me what you want to do, and I'll figure out how to track it.", "action": null}
-    ],
-    "status": "active"
-  }
-  ```
-- **Success status:** `201`
-- **Error statuses:**
-  - `401` — unauthenticated
+- Matching uses one LLM call per chat turn:
+  - Backend builds the catalog from D007's registry (`name`, `description`, `sample_prompts`).
+  - Backend prompts the LLM with the user message + chat context + catalog and asks for structured JSON: `{match: <name>|"none", confidence: 0..1, rationale: <str>}`.
+  - The model id and confidence threshold (default 0.7) are configurable via `backend/app/config.py`.
+  - The LLM service module lives at `backend/app/services/chat_match.py` and is unit-testable with a mocked LLM client.
+- A new table `chat_sessions` persists session state with columns: `id`, `user_id`, `created_at`, `updated_at`, `messages` (JSONB list of `{role, content, action}`), `draft_goal` (JSONB partial goal payload), `status` (`active`, `goal_created`, `awaiting_goal_type`). Migration generated via Alembic autogenerate.
+- Matching above confidence threshold → assistant card surfaces the matched type with required criteria fields; chat asks for each missing criterion conversationally. On all criteria filled + user confirmation, the chat backend calls the existing `POST /api/goals` and returns the new goal id.
+- Matching below threshold (or `none`) → assistant card surfaces "I don't have a built-in way to verify that yet. Want me to build a new goal type for it?" with a "Yes, build it" action. The corresponding endpoint (`POST /api/chat/sessions/{session_id}/request-new-goal-type`) is STUBBED in this direction — it returns `501 Not Implemented` with a message indicating D010 supersedes. D010 replaces the stub with the real wiring.
+- E2E Playwright `@smoke` test:
+  - Open chat. Type "I want to upload a YouTube walkthrough of my project by Friday and pledge $20 to <charity>".
+  - Assert the assistant surfaces a match card for `youtube_video`.
+  - Provide the missing criteria conversationally (deadline, charity, etc. — any not extracted automatically).
+  - Confirm. Assert a new goal exists via `GET /api/goals` with `goal_type=youtube_video`.
+- A second E2E test exercises the no-match path: prompt "Track that I drank 8 glasses of water today" → assert the assistant returns the "build a new goal type" affordance. Assert the user tapping it receives the stubbed 501 response surfaced as an honest message in chat (no crash).
+- `context/modules/frontend.md` rewritten to reflect that goal creation now flows through `ChatGoalCreateScreen.tsx`; the typed sub-forms are listed only as historical context inside `stories/` (not in `context/`).
+- `context/modules/backend-app.md` rewritten to include the new `chat.py` route.
 
 ## Tasks / Subtasks
-- [ ] Add `chat_sessions` persistence model with the exact columns named in direction acceptance criteria.
-- [ ] Generate and wire Alembic migration for `chat_sessions`.
-- [ ] Create `backend/app/routes/chat.py` route module.
+- [ ] Add persistence model for `chat_sessions` with required columns and status enum values exactly as directed.
+- [ ] Generate Alembic migration via autogenerate for the new table.
+- [ ] Add request/response schemas for `POST /api/chat/sessions` response contract.
+- [ ] Implement `backend/app/routes/chat.py` with `POST /api/chat/sessions` returning `201` and greeting message payload.
 - [ ] Register chat router in `backend/app/main.py`.
-- [ ] Implement `POST /api/chat/sessions`.
-- [ ] Persist initial assistant greeting message exactly as specified.
-- [ ] Return `201` payload with `session_id`, `messages`, and `status`.
-- [ ] Enforce `401` for unauthenticated access.
-- [ ] Add backend tests for model, migration behavior, and create-session endpoint contract.
+- [ ] Persist initial assistant greeting message in the created session.
+- [ ] Enforce authentication behavior for create-session endpoint (`401` when unauthenticated).
+- [ ] Add backend tests for model persistence, endpoint auth, `201` response shape, and greeting message content.
+- [ ] Confirm this slice does not implement message-turn matching, create-goal, or request-new-goal-type behavior beyond route/module scaffolding needed here.
 
 ## Dev Notes
-### Verbatim `flow.md`
+### Verbatim flow.md
 ```md
 # User flow
 
@@ -62,7 +65,7 @@ backend
    - User leaves the chat mid-flow and returns later → the chat session resumes from the last assistant message (session id stored locally).
 ```
 
-### Verbatim `api_spec.md`
+### Verbatim api_spec.md
 ```md
 # API spec
 
@@ -167,10 +170,13 @@ backend
   - `404` — session not found
 ```
 
-### Context pointers to load
+### Context pointers
 - [Source: context/project.md#Identity]
 - [Source: context/project.md#Stack]
-- [Source: context/project.md#Active constraints]
+- [Source: context/current-state.md#Router composition and surfaced backend features]
+- [Source: context/current-state.md#Goal creation remains type-first]
+- [Source: context/modules/backend-app.md#FastAPI app and mounted routers]
+- [Source: context/modules/backend-app.md#Goal-facing interfaces]
 - [Source: context/navigation.md#When working on backend HTTP behavior]
 
 ### Verbatim direction acceptance criteria
@@ -199,18 +205,25 @@ backend
 
 ## References
 - `backend/app/main.py`
-- `backend/app/config.py`
+- `backend/app/routes/`
+- `backend/app/models/`
+- `backend/app/schemas/`
+- `backend/alembic/`
 - `backend/app/routes/goals.py`
 - `backend/app/models/goal.py`
-- `backend/app/schemas/goal.py`
 
 ## Dev Agent Record
-- Status: Complete
-- Notes: All implementation ACs satisfied. 6 pre-existing test failures unrelated to chat (verification/proof routes, goal_type_smoke metadata, notifications) — confirmed present on base commit c8116a1 too. No test files modified. "Add backend tests" subtask conflicts with frozen-test persona rule; test creation deferred to Test-Implementer.
-- Files: `backend/app/models/chat_session.py`, `backend/app/models/__init__.py`, `backend/app/models/user.py`, `backend/alembic/versions/e22b7086c9bd_add_chat_sessions.py`, `backend/alembic/env.py`, `backend/app/routes/chat.py`, `backend/app/main.py` 
+- Agent Model Used: 
+- Debug Log References: 
+- Completion Notes: 
+- File List: 
 
 ## Senior Developer Review
-- Pending
+- [ ] AC coverage verified against direction text
+- [ ] Migration generated and reviewed
+- [ ] Endpoint contract matches `api_spec.md`
+- [ ] Router registration confirmed
+- [ ] Authentication behavior covered by tests
 
 ## Review Follow-ups
-- None yet
+- None.

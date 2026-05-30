@@ -1,45 +1,27 @@
 # Story
 
 ## Title
-D009 add chat_sessions model, migration, and create-session endpoint
+D009 add stub request-new-goal-type endpoint returning 501
 
-## Scope
-backend
+## Description
+Add the explicit no-match stub contract for `POST /api/chat/sessions/{session_id}/request-new-goal-type`. This story must land the truthful D010 handoff response without implementing goal-type generation.
 
 ## Acceptance Criteria
-- A new table `chat_sessions` persists session state with columns: `id`, `user_id`, `created_at`, `updated_at`, `messages` (JSONB list of `{role, content, action}`), `draft_goal` (JSONB partial goal payload), `status` (`active`, `goal_created`, `awaiting_goal_type`). Migration generated via Alembic autogenerate.
-- A new backend route module `backend/app/routes/chat.py` exposes the endpoints in `api_spec.md`. The router is registered in `backend/app/main.py`.
-- ### `POST /api/chat/sessions`
-- **Method:** POST
-- **Path:** `/api/chat/sessions`
-- **Request body:** `(none)`
-- **Response body (success):**
-  ```json
-  {
-    "session_id": "<uuid>",
-    "messages": [
-      {"role": "assistant", "content": "Tell me what you want to do, and I'll figure out how to track it.", "action": null}
-    ],
-    "status": "active"
-  }
-  ```
-- **Success status:** `201`
-- **Error statuses:**
-  - `401` — unauthenticated
+- Matching below threshold (or `none`) → assistant card surfaces "I don't have a built-in way to verify that yet. Want me to build a new goal type for it?" with a "Yes, build it" action. The corresponding endpoint (`POST /api/chat/sessions/{session_id}/request-new-goal-type`) is STUBBED in this direction — it returns `501 Not Implemented` with a message indicating D010 supersedes. D010 replaces the stub with the real wiring.
 
 ## Tasks / Subtasks
-- [ ] Add `chat_sessions` persistence model with the exact columns named in direction acceptance criteria.
-- [ ] Generate and wire Alembic migration for `chat_sessions`.
-- [ ] Create `backend/app/routes/chat.py` route module.
-- [ ] Register chat router in `backend/app/main.py`.
-- [ ] Implement `POST /api/chat/sessions`.
-- [ ] Persist initial assistant greeting message exactly as specified.
-- [ ] Return `201` payload with `session_id`, `messages`, and `status`.
-- [ ] Enforce `401` for unauthenticated access.
-- [ ] Add backend tests for model, migration behavior, and create-session endpoint contract.
+- [ ] Add `POST /api/chat/sessions/{session_id}/request-new-goal-type` to `backend/app/routes/chat.py`.
+- [ ] Ensure router is mounted in `backend/app/main.py` if not already done.
+- [ ] Enforce API spec auth and existence behavior:
+  - [ ] `401` unauthenticated
+  - [ ] `404` session not found
+- [ ] Return `501 Not Implemented` with exact body:
+  - [ ] `{"detail":"Goal-type generation is delivered in D010"}`
+- [ ] Do not add generation logic in this story.
+- [ ] Add endpoint tests for `501`, `401`, and `404` cases.
 
 ## Dev Notes
-### Verbatim `flow.md`
+### Verbatim flow.md
 ```md
 # User flow
 
@@ -62,7 +44,7 @@ backend
    - User leaves the chat mid-flow and returns later → the chat session resumes from the last assistant message (session id stored locally).
 ```
 
-### Verbatim `api_spec.md`
+### Verbatim api_spec.md
 ```md
 # API spec
 
@@ -167,10 +149,10 @@ backend
   - `404` — session not found
 ```
 
-### Context pointers to load
+### Context pointers
 - [Source: context/project.md#Identity]
-- [Source: context/project.md#Stack]
 - [Source: context/project.md#Active constraints]
+- [Source: context/navigation.md#When working on chat or goal-type matching]
 - [Source: context/navigation.md#When working on backend HTTP behavior]
 
 ### Verbatim direction acceptance criteria
@@ -198,19 +180,19 @@ backend
 ```
 
 ## References
+- `backend/app/routes/chat.py`
 - `backend/app/main.py`
-- `backend/app/config.py`
-- `backend/app/routes/goals.py`
-- `backend/app/models/goal.py`
-- `backend/app/schemas/goal.py`
+- `backend/app/models/`
 
 ## Dev Agent Record
-- Status: Complete
-- Notes: All implementation ACs satisfied. 6 pre-existing test failures unrelated to chat (verification/proof routes, goal_type_smoke metadata, notifications) — confirmed present on base commit c8116a1 too. No test files modified. "Add backend tests" subtask conflicts with frozen-test persona rule; test creation deferred to Test-Implementer.
-- Files: `backend/app/models/chat_session.py`, `backend/app/models/__init__.py`, `backend/app/models/user.py`, `backend/alembic/versions/e22b7086c9bd_add_chat_sessions.py`, `backend/alembic/env.py`, `backend/app/routes/chat.py`, `backend/app/main.py` 
+- Status: Not started
+- Agent: TBD
+- Notes:
 
 ## Senior Developer Review
-- Pending
+- Status: Pending
+- Reviewer: TBD
+- Notes:
 
 ## Review Follow-ups
-- None yet
+- None yet.

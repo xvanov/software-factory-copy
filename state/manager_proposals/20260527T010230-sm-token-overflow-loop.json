@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "concern_title": "sm-token-overflow-loop",
+  "diagnosis": "<dry-run \u2014 LLM not called>",
+  "proposal": {
+    "kind": "observability",
+    "target": "",
+    "rationale": "<dry-run>",
+    "suggested_patch": "",
+    "verification": "",
+    "confidence": "low"
+  },
+  "target_class": "escalate_to_human",
+  "escalate_to_human": true,
+  "escalation_reason": "dry-run mode \u2014 LLM not called"
+}

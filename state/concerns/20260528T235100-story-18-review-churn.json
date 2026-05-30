@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "title": "story-18-review-churn",
+  "description": "This is a continuation of the broader non-converging review-churn pattern, now centered on story 18. In the current window, story 18 became active again with another successful reviewer run at 2026-05-28T23:49:54.342278+00:00. The flagged watcher note reports cumulative review_churn of 7 reviewer cycles and 10 dev cycles for story 18, which is well above the 3-cycle convergence ceiling and indicates the story is still cycling rather than advancing.\n\nThere is no accompanying failure burst, retry storm, prompt-plumbing issue, or tick-duration anomaly in this window. The visible impact here is structural spend and throughput loss rather than hard errors: the reviewer run itself succeeded, but the story remains in review churn. The queue snapshot also shows a large population in reviewer_requested_changes and tests_red states, which is consistent with an environment where stories can remain active without converging, though this window's direct evidence is specifically about story 18.\n\nPossible explanations remain limited to non-convergence in the dev/reviewer loop rather than infrastructure failure. Because review-churn is itself the escalation signal, the absence of explicit run failures does not reduce the concern. This window adds changed evidence by showing story 18 is still active and accumulating review activity now, not merely historically high.",
+  "evidence": [
+    {
+      "kind": "watcher_note",
+      "ts": "2026-05-28T23:50:55.808862+00:00",
+      "summary_excerpt": "Activity resumed lightly: story 18 had a successful reviewer run, making its cumulative review churn active again at 7 reviewer cycles."
+    },
+    {
+      "kind": "run",
+      "id": null,
+      "ts": "2026-05-28T23:49:54.342278+00:00",
+      "excerpt": "successful reviewer run for story 18, attempt_n=7, duration_s=13.635, cost_usd=0.041206, tokens_in=11980, tokens_out=1096"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "review_churn",
+      "ts": "2026-05-28T23:50:55.808862+00:00",
+      "excerpt": "{\"noteworthy\":\"Story 18 is active in this window with 7 reviewer cycles and 10 dev cycles; this is active review churn above the escalation threshold. Story 16 remains historically high at 11 cycles but is not active in this window.\"}"
+    },
+    {
+      "kind": "detector_observation",
+      "detector": "state_distribution_skew",
+      "ts": "2026-05-28T23:50:24.752961+00:00",
+      "excerpt": "{\"app\":\"sacrifice\",\"counts_by_state\":{\"deployed\":7,\"blocked_deploy_failed\":1,\"reviewer_requested_changes\":13,\"blocked_tests_need_clarification\":5,\"dev_in_progress\":1,\"dev_retry\":2,\"tests_red\":11,\"story_created\":2}}"
+    }
+  ],
+  "proposed_area": "prompt",
+  "urgency": "warn",
+  "escalate_to_l3": true,
+  "escalation_reason": "Active review-churn pattern on story 18: 7 reviewer cycles and 10 dev cycles as of 2026-05-28T23:50:55.808862+00:00, with a fresh successful reviewer run at 2026-05-28T23:49:54.342278+00:00 confirming the loop is ongoing. L3 judgment is needed because this exceeds the 3-cycle convergence ceiling and represents continued non-converging spend/throughput loss even without run failures."
+}
