@@ -1393,6 +1393,71 @@ _MAX_TEST_IMPL_SLOP_RETRIES = 3
 # of looping back to dev indefinitely. Counted by ``story.reviewer_cycles``.
 _MAX_REVIEW_CYCLES = 3
 
+# Pre-model sandbox infrastructure-error cap. A dev sandbox that fails BEFORE
+# any model work (``success=False`` with zero tokens/cost and tests never run)
+# is shared-infra breakage — a transient ``.venv`` relink from a concurrent
+# ``uv run``/``uv sync`` re-materialising site-packages mid-render
+# (``TemplateNotFound``), an SDK import failure, or a sandbox boot crash. This
+# is NOT a dev-code or test failure, so it must NOT consume the dev retry
+# budget; the story is bounced straight back to dev (most transients clear by
+# the next tick). Counted from *consecutive trailing* ``dev_sandbox_infra_error``
+# events so a recovered story is never punished for an earlier blip; at the cap
+# a persistent infra fault escalates loudly via ``factory_needs_redesign``
+# instead of looping forever. Capped at 3 per the "nothing loops >3" rule.
+_MAX_DEV_SANDBOX_INFRA_RETRIES = 3
+
+
+def _is_premodel_infra_failure(run_res: Any) -> bool:
+    """True when a sandbox run failed before any model work began.
+
+    A genuine "dev ran but tests are still red" outcome has
+    ``test_run_passed is False`` and (almost always) non-zero token/cost
+    usage. A pre-model infrastructure failure — the OpenHands SDK import
+    blowing up, the agent prompt template failing to render, or the sandbox
+    boot crashing — returns ``success=False`` with ``test_run_passed`` never
+    set and zero tokens/cost. Distinguishing the two is what keeps an
+    environment blip from masquerading as a code failure and burning the dev
+    retry budget.
+    """
+    return bool(
+        not run_res.success
+        and run_res.test_run_passed is None
+        and (run_res.cost_usd or 0.0) == 0.0
+        and (run_res.tokens_out or 0) == 0
+    )
+
+
+def _consecutive_trailing_infra_errors(
+    story: StoryRecord, software_factory_root: Path
+) -> int:
+    """Count ``dev_sandbox_infra_error`` events with no real dev progress after.
+
+    Walks the per-story event log newest-first and counts the unbroken run of
+    trailing infra-error events. Any genuine dev event (retry, exhaustion,
+    green, clarification, or a fresh dev_started) resets the count — so a
+    story that hit one transient blip, recovered, and only much later hits
+    more is never blocked on a stale cumulative tally.
+    """
+    from factory.chain.event_log import read_story_events
+
+    count = 0
+    for e in reversed(
+        read_story_events(
+            story.id, software_factory_root=software_factory_root, slug_hint=story.slug
+        )
+    ):
+        ev = e.get("event")
+        if ev == "dev_sandbox_infra_error":
+            count += 1
+        elif ev in {
+            "dev_retry",
+            "dev_exhausted",
+            "dev_tests_green",
+            "tests_need_clarification",
+        }:
+            break
+    return count
+
 
 def _dry_run_dev(story: StoryRecord) -> tuple[bool, dict[str, Any]]:
     """Deterministic dev result for dry-run mode.
@@ -1514,6 +1579,88 @@ def handle_dev(
                 direction_id=story.direction_id,
             )
         )
+
+        # Pre-model sandbox infrastructure guard. If the sandbox died before
+        # any model work (transient .venv relink → TemplateNotFound, SDK
+        # import failure, boot crash), this is shared-infra breakage, NOT a
+        # dev-code failure. Treating it as "tests red" below would burn a dev
+        # retry on a problem dev cannot fix and produce a $0/0.2s retry storm.
+        # Instead: do NOT count it as a dev retry, do NOT escalate the model
+        # tier; bounce straight back to dev (the transient usually clears by
+        # the next tick), bounded by a consecutive-error cap so a persistent
+        # fault escalates loudly rather than looping.
+        if not dry_run and _is_premodel_infra_failure(run_res):
+            prior_infra = _consecutive_trailing_infra_errors(
+                story, software_factory_root
+            )
+            infra_err = (run_res.error or "sandbox failed before model work")[:300]
+            if prior_infra < _MAX_DEV_SANDBOX_INFRA_RETRIES:
+                story.state = advance(story, EVENT_DEV_TESTS_RED).value
+                story.error = None
+                persist_story(story, db)
+                log_story_event(
+                    story.id,
+                    "dev_sandbox_infra_error",
+                    {
+                        "attempt": prior_infra + 1,
+                        "cap": _MAX_DEV_SANDBOX_INFRA_RETRIES,
+                        "error": infra_err,
+                        "dev_retries_preserved": story.dev_retries,
+                    },
+                    software_factory_root=software_factory_root,
+                    slug_hint=story.slug,
+                )
+                return HandlerResult(
+                    next_state=StoryState(story.state),
+                    payload={
+                        "test_run_passed": False,
+                        "sandbox_infra_error": infra_err,
+                        "summary": (
+                            "Sandbox infrastructure failure before any model "
+                            f"work: {infra_err[:200]}. Re-dispatching dev "
+                            f"(infra retry {prior_infra + 1}/"
+                            f"{_MAX_DEV_SANDBOX_INFRA_RETRIES}); dev retry "
+                            "budget untouched."
+                        ),
+                    },
+                    error=None,
+                )
+            # Cap hit — a persistent sandbox/infra fault dev cannot fix. Block
+            # loudly so the operator/FMS sees genuine infra breakage rather
+            # than a story silently consuming retries.
+            story.state = advance(story, EVENT_DEV_EXHAUSTED).value
+            story.error = (
+                f"sandbox infrastructure failure persisted across "
+                f"{_MAX_DEV_SANDBOX_INFRA_RETRIES} consecutive retries: {infra_err[:200]}"
+            )
+            persist_story(story, db)
+            log_story_event(
+                story.id,
+                "factory_needs_redesign",
+                {
+                    "kind": "sandbox_infra_persistent",
+                    "infra_retries": prior_infra,
+                    "error": infra_err,
+                    "suggestions": [
+                        "The dev sandbox failed before any model work on every "
+                        "attempt (e.g. TemplateNotFound / SDK import / boot "
+                        "crash). This is environment breakage, not a code or "
+                        "test problem dev can fix. Check for a concurrent "
+                        "`uv run`/`uv sync` relinking the shared .venv, a "
+                        "corrupt OpenHands install, or a missing prompt template.",
+                    ],
+                },
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
+            )
+            return HandlerResult(
+                next_state=StoryState(story.state),
+                payload={
+                    "test_run_passed": False,
+                    "sandbox_infra_error": infra_err,
+                },
+                error=story.error,
+            )
 
         # If Dev touched any test file, abort to BLOCKED_TESTS_NEED_CLARIFICATION.
         # Test files are frozen during the Dev run; if a test is wrong, the
