@@ -18,6 +18,7 @@ EXPECTED_NAMES = {
     "state_distribution_skew",
     "worktree_orphans",
     "placeholder_prompts",
+    "stalled_stories",
 }
 
 NOW = datetime(2026, 5, 26, 12, 0, 0, tzinfo=UTC)

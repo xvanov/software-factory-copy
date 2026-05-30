@@ -2545,7 +2545,9 @@ def handle_review(
     # classic failure mode (tautological / assert-True / mock-only tests that
     # pass before any real implementation). This runs BEFORE the approve check
     # and can veto an LLM "approve": slop is a hard block routed back to dev.
-    if not dry_run and fixture is None:
+    # Runs on every real review (dry_run unit tests pass dry_run=True, and the
+    # helper returns [] defensively when there is no worktree to scan).
+    if not dry_run:
         slop_findings = _slop_findings_for_story(story, app_config, software_factory_root)
         if slop_findings:
             verdict = "request_changes"

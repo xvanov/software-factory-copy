@@ -55,6 +55,63 @@ def test_high_quality_approve_advances_to_reviewer_done(
     assert s.state == StoryState.REVIEWER_DONE.value
 
 
+def test_slop_detector_vetoes_llm_approve(
+    temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loop-4 programmatic slop gate: even when the LLM reviewer returns
+    ``approve`` with a healthy test_quality_score, a deterministic slop finding
+    in the dev-written tests vetoes it and routes the story back to dev."""
+    from factory import runner as runner_module
+    from factory.chain import handlers as handlers_module
+
+    s = _story_at_tests_green(temp_root)
+    db = temp_root / "state" / "factory.db"
+
+    # Stub the heavy real-run plumbing so we exercise only the verdict path.
+    monkeypatch.setattr(handlers_module, "find_direction_for_story", lambda *a, **k: None)
+    monkeypatch.setattr(handlers_module, "_read_story_file_content", lambda *a, **k: "story")
+    monkeypatch.setattr(handlers_module, "_fetch_latest_test_output", lambda *a, **k: "1 passed")
+    monkeypatch.setattr(handlers_module, "_fetch_pr_diff_for_review", lambda *a, **k: "diff")
+    monkeypatch.setattr(handlers_module, "route", lambda *a, **k: "azure/gpt-5.4")
+    monkeypatch.setattr(
+        "factory.context.loader.compose_context_prelude", lambda *a, **k: "ctx"
+    )
+    monkeypatch.setattr(
+        "factory.app_config.resolve_app_repo_path", lambda *a, **k: temp_root
+    )
+    # The LLM says approve...
+    monkeypatch.setattr(
+        runner_module,
+        "text_run",
+        lambda *a, **k: (
+            '{"verdict": "approve", "findings": [], "test_quality_score": 0.95, '
+            '"test_quality_findings": [], "comments_to_post": [], "summary": "lgtm"}'
+        ),
+    )
+    # ...but the programmatic slop scan finds a tautology.
+    monkeypatch.setattr(
+        handlers_module,
+        "_slop_findings_for_story",
+        lambda *a, **k: [
+            {
+                "test_name": "tests/test_x.py:3",
+                "issue": "slop: assert True — tautology",
+                "fix_suggestion": "assert on real behavior",
+            }
+        ],
+    )
+
+    result = handle_review(s, app_config, temp_root, dry_run=False, db_path=db)
+
+    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
+    import json as _json
+
+    rrj = _json.loads(s.reviewer_result_json)
+    assert rrj["verdict"] == "request_changes"
+    assert rrj["slop_detector_findings"]
+    assert rrj["test_quality_score"] <= 0.3
+
+
 def test_low_test_quality_score_routes_to_dev(
     temp_root: Path, app_config: AppConfig
 ) -> None:

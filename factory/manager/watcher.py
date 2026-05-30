@@ -504,6 +504,16 @@ def run_watcher_once(
     except Exception as exc:  # noqa: BLE001
         detector_results["worktree_orphans"] = {"error": repr(exc)}
 
+    # stalled_stories — ABSOLUTE liveness. Deliberately does NOT take ``since``:
+    # it reads current DB state + last-tick time so a silently-stuck factory
+    # (no events in the window → every other detector blind) still fires. A
+    # non-empty ``alarms`` list is the loud signal the old window-only watcher
+    # never produced.
+    try:
+        detector_results["stalled_stories"] = DETECTORS["stalled_stories"](root=root, now=now)
+    except Exception as exc:  # noqa: BLE001
+        detector_results["stalled_stories"] = {"error": repr(exc)}
+
     # placeholder_prompts — surfaces prompt-log records where a literal
     # placeholder string ("(fetched from GitHub by the chain", "(see {", etc.)
     # survived into the prompt sent to the LLM. Every record returned here is

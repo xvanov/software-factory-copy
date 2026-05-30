@@ -59,6 +59,14 @@ Rules:
   normal warmup. A single odd event is not escalation material on its own.
 * `escalation_reason` must be present and non-null when `escalate_to_l2`
   is `true`. It names the specific pattern and why it is concerning.
+* **LIVENESS OVERRIDES THE "default to not escalating" rule.** The
+  `stalled_stories` detector reads ABSOLUTE state, not the event window, so it
+  is the one detector that fires precisely when everything else looks quiet. If
+  its `alarms` list is non-empty — any `stuck_in_progress`, `stalled`, or
+  `no_tick_recently` — you MUST `escalate_to_l2: true`. A silent, stalled
+  factory is the failure mode this layer exists to catch; "quiet" is NOT
+  "healthy" when stories are aging in non-terminal states or ticks have
+  stopped. Quote the alarm(s) verbatim in `escalation_reason`.
 * `observations` must contain one entry per detector — in the same order
   as the detectors appear in the bundle. Set `noteworthy` to `null` if the
   detector result is normal. Set it to a short explanation if something
