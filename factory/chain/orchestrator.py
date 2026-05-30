@@ -369,7 +369,7 @@ def _prune_stale_in_progress(
     *,
     settings: Any,
     root: Path,
-    now: "datetime | None" = None,
+    now: datetime | None = None,
 ) -> list[tuple[str, str, str]]:
     """Recover stories stranded in ``*_in_progress`` from a crashed tick.
 
@@ -406,7 +406,8 @@ def _prune_stale_in_progress(
     surfaces these in ``TickSummary.handler_runs`` as
     ``"<from_state>(stale)"``.
     """
-    from datetime import UTC, datetime as _dt
+    from datetime import UTC
+    from datetime import datetime as _dt
 
     from factory.chain.event_log import log_story_event
     from factory.chain.handlers import _MAX_DEV_RETRIES, persist_story
@@ -450,6 +451,113 @@ def _prune_stale_in_progress(
                 "to_state": target,
                 "dev_retries_after_clamp": story.dev_retries,
                 "age_seconds": int(now_ts - updated_ts),
+            },
+            software_factory_root=root,
+            slug_hint=story.slug,
+        )
+
+    return recovered
+
+
+# A blocked story is a factory defect, never a real outcome (operator rule:
+# "there can only be 0 blocked stories"). When the orchestrator's chain code is
+# fixed, stories already sitting in a terminal blocked state from the *old*
+# (now-fixed) regime stay blocked forever — there is no transition out of a
+# blocked state, so the only escape used to be a manual DB reset. This pass
+# closes that gap: it re-dispatches blocked stories back into the chain so a
+# since-shipped fix actually reaches them. Bounded per story so a genuinely
+# unsatisfiable story (contradictory contract, etc.) surfaces to a human after
+# a couple of honest re-attempts instead of being recycled forever.
+_MAX_AUTO_RECOVERIES = 2
+# Blocked states recovered by re-entering the TDD chain at TESTS_RED (re-runs
+# harness_precheck -> dev -> review -> merge with current fixes). deploy_failed
+# is intentionally excluded — it's handled at the merge layer by
+# ``auto_merge._attempt_pr_reconcile`` (stale branches) and true content
+# conflicts there need regeneration/human handling, not a dev re-run.
+_AUTO_RECOVERABLE_STATES: dict[str, str] = {
+    StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value: StoryState.TESTS_RED.value,
+    StoryState.BLOCKED_REVIEW_NONCONVERGENT.value: StoryState.TESTS_RED.value,
+}
+
+
+def _recover_blocked_stories(
+    db: Path, app: str, *, root: Path
+) -> list[tuple[str, str, str]]:
+    """Re-dispatch blocked stories so since-shipped chain fixes reach them.
+
+    For each story in an auto-recoverable blocked state, reset it to the TDD
+    re-entry point (TESTS_RED) with a clean slate (retry/cycle counters cleared,
+    harness-precheck flag reset, stale reviewer payload cleared) so it flows
+    through the current chain from scratch. Bounded to ``_MAX_AUTO_RECOVERIES``
+    per story via ``auto_recovery`` events in the per-story log; once exhausted
+    the story stays blocked and an ``auto_recovery_exhausted`` /
+    ``factory_needs_redesign`` event fires so the FMS/operator sees a genuinely
+    stuck story rather than an endless recycle.
+
+    Pure DB rewrite — no LLM/git work — mirroring ``_prune_stale_in_progress``.
+    Returns (slug, from_state, to_state) tuples for the TickSummary.
+    """
+    from factory.chain.event_log import log_story_event, read_story_events
+    from factory.chain.handlers import persist_story
+
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        candidates = session.exec(select(StoryRecord).where(StoryRecord.app == app)).all()
+
+    recovered: list[tuple[str, str, str]] = []
+    for story in candidates:
+        target = _AUTO_RECOVERABLE_STATES.get(story.state)
+        if target is None:
+            continue
+        prior = sum(
+            1
+            for e in read_story_events(
+                story.id, software_factory_root=root, slug_hint=story.slug
+            )
+            if e.get("event") == "auto_recovery"
+        )
+        if prior >= _MAX_AUTO_RECOVERIES:
+            # Already re-attempted the allowed number of times and still
+            # blocked → genuinely stuck. Emit a loud, deduped escalation once.
+            already_escalated = any(
+                e.get("event") == "auto_recovery_exhausted"
+                for e in read_story_events(
+                    story.id, software_factory_root=root, slug_hint=story.slug
+                )
+            )
+            if not already_escalated:
+                log_story_event(
+                    story.id,
+                    "auto_recovery_exhausted",
+                    {
+                        "state": story.state,
+                        "recoveries": prior,
+                        "error": (story.error or "")[:300],
+                    },
+                    software_factory_root=root,
+                    slug_hint=story.slug,
+                )
+            continue
+
+        from_state = story.state
+        story.state = target
+        story.error = None
+        story.dev_retries = 0
+        story.reviewer_cycles = 0
+        story.reviewer_result_json = None
+        story.last_rejection_reason = None
+        story.current_model_tier = "standard"
+        story.harness_precheck_passed = False
+        persist_story(story, db)
+        recovered.append((story.slug, from_state, target))
+        log_story_event(
+            story.id,
+            "auto_recovery",
+            {
+                "from_state": from_state,
+                "to_state": target,
+                "attempt": prior + 1,
+                "cap": _MAX_AUTO_RECOVERIES,
             },
             software_factory_root=root,
             slug_hint=story.slug,
@@ -601,6 +709,18 @@ def tick(
                     summary.handler_runs.append((slug, f"{from_state}(stale)", to_state))
             except Exception as exc:
                 summary.errors.append((app, f"stale-state recovery failed (non-fatal): {exc!r}"))
+
+            # A blocked story is a factory defect — re-dispatch blocked stories
+            # so since-shipped chain fixes reach them, instead of requiring a
+            # manual DB reset. Bounded per story (see _recover_blocked_stories).
+            try:
+                re_dispatched = _recover_blocked_stories(db, app, root=root)
+                for slug, from_state, to_state in re_dispatched:
+                    summary.handler_runs.append((slug, f"{from_state}(recovered)", to_state))
+            except Exception as exc:
+                summary.errors.append(
+                    (app, f"blocked-story recovery failed (non-fatal): {exc!r}")
+                )
 
         stories = H.stories_in_flight(app, db)
 
