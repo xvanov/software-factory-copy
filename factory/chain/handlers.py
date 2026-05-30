@@ -1406,6 +1406,18 @@ _MAX_REVIEW_CYCLES = 3
 # instead of looping forever. Capped at 3 per the "nothing loops >3" rule.
 _MAX_DEV_SANDBOX_INFRA_RETRIES = 3
 
+# Dev-made-no-progress test-repair cap. When a dev run produces ZERO file
+# changes yet tests stay red, re-running dev is futile — unchanged code yields
+# the identical failure. The dominant cause is a test-quality defect only the
+# test_implementer can fix: contradictory assertions (e.g. the same nonexistent
+# id asserted to return both 404 AND 501), impossible expectations, or tests
+# that don't match the story contract. Instead of burning identical dev retries
+# into a terminal block, route back to the test loop with dev's own diagnosis
+# as the repair brief. Counted from `dev_nochange_test_repair` events; capped
+# per the "nothing loops >3" rule, after which the story blocks with a SPECIFIC
+# "tests unsatisfiable" signal rather than the generic dev-exhaustion.
+_MAX_DEV_NOCHANGE_TEST_REPAIRS = 3
+
 
 def _is_premodel_infra_failure(run_res: Any) -> bool:
     """True when a sandbox run failed before any model work began.
@@ -1716,6 +1728,121 @@ def handle_dev(
                 story.id,
                 "tests_need_clarification",
                 {"clarification": clarification[:300], "attempt": story.dev_retries + 1},
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
+            )
+            return HandlerResult(
+                next_state=StoryState(story.state),
+                payload=payload,
+                error=story.error,
+            )
+
+        # Objective "dev cannot fix this with code" signal: the run produced
+        # NO file changes yet tests are still red. Re-dispatching dev is
+        # pointless — unchanged code reproduces the identical failure (this is
+        # exactly the no-op retry storm that marched stories 16/18/20/25/26
+        # into terminal blocks). The overwhelmingly common cause is a
+        # test-quality defect the test_implementer must repair (contradictory
+        # / impossible / contract-mismatched tests); dev's SELF_SUMMARY usually
+        # says so outright, but the literal TESTS_NEED_CLARIFICATION: token
+        # above is too brittle to depend on. Route back to the test loop with
+        # dev's diagnosis as the repair brief, capped, WITHOUT consuming the
+        # dev retry budget.
+        if not tests_green and not (run_res.files_changed or []):
+            from factory.chain.event_log import read_story_events
+
+            prior_repairs = sum(
+                1
+                for e in read_story_events(
+                    story.id,
+                    software_factory_root=software_factory_root,
+                    slug_hint=story.slug,
+                )
+                if e.get("event") == "dev_nochange_test_repair"
+            )
+            diagnosis = (
+                (getattr(run_res, "self_summary", "") or "")
+                or (getattr(run_res, "last_assistant_message", "") or "")
+                or (run_res.summary or "")
+                or "Dev made no code changes and the tests stayed red."
+            )
+            if prior_repairs < _MAX_DEV_NOCHANGE_TEST_REPAIRS:
+                # Same channel the slop path uses: handle_test_implementation
+                # reads ``reviewer_result_json.test_quality_findings`` and
+                # rewrites the failing tests with this brief instead of
+                # regenerating blindly.
+                story.reviewer_result_json = json.dumps(
+                    {
+                        "summary": (
+                            "Dev made NO code changes this run and the tests "
+                            "stayed red — a strong signal the TESTS are wrong "
+                            "(contradictory / impossible / mismatched to the "
+                            "story contract), not the implementation. Rewrite "
+                            "the failing tests so they are mutually consistent "
+                            "and satisfiable by a correct implementation."
+                        ),
+                        "test_quality_findings": [
+                            {
+                                "test_name": "(dev-reported test-quality defect)",
+                                "issue": diagnosis[:1200],
+                                "fix_suggestion": (
+                                    "Ensure a single input maps to a single "
+                                    "expected outcome and no two tests assert "
+                                    "contradictory results for the same request."
+                                ),
+                            }
+                        ],
+                    }
+                )
+                story.state = advance(story, EVENT_TESTS_NEED_CLARIFICATION).value
+                story.last_rejection_reason = (
+                    f"dev_nochange_test_repair: {diagnosis[:150]}"
+                )
+                persist_story(story, db)
+                log_story_event(
+                    story.id,
+                    "dev_nochange_test_repair",
+                    {
+                        "attempt": prior_repairs + 1,
+                        "cap": _MAX_DEV_NOCHANGE_TEST_REPAIRS,
+                        "diagnosis": diagnosis[:300],
+                    },
+                    software_factory_root=software_factory_root,
+                    slug_hint=story.slug,
+                )
+                payload["tests_need_clarification"] = diagnosis[:300]
+                return HandlerResult(
+                    next_state=StoryState(story.state),
+                    payload=payload,
+                    error=story.error,
+                )
+            # Cap hit — repairing the tests didn't converge. The story's
+            # contract is likely unsatisfiable as written; block with a
+            # SPECIFIC signal so the operator/FMS sees the real cause rather
+            # than a generic dev-exhaustion.
+            story.state = advance(story, EVENT_DEV_EXHAUSTED).value
+            story.error = (
+                f"dev made no code changes across {_MAX_DEV_NOCHANGE_TEST_REPAIRS} "
+                f"test-repair cycles; tests appear contradictory/unsatisfiable: "
+                f"{diagnosis[:200]}"
+            )
+            persist_story(story, db)
+            log_story_event(
+                story.id,
+                "factory_needs_redesign",
+                {
+                    "kind": "tests_unsatisfiable_no_dev_progress",
+                    "repairs_attempted": prior_repairs,
+                    "diagnosis": diagnosis[:400],
+                    "suggestions": [
+                        "Dev produced zero code changes across multiple "
+                        "test-repair cycles — the tests are contradictory or "
+                        "the story's contract is unsatisfiable as written. "
+                        "Revisit the acceptance criteria and the "
+                        "test_implementer output together; more dev retries "
+                        "cannot fix this.",
+                    ],
+                },
                 software_factory_root=software_factory_root,
                 slug_hint=story.slug,
             )
