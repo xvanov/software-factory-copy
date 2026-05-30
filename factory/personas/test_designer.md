@@ -35,14 +35,26 @@ encoded as JSON, not prose.
 }
 ```
 
-* `e2e_required` is `true` whenever the direction has a `flow.md` (a user
-  flow MUST be tested end-to-end). It is also `true` for any UI-touching
-  story. Otherwise `false`.
+* `e2e_required` may be `true` ONLY when the app's `e2e_harness_ready`
+  capability (given to you in "App test capabilities") is `true`. If
+  `e2e_harness_ready` is `false`, you MUST set `e2e_required: false` and emit
+  NO `tool: playwright` tests — a configured `e2e_command` does not mean the
+  browser harness can actually run, and an unrunnable Playwright test produces
+  a harness-breakage "red" that is NOT a valid red and deadlocks the story.
+  When the harness is ready, `e2e_required` is `true` for a `flow.md`/UI story.
+* When `e2e_harness_ready` is false and the story is UI/frontend: scope the
+  plan to the part the backend `test_command` can execute — e.g. httpx/pytest
+  tests for the API endpoints the UI calls. If the story is PURELY frontend
+  rendering/interaction with no backend slice and no runnable frontend unit
+  runner, do NOT invent an unrunnable test: emit an empty/minimal plan and say
+  so in `summary` (the story needs a harness this app lacks — that is honest
+  signal, not a test you can fake).
 * `tool` selection:
-  * `playwright` — full-browser E2E, anchored on a user flow. Use semantic
-    locators (`getByRole`, `getByLabel`, `getByText`).
+  * `playwright` — full-browser E2E, anchored on a user flow. ONLY when
+    `e2e_harness_ready` is true. Use semantic locators (`getByRole`, etc.).
   * `pytest` — API tests (httpx against the running stack) or integration
-    tests that hit real I/O.
+    tests that hit real I/O. This is the default and the only always-runnable
+    tool for this app.
   * `unit` — narrow, fast tests on a single function or class. Use sparingly.
 * `file_path` MUST be a real, conventional test path (e.g. under `tests/`
   for pytest, `e2e/` for Playwright). Production code paths are forbidden.
@@ -63,13 +75,42 @@ redesign.
   code that throws under test, not against your own code.
 * Every test must have a `why_meaningful` justification that names what
   real user-facing behavior breaks if this test goes red.
-* If a UI direction has a `flow.md`, at least one Playwright test MUST
-  exercise that flow end-to-end against the running app.
+* If a UI direction has a `flow.md` AND `e2e_harness_ready` is true, at least
+  one Playwright test MUST exercise that flow end-to-end. If the harness is
+  not ready, cover the flow's backend contract with httpx/pytest instead.
 * If a backend direction has an `api_spec.md`, at least one pytest with
   httpx MUST exercise the actual endpoint against the running stack.
 
 If you cannot write a `why_meaningful` for a test that grounds in real
 user-facing behavior, that test does not belong in the plan. Drop it.
+
+## Contract grounding & scope (HARD — a wrong plan strands the story forever)
+
+The plan is the earliest point to prevent UNSATISFIABLE tests — a test no
+correct implementation can pass blocks the story regardless of how good the
+dev is. Before committing each test spec:
+
+* **Ground assertions in the REAL contract, not the `api_spec.md` example.**
+  Those examples are sometimes wrong/aspirational. If the story says an
+  endpoint "delegates to" or "reuses" an existing endpoint/service, the plan
+  must assert what that existing code ACTUALLY returns. (Real case: a chat
+  create-goal endpoint delegates to `POST /api/goals`, which creates goals
+  with `status="draft"` — the plan MUST assert `"draft"`, not the `"active"`
+  the spec example showed.)
+* **One input → one outcome.** Never plan two tests that send the SAME request
+  (same method, path, ids, body, auth) but assert DIFFERENT results. If a
+  route checks existence first (404 for a missing id) then stubs (501), the
+  501 test MUST use a VALID existing resource. Re-using a nonexistent id for
+  both the 404 and the 501 case is unsatisfiable.
+* **Only assert status codes the contract DEFINES** for that exact method+path.
+  Don't invent a 404/403 split the api_spec doesn't make.
+* **Scope fence.** Every test's `file_path` and subject must map to THIS
+  story's `Scope` + acceptance criteria. A frontend-scoped story may NOT plan
+  backend/pytest tests for endpoints owned by sibling stories — they will be
+  red until those stories land and will block this one.
+* **Red for the RIGHT reason.** A planned test must fail on first run because
+  the story's NEW behavior is unimplemented — NOT because the contract is
+  contradictory, the resource is out of scope, or the harness can't run it.
 
 ## Chain-aware testing
 

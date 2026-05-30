@@ -62,6 +62,14 @@ class AppGatesConfig(BaseModel):
     coverage_command: str | None = None
     e2e_command: str | None = None
     mutation_testing: bool = False
+    # Whether a WORKING end-to-end/browser harness actually exists in the app
+    # (Playwright installed + config + the stack runnable in the sandbox). A
+    # configured ``e2e_command`` does NOT imply this — sacrifice declares
+    # ``npx playwright test`` but has no runnable harness, so test_designer
+    # mandating Playwright produced harness-breakage "reds" that deadlocked
+    # every frontend/E2E story. When False, the test_designer must NOT require
+    # E2E/Playwright and should scope to the backend test_command instead.
+    e2e_harness_ready: bool = False
 
 
 class AppConfig(BaseModel):

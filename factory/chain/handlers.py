@@ -839,11 +839,25 @@ def handle_test_design(
         story_file_real = software_factory_root / "apps" / story.app / story.story_file_path
         if story_file_real.exists():
             story_file_content = story_file_real.read_text(encoding="utf-8")
+        gates = app_config.gates
+        caps = (
+            "## App test capabilities (HONOR THESE when choosing `tool`)\n\n"
+            f"* backend test gate (`test_command`): "
+            f"{'present' if gates.test_command else 'ABSENT'}\n"
+            f"* `e2e_harness_ready`: {str(gates.e2e_harness_ready).lower()}\n"
+            "* If `e2e_harness_ready` is false, a configured `e2e_command` does "
+            "NOT mean Playwright/browser tests can run — do NOT emit "
+            "`tool: playwright` or set `e2e_required: true`. Scope tests to what "
+            "the backend `test_command` (pytest/httpx) can actually execute, and "
+            "for pure-frontend/UI behavior with no backend slice, say so in the "
+            "summary and omit it rather than emitting an unrunnable E2E test.\n\n"
+        )
         full_prompt = (
             f"{persona_prompt.rstrip()}\n\n"
             "---\n\n"
             "## Context\n\n"
             f"{prelude.rstrip()}\n\n"
+            f"{caps}"
             "## Story\n\n"
             f"{story_file_content}\n\n"
             "---\n\n"

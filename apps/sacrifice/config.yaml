@@ -59,5 +59,11 @@ gates:
   test_command: "cd backend && uv run --extra dev pytest -q tests/ --ignore=tests/test_api_endpoint_verification.py --ignore=tests/test_auth.py --ignore=tests/test_charge_on_failure.py --ignore=tests/test_dashboard.py --ignore=tests/test_docker_sandbox.py --ignore=tests/test_email_auth.py --ignore=tests/test_github_repo.py --ignore=tests/test_notifications.py --ignore=tests/test_recurring_goals.py --ignore=tests/test_youtube_verification.py --deselect=tests/test_goal_type_smoke.py::TestRegistrySmokeDiscovery::test_smoke_package_has_correct_metadata"
   coverage_command: "pytest --cov=backend --cov-report=json --cov-fail-under=70"
   e2e_command: "npx playwright test"
+  # No runnable Playwright/browser harness exists in this repo yet (the only
+  # playwright config/specs on disk are orphaned artifacts). Until one is set
+  # up, test_designer must NOT mandate E2E/Playwright — doing so produced
+  # harness-breakage "reds" that deadlocked every frontend/E2E story. Flip to
+  # true once a real Playwright harness + runnable stack exist.
+  e2e_harness_ready: false
   mutation_testing: false
 models: {}  # use default routing
