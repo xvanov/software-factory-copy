@@ -595,6 +595,31 @@ def _safe_truncate(text: str, cap: int) -> str:
     return text[: cap - 20] + "...[truncated]"
 
 
+def _isolated_test_env() -> dict[str, str]:
+    """Environment for a test-gate subprocess, isolated per run.
+
+    Two harness-level fixes for last-mile false failures observed in the
+    sacrifice queue:
+
+      * ``MEDIA_DIR`` → a fresh writable tmp dir. The app's default
+        ``media_dir`` is ``/var/sacrifice/media`` (not writable in the
+        sandbox), so any story whose code does ``mkdir(parents=True)`` under
+        it fails the gate with ``PermissionError`` — a harness/env defect, not
+        a code defect (observed: story 18's upload smoke test). A per-run tmp
+        dir also keeps concurrent story gates from colliding on shared media
+        state.
+      * ``PYTHONDONTWRITEBYTECODE`` → stop leaving ``__pycache__`` behind, so a
+        reused worktree can't collect a sibling story's stale ``.pyc`` and run
+        a test that isn't on this branch (observed: story 20).
+    """
+    import tempfile
+
+    env = dict(os.environ)
+    env["MEDIA_DIR"] = tempfile.mkdtemp(prefix="factory-test-media-")
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
 def _run_pytest(repo_path: Path, test_command: str | None = None) -> tuple[bool, str]:
     """Return (passed, captured_output) for the chain's post-sandbox test gate.
 
@@ -608,8 +633,13 @@ def _run_pytest(repo_path: Path, test_command: str | None = None) -> tuple[bool,
          ``python -m pytest -q`` from the repo root.
       3. If neither path is viable, return ``(False, "no tests directory")``
          so the caller can record a meaningful signal.
+
+    Runs under ``_isolated_test_env`` so a non-writable ``media_dir`` default
+    or stale bytecode can't manufacture a false failure.
     """
     import subprocess
+
+    test_env = _isolated_test_env()
 
     if test_command:
         try:
@@ -621,6 +651,7 @@ def _run_pytest(repo_path: Path, test_command: str | None = None) -> tuple[bool,
                 text=True,
                 check=False,
                 timeout=600,
+                env=test_env,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             return (False, f"test_command invocation failed: {exc}")
@@ -636,6 +667,7 @@ def _run_pytest(repo_path: Path, test_command: str | None = None) -> tuple[bool,
             text=True,
             check=False,
             timeout=300,
+            env=test_env,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return (False, f"pytest invocation failed: {exc}")
@@ -1093,6 +1125,18 @@ async def sandbox_run(
     llm = LLM(**llm_kwargs)
     agent = get_default_agent(llm=llm, cli_mode=True)
     workspace = LocalWorkspace(working_dir=str(Path(repo_path).resolve()))
+
+    # Give the dev/test_impl sandbox a writable MEDIA_DIR so the agent's OWN
+    # in-loop test runs don't fail on the unwritable ``/var/sacrifice`` default
+    # (which would make dev "see red" on correct code and thrash). The post-
+    # sandbox gate (_run_pytest) still uses its own fresh tmp via
+    # _isolated_test_env; this only affects what the agent observes mid-run.
+    # Process-global is fine: each ``factory tick`` is its own process running
+    # handlers serially. PYTHONDONTWRITEBYTECODE avoids stale .pyc accumulation.
+    import tempfile as _tf
+
+    os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+    os.environ["MEDIA_DIR"] = _tf.mkdtemp(prefix="factory-sandbox-media-")
 
     # Apply per-persona iteration cap when the caller used the default. We
     # detect "default" by comparing to the signature default (200). Callers

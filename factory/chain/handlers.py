@@ -1259,6 +1259,8 @@ def handle_harness_precheck(
             try:
                 import subprocess
 
+                from factory.runner import _isolated_test_env
+
                 proc = subprocess.run(
                     precheck_command,
                     shell=True,
@@ -1267,6 +1269,7 @@ def handle_harness_precheck(
                     text=True,
                     check=False,
                     timeout=_HARNESS_PRECHECK_TIMEOUT_S,
+                    env=_isolated_test_env(),
                 )
                 exit_code = proc.returncode
                 output = (proc.stdout or "") + "\n" + (proc.stderr or "")
