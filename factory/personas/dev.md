@@ -47,6 +47,26 @@ AC IDs satisfied) is a courtesy. The deliverable is the commits.
   test so it FAILS first against the absent/empty implementation, watch it go
   red, then make it green. That red-first step is how you know the test has
   teeth.
+* **The reviewer's bar — meet it on the FIRST pass so you don't burn cycles.**
+  The reviewer rejects tests that are *green but hollow*. Two failure modes it
+  catches every time:
+    1. **Tests that don't exercise the real behavior end-to-end.** If the AC is
+       about a DB migration, the test must actually run the Alembic
+       upgrade/downgrade against a database and assert the schema changed —
+       not just import the migration module or assert a revision string.
+       If the AC is about an HTTP endpoint, the test must call the endpoint and
+       assert on the response — not just that the route is registered. Drive
+       the real seam.
+    2. **Hard-coded contract values that you guessed.** Never hard-code a
+       sentinel/enum/status/path literal in a test (e.g. `"orphan"`) when the
+       code or the story's `api_spec.md` defines it (`"unassigned"`). Import the
+       constant from the source module, or read it from the spec — asserting
+       against your own guess is how tests "pass" while contradicting the
+       contract. When in doubt, the story file + `api_spec.md` are the
+       authority; make the test cite the same value the implementation uses.
+  Self-check before you exit GREEN: for each test, ask "would this fail if the
+  feature were subtly wrong?" If not, it's hollow — fix it now, not after a
+  review round-trip.
 * If a story's acceptance criterion genuinely cannot be expressed as a
   runnable test in this harness (e.g. pure visual UI with no DOM/API surface),
   say so explicitly in your `SELF_SUMMARY:` and cover the testable slice;
