@@ -32,12 +32,13 @@ class StoryState(StrEnum):
     Two chain variants share the same enum; the orchestrator picks the
     starting handler based on ``story.chain_kind``:
 
-    * ``tdd`` (default): SM → test_design → test_impl → dev → reviewer →
-      tech_writer → docs_enforcer → PR_OPEN. The historical pipeline.
+    * ``tdd`` (default): SM → dev → reviewer → tech_writer → docs_enforcer →
+      PR_OPEN. The dev persona writes the production code AND its tests in one
+      pass (Loop-4, dev-owns-tests); there is no separate test-design /
+      test-implementation phase.
     * ``docs``: docs_sm → docs_onboarder → docs_enforcer → PR_OPEN. Used for
       stories whose deliverable is canonical documentation (e.g. the initial
-      ``context/`` bootstrap). Skips the TDD red→green loop because there is
-      no executable code to drive against tests.
+      ``context/`` bootstrap). Skips the code+test loop entirely.
 
     Both variants converge at ``DOCS_ENFORCER_CHECK`` and onward; the
     enforcer + PR + deploy states are shared.
@@ -46,19 +47,6 @@ class StoryState(StrEnum):
     STORY_CREATED = "story_created"
     SM_IN_PROGRESS = "sm_in_progress"
     SM_DONE = "sm_done"
-    TEST_DESIGN_IN_PROGRESS = "test_design_in_progress"
-    TEST_DESIGN_DONE = "test_design_done"
-    TEST_IMPLEMENTATION_IN_PROGRESS = "test_implementation_in_progress"
-    TESTS_RED = "tests_red"
-    # Item 4: between TESTS_RED and DEV_IN_PROGRESS we run a one-shot
-    # harness precheck: pytest must COLLECT (exit 0 or 1) before dev
-    # gets dispatched. Collection failure (exit 2 or 3) means the test
-    # set is environmentally broken — missing .env, missing dep,
-    # ImportError in conftest — and dev cannot fix it. The precheck
-    # routes the story to ``BLOCKED_TESTS_NEED_CLARIFICATION`` with a
-    # ``factory_needs_redesign`` event so the improver/operator sees the
-    # signal instead of dev burning the retry budget on a config bug.
-    HARNESS_PRECHECK_IN_PROGRESS = "harness_precheck_in_progress"
     DEV_IN_PROGRESS = "dev_in_progress"
     DEV_RETRY = "dev_retry"
     TESTS_GREEN = "tests_green"
@@ -170,36 +158,10 @@ class StoryRecord(SQLModel, table=True):
 # Event names — strings the chain emits when a handler completes.
 EVENT_SM_STARTED = "sm_started"
 EVENT_SM_DONE = "sm_done"
-EVENT_TEST_DESIGN_STARTED = "test_design_started"
-EVENT_TEST_DESIGN_DONE = "test_design_done"
-EVENT_TEST_IMPL_STARTED = "test_impl_started"
-EVENT_TESTS_RED = "tests_red"
-EVENT_TEST_IMPL_SLOP = "test_impl_slop"
-# Test-Implementer slop (tests passed before any implementation existed) but
-# under the retry cap: route BACK to the test loop (test_implementer rewrites
-# the tests with explicit slop feedback) instead of terminally blocking. Caps
-# at _MAX_TEST_IMPL_SLOP_RETRIES per the "nothing loops >3" rule; the EVENT_
-# TEST_IMPL_SLOP edge above is the terminal block taken once the cap is hit.
-EVENT_TEST_IMPL_SLOP_RETRY = "test_impl_slop_retry"
-# Re-plan: when re-running the Test-Implementer can't resolve slop/test-quality
-# (cap hit), the defect is usually in the PLAN, not the implementation. Route
-# back to the Test-Designer (via SM_DONE → test_design) for ONE re-plan with
-# the failure as feedback, before blocking. Leverages the designer's
-# contract-grounding/scope/e2e-gating rules to fix the plan at the source.
-EVENT_TEST_IMPL_REPLAN = "test_impl_replan"
-# Item 4 — harness precheck events. Started fires on the
-# TESTS_RED→HARNESS_PRECHECK_IN_PROGRESS edge; PASS routes to DEV_IN_PROGRESS;
-# FAIL routes to BLOCKED_TESTS_NEED_CLARIFICATION (same terminal blocked
-# state the test-impl-slop path lands in — it's the operator-attention
-# bucket).
-EVENT_HARNESS_PRECHECK_STARTED = "harness_precheck_started"
-EVENT_HARNESS_PRECHECK_PASS = "harness_precheck_pass"
-EVENT_HARNESS_PRECHECK_FAIL = "harness_precheck_fail"
 EVENT_DEV_STARTED = "dev_started"
 EVENT_DEV_TESTS_GREEN = "dev_tests_green"
 EVENT_DEV_TESTS_RED = "dev_tests_red"  # dev finished but tests still red
 EVENT_DEV_EXHAUSTED = "dev_exhausted"  # max retries hit
-EVENT_TESTS_NEED_CLARIFICATION = "tests_need_clarification"  # dev signalled bad tests
 EVENT_REVIEWER_STARTED = "reviewer_started"
 EVENT_REVIEWER_APPROVE = "reviewer_approve"
 EVENT_REVIEWER_REQUEST_CHANGES = "reviewer_request_changes"
@@ -207,11 +169,6 @@ EVENT_REVIEWER_REQUEST_CHANGES = "reviewer_request_changes"
 # story converging — the hard convergence guard fires this instead of
 # EVENT_REVIEWER_REQUEST_CHANGES to break the dev<->reviewer ping-pong.
 EVENT_REVIEW_NONCONVERGENT = "review_nonconvergent"
-# Reviewer rejected primarily on TEST QUALITY (test_quality_score < threshold):
-# the tests themselves are wrong/insufficient/misplaced. Route to the test
-# loop (test_implementer rewrites the tests) rather than to dev, which is
-# forbidden from editing test files and would only block trying.
-EVENT_REVIEWER_TEST_QUALITY = "reviewer_test_quality"
 EVENT_TECH_WRITER_STARTED = "tech_writer_started"
 EVENT_TECH_WRITER_DONE = "tech_writer_done"
 EVENT_DOCS_ENFORCER_CHECK = "docs_enforcer_check"
@@ -239,70 +196,18 @@ EVENT_PR_UNMERGEABLE = "pr_unmergeable"
 # This is the source of truth for the chain's transition graph. Any
 # (state, event) pair not in this map is an illegal transition.
 _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
-    # ---- TDD chain (chain_kind == "tdd") ----
+    # ---- TDD chain (chain_kind == "tdd"), Loop-4 dev-owns-tests ----
+    # SM_DONE dispatches dev DIRECTLY. The dev persona writes BOTH production
+    # code and its tests in one context and runs them; there is no separate
+    # test_design/test_impl/harness phase and no frozen test artifact authored
+    # by another agent. Test quality is gated downstream by the reviewer + the
+    # programmatic slop detector.
     (StoryState.STORY_CREATED, EVENT_SM_STARTED): StoryState.SM_IN_PROGRESS,
     (StoryState.SM_IN_PROGRESS, EVENT_SM_DONE): StoryState.SM_DONE,
-    (StoryState.SM_DONE, EVENT_TEST_DESIGN_STARTED): StoryState.TEST_DESIGN_IN_PROGRESS,
-    (StoryState.TEST_DESIGN_IN_PROGRESS, EVENT_TEST_DESIGN_DONE): StoryState.TEST_DESIGN_DONE,
-    (
-        StoryState.TEST_DESIGN_DONE,
-        EVENT_TEST_IMPL_STARTED,
-    ): StoryState.TEST_IMPLEMENTATION_IN_PROGRESS,
-    (StoryState.TEST_IMPLEMENTATION_IN_PROGRESS, EVENT_TESTS_RED): StoryState.TESTS_RED,
-    (
-        StoryState.TEST_IMPLEMENTATION_IN_PROGRESS,
-        EVENT_TEST_IMPL_SLOP,
-    ): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
-    # Slop under the retry cap → back to the test loop to rewrite the tests.
-    (
-        StoryState.TEST_IMPLEMENTATION_IN_PROGRESS,
-        EVENT_TEST_IMPL_SLOP_RETRY,
-    ): StoryState.TEST_DESIGN_DONE,
-    # Slop/test-quality un-resolvable by the implementer → re-plan via the
-    # Test-Designer (SM_DONE dispatches test_design), once, before blocking.
-    (
-        StoryState.TEST_IMPLEMENTATION_IN_PROGRESS,
-        EVENT_TEST_IMPL_REPLAN,
-    ): StoryState.SM_DONE,
-    # Item 4 — harness precheck between TESTS_RED and DEV. Runs ONCE
-    # per story (the orchestrator's dispatch table reads
-    # ``story.harness_precheck_passed`` and skips re-running on
-    # subsequent visits to TESTS_RED). PASS routes back to TESTS_RED
-    # with the flag set so dev gets dispatched next iteration; FAIL
-    # routes to the operator-attention bucket.
-    (
-        StoryState.TESTS_RED,
-        EVENT_HARNESS_PRECHECK_STARTED,
-    ): StoryState.HARNESS_PRECHECK_IN_PROGRESS,
-    (
-        StoryState.HARNESS_PRECHECK_IN_PROGRESS,
-        EVENT_HARNESS_PRECHECK_PASS,
-    ): StoryState.TESTS_RED,
-    (
-        StoryState.HARNESS_PRECHECK_IN_PROGRESS,
-        EVENT_HARNESS_PRECHECK_FAIL,
-    ): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
-    (StoryState.TESTS_RED, EVENT_DEV_STARTED): StoryState.DEV_IN_PROGRESS,
-    # Loop-4 (dev-owns-tests rewrite): SM_DONE dispatches dev DIRECTLY. The
-    # dev persona writes BOTH production code and its tests in one context and
-    # runs them; there is no separate test_design/test_impl phase and no frozen
-    # test artifact authored by another agent. The historical
-    # SM_DONE → test_design → test_impl → TESTS_RED → dev path is retained in
-    # this table (and in the enum) only so legacy in-flight rows and the docs
-    # chain keep resolving; new tdd stories never enter it.
     (StoryState.SM_DONE, EVENT_DEV_STARTED): StoryState.DEV_IN_PROGRESS,
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_TESTS_GREEN): StoryState.TESTS_GREEN,
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_TESTS_RED): StoryState.DEV_RETRY,
     (StoryState.DEV_IN_PROGRESS, EVENT_DEV_EXHAUSTED): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
-    # Dev raised the TESTS_NEED_CLARIFICATION: escape hatch — the
-    # test_implementer's tests are wrong/contradictory. Route back to
-    # test_implementer (via TEST_DESIGN_DONE) so it can rewrite them.
-    # dev_retries is NOT bumped — the clarification path preserves the
-    # retry budget for genuine code-level dev work.
-    (
-        StoryState.DEV_IN_PROGRESS,
-        EVENT_TESTS_NEED_CLARIFICATION,
-    ): StoryState.TEST_DESIGN_DONE,
     (StoryState.DEV_RETRY, EVENT_DEV_STARTED): StoryState.DEV_IN_PROGRESS,
     (StoryState.DEV_RETRY, EVENT_DEV_EXHAUSTED): StoryState.BLOCKED_TESTS_NEED_CLARIFICATION,
     (StoryState.TESTS_GREEN, EVENT_REVIEWER_STARTED): StoryState.REVIEWER_IN_PROGRESS,
@@ -319,15 +224,9 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
         StoryState.REVIEWER_IN_PROGRESS,
         EVENT_REVIEW_NONCONVERGENT,
     ): StoryState.BLOCKED_REVIEW_NONCONVERGENT,
-    # Reviewer changes route back to dev (if code finding) or to the test
-    # loop (if the rejection is test-quality driven). The handler decides
-    # which by inspecting the verdict payload's test_quality_score.
-    # Test-quality rejections go to TEST_DESIGN_DONE so test_implementer
-    # rewrites the tests — dev may not edit test files and would only block.
-    (
-        StoryState.REVIEWER_IN_PROGRESS,
-        EVENT_REVIEWER_TEST_QUALITY,
-    ): StoryState.TEST_DESIGN_DONE,
+    # Loop-4: every actionable reviewer rejection (code defects AND
+    # test-quality/slop findings) routes back to dev, who owns both code and
+    # tests. There is no separate test author to route to.
     (StoryState.REVIEWER_REQUESTED_CHANGES, EVENT_DEV_STARTED): StoryState.DEV_IN_PROGRESS,
     (
         StoryState.REVIEWER_DONE,

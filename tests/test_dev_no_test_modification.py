@@ -76,7 +76,7 @@ def _story_at_tests_red(factory_root: Path) -> StoryRecord:
             title="t",
             slug="x",
             scope="backend",
-            state=StoryState.TESTS_RED.value,
+            state=StoryState.SM_DONE.value,
             github_issue_number=1,
             story_file_path="stories/1-x.md",
         ),

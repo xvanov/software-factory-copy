@@ -38,18 +38,18 @@ def _blocked_story(db: Path, *, state: str, slug: str, dev_retries: int = 6) -> 
     )
 
 
-def test_recovers_blocked_tests_need_clarification_to_tests_red(tmp_path: Path) -> None:
+def test_recovers_blocked_tests_need_clarification_to_sm_done(tmp_path: Path) -> None:
     db = _seed(tmp_path)
     s = _blocked_story(db, state=StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value, slug="a")
 
     out = _recover_blocked_stories(db, "sacrifice", root=tmp_path)
 
-    assert out == [("a", StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value, StoryState.TESTS_RED.value)]
+    assert out == [("a", StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value, StoryState.SM_DONE.value)]
     # Reload and verify the clean slate.
     from sqlmodel import Session, select
     with Session(create_engine(f"sqlite:///{db}")) as ses:
         r = ses.exec(select(StoryRecord).where(StoryRecord.id == s.id)).one()
-    assert r.state == StoryState.TESTS_RED.value
+    assert r.state == StoryState.SM_DONE.value
     assert r.dev_retries == 0 and r.reviewer_cycles == 0 and r.error is None
     assert r.harness_precheck_passed is False
     events = read_story_events(s.id, software_factory_root=tmp_path, slug_hint=s.slug)
@@ -60,7 +60,7 @@ def test_recovers_review_nonconvergent(tmp_path: Path) -> None:
     db = _seed(tmp_path)
     _blocked_story(db, state=StoryState.BLOCKED_REVIEW_NONCONVERGENT.value, slug="b")
     out = _recover_blocked_stories(db, "sacrifice", root=tmp_path)
-    assert out and out[0][2] == StoryState.TESTS_RED.value
+    assert out and out[0][2] == StoryState.SM_DONE.value
 
 
 def test_deploy_failed_is_not_auto_recovered(tmp_path: Path) -> None:

@@ -32,7 +32,7 @@ def _story_at_tests_red(root: Path) -> StoryRecord:
             title="t",
             slug="t",
             scope="backend",
-            state=StoryState.TESTS_RED.value,
+            state=StoryState.SM_DONE.value,
         ),
         db,
     )

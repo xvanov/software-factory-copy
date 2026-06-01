@@ -208,7 +208,7 @@ def test_each_dev_retry_emits_factory_needs_redesign_event(
     """Each (non-exhausted) dev retry emits a ``factory_needs_redesign``
     event with ``kind: dev_retry_observed`` so the factory_improver sees
     the failure signal early instead of waiting for full retry exhaustion."""
-    story = _story_at(StoryState.TESTS_RED, temp_root)
+    story = _story_at(StoryState.SM_DONE, temp_root)
     db = temp_root / "state" / "factory.db"
 
     async def _fake_sandbox(*args: object, **kwargs: object) -> RunResult:
@@ -249,7 +249,7 @@ def test_dev_records_attempt_into_story_dev_attempts_json(
 ) -> None:
     """A failed dev run appends an entry to ``story.dev_attempts_json``
     capturing the tail + files touched + summary."""
-    story = _story_at(StoryState.TESTS_RED, temp_root)
+    story = _story_at(StoryState.SM_DONE, temp_root)
     db = temp_root / "state" / "factory.db"
 
     captured_kwargs: dict[str, Any] = {}
@@ -333,7 +333,7 @@ def test_red_run_is_a_normal_retry_no_clarification_route(
     """Loop-4: there is no longer a TESTS_NEED_CLARIFICATION escape token or a
     route back to a separate test author — the dev owns the tests. A red run
     is just a normal retry that increments dev_retries."""
-    story = _story_at(StoryState.TESTS_RED, temp_root)
+    story = _story_at(StoryState.SM_DONE, temp_root)
     db = temp_root / "state" / "factory.db"
 
     async def _fake_sandbox(*args: object, **kwargs: object) -> RunResult:

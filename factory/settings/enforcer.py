@@ -37,8 +37,6 @@ _MODE_BLOCKS: dict[str, set[str] | str] = {
     "paused": "ALL",
     "fix-only": {
         "sm",
-        "test_design",
-        "test_impl",
         "dev",
         "review",
         "tech_writer",
@@ -47,9 +45,9 @@ _MODE_BLOCKS: dict[str, set[str] | str] = {
         # job_kind="dev-bug" tag — anything not flagged as a bug fix is
         # rejected. The orchestrator chooses which tag to pass.
     },
-    "drain-reviews": {"sm", "test_design", "test_impl", "dev", "tech_writer", "docs_enforcer"},
+    "drain-reviews": {"sm", "dev", "tech_writer", "docs_enforcer"},
     "deploy-frozen": {"deploy", "release"},
-    "ux-audit-only": {"sm", "test_design", "test_impl", "dev", "review", "tech_writer"},
+    "ux-audit-only": {"sm", "dev", "review", "tech_writer"},
     # exploratory and normal place no extra mode-based restrictions.
 }
 
@@ -147,7 +145,7 @@ def can_dispatch(
     if (
         failing_ci is not None
         and int(failing_ci) >= settings.queues.failing_ci_pause_threshold
-        and job_kind in {"sm", "test_design", "test_impl", "dev"}
+        and job_kind in {"sm", "dev"}
     ):
         return DispatchDecision(
             allowed=False,

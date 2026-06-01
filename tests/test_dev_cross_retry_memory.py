@@ -309,7 +309,7 @@ def test_dev_attempt_persists_self_summary_and_tool_calls(
     temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed dev run captures the new signals into ``dev_attempts_json``."""
-    story = _story_at(StoryState.TESTS_RED, temp_root)
+    story = _story_at(StoryState.SM_DONE, temp_root)
     db = temp_root / "state" / "factory.db"
 
     async def _fake_sandbox(*args: object, **kwargs: object) -> RunResult:

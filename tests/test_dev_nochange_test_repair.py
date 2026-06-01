@@ -50,7 +50,7 @@ def _story(root: Path) -> StoryRecord:
     return persist_story(
         StoryRecord(
             id=None, direction_id="099", app="myapp", title="t", slug="z",
-            scope="backend", state=StoryState.TESTS_RED.value,
+            scope="backend", state=StoryState.SM_DONE.value,
             github_issue_number=1, story_file_path="stories/1-x.md",
         ),
         root / "state" / "factory.db",

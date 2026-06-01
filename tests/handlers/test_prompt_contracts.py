@@ -42,7 +42,6 @@ from factory.chain.handlers import (
     handle_review,
     handle_sm,
     handle_tech_writer,
-    handle_test_design,
     persist_story,
 )
 from factory.chain.state_machine import StoryRecord, StoryState
@@ -193,28 +192,6 @@ def test_handle_sm_prompt_contract(
     _assert_no_broken_markers(prompt)
     for header in ("## Context", "## PM result", "## Direction", "## Story metadata"):
         assert header in prompt, f"missing section header {header!r}"
-
-
-def test_handle_test_design_prompt_contract(
-    temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``handle_test_design`` real-run path: prompt has Context + Story sections
-    AND embeds the actual story file content."""
-    _patch_common(monkeypatch)
-    cap = _install_text_run(
-        monkeypatch, return_value={"test_plan": [], "summary": "noop"}
-    )
-    s = _story_with_file(
-        temp_root, slug="td-contract", state=StoryState.SM_DONE
-    )
-    db = temp_root / "state" / "factory.db"
-    handle_test_design(s, app_config, temp_root, db_path=db)
-
-    prompt = cap.last_prompt
-    _assert_no_broken_markers(prompt)
-    for header in ("## Context", "## Story"):
-        assert header in prompt, f"missing section header {header!r}"
-    assert "Contract-test story body for td-contract" in prompt
 
 
 def test_handle_review_prompt_contract(

@@ -119,7 +119,7 @@ def test_sandbox_timeout_routes_as_infra_retry(
 ) -> None:
     """A wall-clock timeout returns the pre-model infra shape, so the dev
     circuit breaker re-dispatches without burning the retry budget."""
-    story = _story_at(StoryState.TESTS_RED, temp_root)
+    story = _story_at(StoryState.SM_DONE, temp_root)
     db = temp_root / "state" / "factory.db"
     monkeypatch.setattr(runner_module, "sandbox_run", _timeout_sandbox(), raising=True)
     monkeypatch.setattr(handlers_module, "route", lambda *a, **kw: "azure/gpt-5.4")
@@ -137,7 +137,7 @@ def test_infra_failure_does_not_burn_retry_and_bounces_back(
     temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A pre-model infra failure re-dispatches dev WITHOUT consuming budget."""
-    story = _story_at(StoryState.TESTS_RED, temp_root)
+    story = _story_at(StoryState.SM_DONE, temp_root)
     db = temp_root / "state" / "factory.db"
 
     monkeypatch.setattr(runner_module, "sandbox_run", _infra_failure_sandbox(), raising=True)
@@ -165,7 +165,7 @@ def test_persistent_infra_failure_blocks_loudly_at_cap(
     temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """After the consecutive-infra cap, escalate to a loud terminal block."""
-    story = _story_at(StoryState.TESTS_RED, temp_root)
+    story = _story_at(StoryState.SM_DONE, temp_root)
     db = temp_root / "state" / "factory.db"
 
     monkeypatch.setattr(runner_module, "sandbox_run", _infra_failure_sandbox(), raising=True)
@@ -196,7 +196,7 @@ def test_genuine_red_tests_still_counts_as_a_retry(
     temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A real 'dev ran, tests red' result is unaffected by the infra guard."""
-    story = _story_at(StoryState.TESTS_RED, temp_root)
+    story = _story_at(StoryState.SM_DONE, temp_root)
     db = temp_root / "state" / "factory.db"
 
     async def _fake(*args: object, **kwargs: object) -> RunResult:

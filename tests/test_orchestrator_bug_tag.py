@@ -50,8 +50,6 @@ def test_resolve_job_kind_bug_direction_appends_suffix() -> None:
     story = _fake_story()
     direction = _fake_direction(type_tag="bug")
     assert _resolve_job_kind(story, direction, "dev") == "dev-bug"
-    assert _resolve_job_kind(story, direction, "test_design") == "test_design-bug"
-    assert _resolve_job_kind(story, direction, "test_impl") == "test_impl-bug"
     assert _resolve_job_kind(story, direction, "review") == "review-bug"
     assert _resolve_job_kind(story, direction, "sm") == "sm-bug"
 

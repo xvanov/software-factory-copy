@@ -24,11 +24,6 @@ from factory.chain.state_machine import (
     EVENT_SM_STARTED,
     EVENT_TECH_WRITER_DONE,
     EVENT_TECH_WRITER_STARTED,
-    EVENT_TEST_DESIGN_DONE,
-    EVENT_TEST_DESIGN_STARTED,
-    EVENT_TEST_IMPL_SLOP,
-    EVENT_TEST_IMPL_STARTED,
-    EVENT_TESTS_RED,
     IllegalTransitionError,
     StoryRecord,
     StoryState,
@@ -50,21 +45,14 @@ def _story(state: StoryState = StoryState.STORY_CREATED) -> StoryRecord:
 
 
 def test_happy_path_advances_through_every_state() -> None:
-    """Verify the whole chain happy-path: created -> ... -> pr_open."""
+    """Loop-4 happy path: created -> sm -> dev -> review -> tech_writer ->
+    docs_enforcer -> pr_open. No separate test_design/test_impl phase."""
     s = _story()
-    # SM runs before test_design.
     s.state = advance(s, EVENT_SM_STARTED).value
     assert s.state == StoryState.SM_IN_PROGRESS.value
     s.state = advance(s, EVENT_SM_DONE).value
     assert s.state == StoryState.SM_DONE.value
-    s.state = advance(s, EVENT_TEST_DESIGN_STARTED).value
-    assert s.state == StoryState.TEST_DESIGN_IN_PROGRESS.value
-    s.state = advance(s, EVENT_TEST_DESIGN_DONE).value
-    assert s.state == StoryState.TEST_DESIGN_DONE.value
-    s.state = advance(s, EVENT_TEST_IMPL_STARTED).value
-    assert s.state == StoryState.TEST_IMPLEMENTATION_IN_PROGRESS.value
-    s.state = advance(s, EVENT_TESTS_RED).value
-    assert s.state == StoryState.TESTS_RED.value
+    # SM_DONE dispatches dev DIRECTLY — dev writes code + tests.
     s.state = advance(s, EVENT_DEV_STARTED).value
     assert s.state == StoryState.DEV_IN_PROGRESS.value
     s.state = advance(s, EVENT_DEV_TESTS_GREEN).value
@@ -81,14 +69,6 @@ def test_happy_path_advances_through_every_state() -> None:
     assert s.state == StoryState.DOCS_ENFORCER_CHECK.value
     s.state = advance(s, EVENT_DOCS_ENFORCER_PASS).value
     assert s.state == StoryState.PR_OPEN.value
-
-
-def test_tests_slop_bounces_to_blocked() -> None:
-    """Test-Implementer slop signal lands us in BLOCKED_TESTS_NEED_CLARIFICATION,
-    which is where the chain files a (tests-need-clarification) direction."""
-    s = _story(StoryState.TEST_IMPLEMENTATION_IN_PROGRESS)
-    next_state = advance(s, EVENT_TEST_IMPL_SLOP)
-    assert next_state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION
 
 
 def test_pr_unmergeable_sinks_to_blocked_deploy_failed() -> None:
@@ -158,9 +138,10 @@ def test_sm_in_progress_transitions_to_sm_done() -> None:
     assert advance(s, EVENT_SM_DONE) == StoryState.SM_DONE
 
 
-def test_sm_done_transitions_to_test_design_in_progress() -> None:
+def test_sm_done_transitions_to_dev_in_progress() -> None:
+    """Loop-4: SM_DONE dispatches dev directly (no test_design phase)."""
     s = _story(StoryState.SM_DONE)
-    assert advance(s, EVENT_TEST_DESIGN_STARTED) == StoryState.TEST_DESIGN_IN_PROGRESS
+    assert advance(s, EVENT_DEV_STARTED) == StoryState.DEV_IN_PROGRESS
 
 
 def test_blocked_state_has_no_outgoing_transitions() -> None:
@@ -220,15 +201,15 @@ def test_docs_chain_full_path_to_pr_open() -> None:
 
 
 def test_docs_chain_cannot_cross_into_tdd_states() -> None:
-    """Once in DOCS_SM_DONE, the TDD-only events must be rejected.
+    """Once in DOCS_SM_DONE, the code-chain events must be rejected.
 
-    The docs chain skips test_design entirely; sending a docs story the
-    ``EVENT_TEST_DESIGN_STARTED`` event would be a chain bug. ``advance``
-    must raise ``IllegalTransitionError`` instead of silently transitioning.
+    The docs chain skips the code+test loop entirely; sending a docs story the
+    ``EVENT_DEV_STARTED`` event would be a chain bug. ``advance`` must raise
+    ``IllegalTransitionError`` instead of silently transitioning.
     """
     s = _story(StoryState.DOCS_SM_DONE)
     with pytest.raises(IllegalTransitionError):
-        advance(s, EVENT_TEST_DESIGN_STARTED)
+        advance(s, EVENT_DEV_STARTED)
 
 
 def test_docs_onboarder_failure_routes_to_blocked() -> None:

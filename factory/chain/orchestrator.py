@@ -38,7 +38,7 @@ from factory.settings.spend import hour_spend_usd, today_spend_usd
 # Handler kinds that have a "bug-fix variant" recognized by the enforcer's
 # ``fix-only`` mode. Kept in sync with
 # ``factory/settings/enforcer.py:_BUG_FIX_JOB_KINDS``.
-_BUG_AWARE_HANDLER_KINDS = {"sm", "test_design", "test_impl", "dev", "review"}
+_BUG_AWARE_HANDLER_KINDS = {"sm", "dev", "review"}
 
 
 def _resolve_job_kind(
@@ -99,27 +99,10 @@ class TickSummary:
 # ``docs_sm`` here; chain_kind="tdd" (default) routes to ``sm``.
 _DISPATCH = {
     StoryState.STORY_CREATED: "sm",  # TDD default; overridden for docs chain
-    # Loop-4 (dev-owns-tests rewrite): SM_DONE dispatches dev DIRECTLY. The dev
-    # persona writes production code + its tests in one pass; there is no
-    # separate test_design/test_impl phase. The TEST_DESIGN_DONE/TESTS_RED
-    # entries below are retained only for legacy in-flight rows and are
-    # unreachable for new tdd stories.
+    # Loop-4 (dev-owns-tests): SM_DONE dispatches dev DIRECTLY. The dev persona
+    # writes production code + its tests in one pass; there is no separate
+    # test_design/test_impl/harness phase.
     StoryState.SM_DONE: "dev",
-    # TODO(phase-3-or-4): Insert "architect" before test_design when the PM's
-    # ``child_stories`` count crosses the architectural threshold or the
-    # story scope is ``infra``. See ``factory/personas/architect.md`` for the
-    # prompt; the handler should rewrite ``context/current-state.md`` BEFORE
-    # the Test-Designer reads it. SM's prompt already documents the
-    # threshold (3+ stories, ``infra`` scope, schema/migration/dependency in
-    # the title), so the orchestrator can read sm_result_json to decide.
-    StoryState.TEST_DESIGN_DONE: "test_impl",
-    # Item 4: ``TESTS_RED`` dispatches the one-shot harness precheck
-    # FIRST. The actual dispatch decision is done in
-    # ``_dispatch_for_story`` (it reads the ``harness_precheck_passed``
-    # flag to decide between "harness_precheck" and "dev") — the
-    # _DISPATCH entry here is the default ("dev") for retried-from-
-    # DEV_RETRY paths and for stories whose precheck already passed.
-    StoryState.TESTS_RED: "dev",
     StoryState.DEV_RETRY: "dev",
     # When the reviewer pushes back to REVIEWER_REQUESTED_CHANGES, the
     # state machine routes dev_started → DEV_IN_PROGRESS but the
@@ -148,21 +131,14 @@ _DISPATCH = {
 def _dispatch_for_story(story: StoryRecord) -> str | None:
     """Pick the handler name for ``story`` given its current state.
 
-    Pure wrapper around ``_DISPATCH`` plus two branches:
-      * ``STORY_CREATED`` depends on ``story.chain_kind`` (tdd vs docs).
-      * ``TESTS_RED`` depends on ``story.harness_precheck_passed``
-        (Item 4) — first visit runs the harness precheck; subsequent
-        visits (after PASS sets the flag) go straight to dev. Retried
-        stories that land in ``DEV_RETRY`` always go to dev — precheck
-        runs once per story, not once per dev attempt.
+    Pure wrapper around ``_DISPATCH`` plus one branch: ``STORY_CREATED``
+    depends on ``story.chain_kind`` (tdd → sm, docs → docs_sm).
     """
     state = StoryState(story.state)
     if state == StoryState.STORY_CREATED:
         if story.chain_kind == "docs":
             return "docs_sm"
         return "sm"
-    if state == StoryState.TESTS_RED and not getattr(story, "harness_precheck_passed", False):
-        return "harness_precheck"
     return _DISPATCH.get(state)
 
 
@@ -177,18 +153,6 @@ def _invoke_handler(
 ) -> H.HandlerResult:
     if name == "sm":
         return H.handle_sm(
-            story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
-        )
-    if name == "test_design":
-        return H.handle_test_design(
-            story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
-        )
-    if name == "test_impl":
-        return H.handle_test_implementation(
-            story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
-        )
-    if name == "harness_precheck":
-        return H.handle_harness_precheck(
             story, app_config, software_factory_root, dry_run=dry_run, db_path=db_path
         )
     if name == "dev":
@@ -251,8 +215,6 @@ _NON_CAP_COUNTING_STATES = {
     # idle queue states should not consume slots. Same rationale as
     # STORY_CREATED above (PM-sync spawning N children at once).
     StoryState.SM_DONE.value,
-    StoryState.TEST_DESIGN_DONE.value,
-    StoryState.TESTS_RED.value,
     StoryState.TESTS_GREEN.value,
     StoryState.DEV_RETRY.value,
     StoryState.REVIEWER_DONE.value,
@@ -384,9 +346,6 @@ def _direction_deps_pending(db: Path, story: StoryRecord) -> list[int]:
 # uncaught exception, dirty-tree race, retry-cap change mid-attempt).
 _STALE_RECOVERY_MAP: dict[str, str] = {
     "sm_in_progress": "story_created",
-    "test_design_in_progress": "sm_done",
-    "test_implementation_in_progress": "test_design_done",
-    "harness_precheck_in_progress": "tests_red",
     "dev_in_progress": "dev_retry",
     "reviewer_in_progress": "tests_green",
     "tech_writer_in_progress": "reviewer_done",
@@ -510,14 +469,14 @@ def _prune_stale_in_progress(
 # unsatisfiable story (contradictory contract, etc.) surfaces to a human after
 # a couple of honest re-attempts instead of being recycled forever.
 _MAX_AUTO_RECOVERIES = 2
-# Blocked states recovered by re-entering the TDD chain at TESTS_RED (re-runs
-# harness_precheck -> dev -> review -> merge with current fixes). deploy_failed
-# is intentionally excluded — it's handled at the merge layer by
+# Blocked states recovered by re-entering the chain at SM_DONE (re-runs
+# dev -> review -> merge with current fixes; the dev writes code + tests).
+# deploy_failed is intentionally excluded — it's handled at the merge layer by
 # ``auto_merge._attempt_pr_reconcile`` (stale branches) and true content
 # conflicts there need regeneration/human handling, not a dev re-run.
 _AUTO_RECOVERABLE_STATES: dict[str, str] = {
-    StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value: StoryState.TESTS_RED.value,
-    StoryState.BLOCKED_REVIEW_NONCONVERGENT.value: StoryState.TESTS_RED.value,
+    StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value: StoryState.SM_DONE.value,
+    StoryState.BLOCKED_REVIEW_NONCONVERGENT.value: StoryState.SM_DONE.value,
 }
 
 
@@ -526,10 +485,10 @@ def _recover_blocked_stories(
 ) -> list[tuple[str, str, str]]:
     """Re-dispatch blocked stories so since-shipped chain fixes reach them.
 
-    For each story in an auto-recoverable blocked state, reset it to the TDD
-    re-entry point (TESTS_RED) with a clean slate (retry/cycle counters cleared,
-    harness-precheck flag reset, stale reviewer payload cleared) so it flows
-    through the current chain from scratch. Bounded to ``_MAX_AUTO_RECOVERIES``
+    For each story in an auto-recoverable blocked state, reset it to the
+    re-entry point (SM_DONE → dev) with a clean slate (retry/cycle counters
+    cleared, stale reviewer payload cleared) so it flows through the current
+    chain from scratch. Bounded to ``_MAX_AUTO_RECOVERIES``
     per story via ``auto_recovery`` events in the per-story log; once exhausted
     the story stays blocked and an ``auto_recovery_exhausted`` /
     ``factory_needs_redesign`` event fires so the FMS/operator sees a genuinely

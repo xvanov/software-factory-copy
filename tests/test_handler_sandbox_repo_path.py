@@ -28,7 +28,7 @@ import pytest
 from factory import runner as runner_module
 from factory.app_config import AppConfig
 from factory.chain import handlers as handlers_module
-from factory.chain.handlers import handle_dev, handle_test_implementation, persist_story
+from factory.chain.handlers import handle_dev, persist_story
 from factory.chain.state_machine import StoryRecord, StoryState
 from factory.runner import RunResult
 
@@ -94,72 +94,6 @@ def _app_config_pointing_at(target: Path) -> AppConfig:
     )
 
 
-def test_handle_test_implementation_uses_real_app_repo(
-    fixture_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``handle_test_implementation`` must pass the resolved app repo path —
-    not ``software_factory_root/apps/<app>/`` — to ``sandbox_run``.
-
-    Captures the ``repo_path`` kwarg the handler hands to sandbox_run and
-    asserts it equals the resolved target repo. The factory's per-app metadata
-    dir under ``apps/<app>/`` MUST NOT appear here.
-    """
-    factory_root, target = fixture_tree
-    app_cfg = _app_config_pointing_at(target)
-    story = _story_at(StoryState.TEST_DESIGN_DONE, factory_root)
-
-    captured: dict[str, Any] = {}
-
-    async def _fake_sandbox_run(*args: Any, **kwargs: Any) -> RunResult:
-        captured["repo_path"] = kwargs.get("repo_path")
-        captured["persona"] = kwargs.get("persona")
-        captured["story_path"] = kwargs.get("story_path")
-        # Return a benign "tests are red" result so test_implementation_done
-        # transitions to TESTS_RED (the desired-outcome branch).
-        return RunResult(
-            success=False,
-            files_changed=[],
-            test_run_passed=False,
-            tokens_in=1,
-            tokens_out=1,
-            cost_usd=0.0,
-            summary="fake test_impl",
-        )
-
-    monkeypatch.setattr(runner_module, "sandbox_run", _fake_sandbox_run, raising=True)
-    monkeypatch.setattr(handlers_module, "route", lambda *a, **kw: "azure/deepseek-v4-pro")
-
-    handle_test_implementation(
-        story,
-        app_cfg,
-        factory_root,
-        dry_run=False,
-        db_path=factory_root / "state" / "factory.db",
-    )
-
-    assert captured["persona"] == "test_implementer"
-    # Post-worktree refactor: ``repo_path`` is the per-story worktree under
-    # ``state/worktrees/``, NOT the source app repo. The worktree is a real
-    # git working tree sharing ``.git`` with the source repo, so commits made
-    # there land on the per-story feature branch — Bug A's symptom (commits
-    # leaking onto factory main) is still impossible. The original-intent
-    # check ("don't point sandbox at the factory metadata dir") is satisfied:
-    # the worktree path lives under ``factory_root/state/worktrees/...``.
-    repo_path = captured["repo_path"]
-    assert repo_path is not None
-    expected_prefix = factory_root / "state" / "worktrees"
-    assert str(repo_path).startswith(str(expected_prefix)), (
-        f"repo_path should be a per-story worktree under {expected_prefix}, "
-        f"got {repo_path!r}. (Bug A check: must not be the app metadata dir.)"
-    )
-    # The worktree is alive on disk and shares git with the source repo.
-    assert (Path(repo_path) / ".git").exists()
-    # The story file lives under the factory tree, not the app repo.
-    assert str(captured["story_path"]).startswith(str(factory_root)), (
-        "story_path should live under the factory metadata tree"
-    )
-
-
 def test_handle_dev_uses_real_app_repo(
     fixture_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -169,7 +103,7 @@ def test_handle_dev_uses_real_app_repo(
     """
     factory_root, target = fixture_tree
     app_cfg = _app_config_pointing_at(target)
-    story = _story_at(StoryState.TESTS_RED, factory_root)
+    story = _story_at(StoryState.SM_DONE, factory_root)
 
     captured: dict[str, Any] = {}
 

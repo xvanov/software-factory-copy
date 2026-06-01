@@ -80,20 +80,6 @@ def test_tdd_chain_dispatch_unchanged_by_chain_kind_branch() -> None:
     in-flight rows that predate the rewrite, and is verified below.
     """
     assert _dispatch_for_story(_story(StoryState.SM_DONE, chain_kind="tdd")) == "dev"
-    # First TESTS_RED visit: precheck hasn't run yet → harness_precheck.
-    assert (
-        _dispatch_for_story(_story(StoryState.TESTS_RED, chain_kind="tdd"))
-        == "harness_precheck"
-    )
-    # After precheck passes, TESTS_RED routes to dev as before.
-    assert (
-        _dispatch_for_story(
-            _story(
-                StoryState.TESTS_RED,
-                chain_kind="tdd",
-                harness_precheck_passed=True,
-            )
-        )
-        == "dev"
-    )
+    assert _dispatch_for_story(_story(StoryState.DEV_RETRY, chain_kind="tdd")) == "dev"
+    assert _dispatch_for_story(_story(StoryState.TESTS_GREEN, chain_kind="tdd")) == "review"
     assert _dispatch_for_story(_story(StoryState.REVIEWER_DONE, chain_kind="tdd")) == "tech_writer"

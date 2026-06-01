@@ -33,7 +33,7 @@ def test_foundational_story_has_no_pending_deps(tmp_path: Path) -> None:
 
 def test_dependent_waits_for_undeployed_lower_siblings(tmp_path: Path) -> None:
     db = _seed(tmp_path)
-    _story(db, sid=14, direction="008", state=StoryState.TESTS_RED.value)   # not deployed
+    _story(db, sid=14, direction="008", state=StoryState.SM_DONE.value)   # not deployed
     _story(db, sid=16, direction="008", state=StoryState.DEPLOYED.value)    # deployed
     s18 = _story(db, sid=18, direction="008", state=StoryState.SM_DONE.value)
     # 14 (not deployed) blocks; 16 (deployed) does not.
@@ -50,6 +50,6 @@ def test_ready_when_all_lower_siblings_deployed(tmp_path: Path) -> None:
 
 def test_cross_direction_does_not_block(tmp_path: Path) -> None:
     db = _seed(tmp_path)
-    _story(db, sid=5, direction="007", state=StoryState.TESTS_RED.value)  # other direction
+    _story(db, sid=5, direction="007", state=StoryState.SM_DONE.value)  # other direction
     s14 = _story(db, sid=14, direction="008", state=StoryState.SM_DONE.value)
     assert _direction_deps_pending(db, s14) == []

@@ -116,8 +116,6 @@ def test_docs_chain_does_not_invoke_tdd_handlers(
         raise AssertionError("TDD handler called on a docs-kind story — chain routing is wrong")
 
     monkeypatch.setattr(handlers_module, "handle_sm", _explode)
-    monkeypatch.setattr(handlers_module, "handle_test_design", _explode)
-    monkeypatch.setattr(handlers_module, "handle_test_implementation", _explode)
     monkeypatch.setattr(handlers_module, "handle_dev", _explode)
     monkeypatch.setattr(handlers_module, "handle_review", _explode)
     monkeypatch.setattr(handlers_module, "handle_tech_writer", _explode)
