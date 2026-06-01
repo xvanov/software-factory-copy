@@ -1328,6 +1328,162 @@ def tui_cmd(
     )
 
 
+def _story_progress_rows(app_name: str | None) -> list[dict[str, Any]]:
+    """Assemble a per-in-flight-story progress snapshot.
+
+    Joins three independent signals into one row so "where is each story right
+    now" is answerable at a glance:
+      * the chain STATE (which step) + cycle counters, from ``stories``;
+      * the AGENT RUNNING RIGHT NOW, from the ``live_handlers`` heartbeat table
+        (a row exists only while a persona's sandbox/text run is in flight);
+      * COMMIT-VERIFIABLE progress, from the tip commit on the story's branch;
+      * the last per-story event + its age (so a stalled story is obvious).
+    """
+    import sqlite3
+    from datetime import UTC, datetime
+
+    from factory.chain.branch import feature_branch_name
+    from factory.chain.event_log import read_story_events
+    from factory.observability.queries import live_handlers
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    live = {lh.story_id: lh for lh in live_handlers(db) if lh.story_id is not None}
+
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    sql = (
+        "SELECT id, app, slug, state, chain_kind, dev_retries, reviewer_cycles, "
+        "github_issue_number, updated_at FROM stories WHERE state NOT IN "
+        "('deployed','blocked_tests_need_clarification','blocked_deploy_failed',"
+        "'blocked_review_nonconvergent','story_created')"
+    )
+    params: list[Any] = []
+    if app_name:
+        sql += " AND app = ?"
+        params.append(app_name)
+    sql += " ORDER BY id ASC"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+
+    now = datetime.now(UTC)
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        sid = int(r["id"])
+        # Tip commit on the story's feature branch — commit-verifiable progress.
+        branch = feature_branch_name(r["github_issue_number"], r["slug"])
+        commit = "—"
+        try:
+            res = subprocess.run(
+                ["git", "-C", "/home/k/sacrifice", "log", "-1", "--format=%h %s",
+                 branch, "--"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                commit = res.stdout.strip()[:60]
+        except Exception:
+            pass
+        # Last per-story event + age.
+        last_evt, evt_age = "—", ""
+        try:
+            evts = read_story_events(sid, software_factory_root=_FACTORY_ROOT, slug_hint=r["slug"])
+            if evts:
+                e = evts[-1]
+                last_evt = str(e.get("event", "—"))
+                ets = e.get("ts")
+                if ets:
+                    try:
+                        dt = datetime.fromisoformat(ets)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=UTC)
+                        evt_age = f"{int((now - dt).total_seconds())}s ago"
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
+        lh = live.get(sid)
+        out.append(
+            {
+                "id": sid,
+                "slug": (r["slug"] or "")[:34],
+                "state": r["state"],
+                "agent": (f"{lh.persona} ({int(lh.elapsed_seconds)}s)" if lh else "—"),
+                "working": lh is not None,
+                "cycles": f"dev:{r['dev_retries']} rev:{r['reviewer_cycles']}",
+                "commit": commit,
+                "event": f"{last_evt} {evt_age}".strip(),
+            }
+        )
+    return out
+
+
+def _render_status(app_name: str | None) -> Table:
+    from factory.observability.queries import get_factory_mode, spend_window
+
+    db = _FACTORY_ROOT / "state" / "factory.db"
+    rows = _story_progress_rows(app_name)
+    working = [r for r in rows if r["working"]]
+    try:
+        mode = get_factory_mode(db)
+        spend = spend_window(db, hours=24)
+    except Exception:
+        mode, spend = "?", 0.0
+    title = (
+        f"factory status — mode={mode}  24h spend=${spend:.2f}  "
+        f"in-flight={len(rows)}  working-now={len(working)}"
+    )
+    table = Table(title=title, expand=True)
+    table.add_column("#", justify="right")
+    table.add_column("story")
+    table.add_column("state (step)")
+    table.add_column("▶ agent now", style="bold")
+    table.add_column("cycles")
+    table.add_column("tip commit")
+    table.add_column("last event")
+    for r in rows:
+        agent_style = "green" if r["working"] else "dim"
+        table.add_row(
+            str(r["id"]),
+            r["slug"],
+            r["state"],
+            f"[{agent_style}]{r['agent']}[/{agent_style}]",
+            r["cycles"],
+            r["commit"],
+            r["event"],
+        )
+    if not rows:
+        table.add_row("—", "(no in-flight stories)", "", "", "", "", "")
+    return table
+
+
+@app.command("status")
+def status_cmd(
+    app_name: str | None = typer.Option(None, "--app", help="Filter to one app"),
+    watch: float = typer.Option(
+        0.0, "--watch", help="Refresh every N seconds (0 = print once and exit)"
+    ),
+) -> None:
+    """Show exactly where every in-flight story is RIGHT NOW.
+
+    One row per in-flight story: its chain state (which step), the agent
+    actively running on it this instant (``▶ agent now`` — green = a live
+    sandbox/review is executing, dim ``—`` = idle/queued), the dev/review cycle
+    counters, the tip commit on its branch (commit-verifiable progress), and the
+    last recorded event with its age. ``--watch N`` re-renders every N seconds
+    so you can watch a dev↔review loop advance live.
+    """
+    if watch and watch > 0:
+        import time
+
+        from rich.live import Live
+
+        with Live(_render_status(app_name), console=console, refresh_per_second=4) as live:
+            while True:
+                time.sleep(max(0.5, watch))
+                live.update(_render_status(app_name))
+    else:
+        console.print(_render_status(app_name))
+
+
 @app.command("baselines")
 def baselines_cmd() -> None:
     """Recompute EBS handler baselines from the runs ⨝ stories history.
