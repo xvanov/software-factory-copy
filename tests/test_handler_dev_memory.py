@@ -143,10 +143,12 @@ def test_build_initial_message_includes_reviewer_findings() -> None:
     assert "orphaned on failure" in msg
     assert "delete the file if persist_metadata raises" in msg
     assert "test_save_upload" in msg
-    # Test-quality findings must NOT instruct dev to edit tests (dev is
-    # forbidden from touching test files); they route via the escape hatch.
-    assert "TESTS_NEED_CLARIFICATION" in msg
-    assert "test files are FROZEN" in msg or "do NOT edit tests" in msg.lower() or "Do NOT modify the tests" in msg
+    # Loop-4: dev OWNS the tests, so test-quality findings are framed as
+    # dev's to FIX directly — never as frozen / route-to-another-agent.
+    assert "fix these tests directly" in msg.lower()
+    assert "add a test forcing persist_metadata to raise" in msg  # fix_suggestion surfaced
+    assert "TESTS_NEED_CLARIFICATION" not in msg
+    assert "FROZEN" not in msg
 
 
 def test_build_initial_message_reviewer_findings_test_persona() -> None:

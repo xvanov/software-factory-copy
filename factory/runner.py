@@ -707,10 +707,10 @@ def _build_initial_message(
         findings = reviewer_findings.get("findings") or []
         tq_findings = reviewer_findings.get("test_quality_findings") or []
         summary = (reviewer_findings.get("summary") or "").strip()
-        # The reviewer findings reach two different personas on two different
-        # re-dispatch paths: dev (code findings; tests frozen) and
-        # test_implementer (test-quality rejection; rewriting tests IS the job).
-        # Frame the section for whichever persona is reading it.
+        # Loop-4: the dev persona owns BOTH code and tests, so its branch frames
+        # every finding (code AND test-quality) as dev's to fix. The
+        # test_implementer/test_designer branch is retained for any legacy use
+        # but those personas are no longer dispatched by the chain.
         is_test_persona = persona in ("test_implementer", "test_designer")
         if findings or tq_findings or summary:
             parts.append("---")
@@ -749,19 +749,14 @@ def _build_initial_message(
             else:
                 parts.append("# Reviewer change requests — you MUST address ALL of these")
                 parts.append(
-                    "The reviewer rejected the previous revision of this PR. The "
-                    "tests are already green; your job this pass is to resolve "
-                    "EVERY code item below, not to re-run the tests. If a request "
-                    "is wrong or impossible, say so explicitly in your summary "
-                    "rather than silently ignoring it — leaving any item "
-                    "unaddressed will cause the reviewer to reject again.\n\n"
-                    "CRITICAL: test files are FROZEN — you must NOT create, edit, "
-                    "or delete any test file to satisfy a finding (doing so blocks "
-                    "the story). If addressing a finding would require changing a "
-                    "test, do NOT touch the test; instead emit "
-                    "``TESTS_NEED_CLARIFICATION:`` on a single line followed by "
-                    "which test and why, so the chain routes it to the "
-                    "test designer."
+                    "The reviewer rejected the previous revision of this PR. You "
+                    "own BOTH the production code AND the tests, so resolve EVERY "
+                    "item below: fix the code findings in the source, AND fix the "
+                    "test-quality findings by editing the tests themselves. Then "
+                    "re-run the full suite — it must stay green. If a request is "
+                    "genuinely wrong or impossible, say so explicitly in your "
+                    "summary rather than silently ignoring it — leaving any item "
+                    "unaddressed will cause the reviewer to reject again."
                 )
                 if summary:
                     parts.append(f"\n**Reviewer summary:** {summary[:600]}")
@@ -777,24 +772,26 @@ def _build_initial_message(
                         parts.append(f"   - Problem: {what[:500]}")
                     if fix:
                         parts.append(f"   - Suggested fix: {fix[:500]}")
-                # Test-quality findings are about the TESTS, which dev may not
-                # edit. Surface them only so dev routes them via
-                # TESTS_NEED_CLARIFICATION — never as a fix-the-test instruction.
+                # Test-quality findings: dev OWNS the tests now, so fix them
+                # directly — make each test exercise the real behavior and assert
+                # the correct contract value the reviewer flagged.
                 if tq_findings:
-                    parts.append("\n## Test-quality concerns — do NOT edit tests yourself")
+                    parts.append("\n## Test-quality findings (fix these tests directly)")
                     parts.append(
-                        "The reviewer flagged the tests below. You cannot fix "
-                        "these (test files are frozen). If they are valid, emit "
-                        "``TESTS_NEED_CLARIFICATION:`` naming each test and the "
-                        "issue so the test designer rewrites them. Do NOT modify "
-                        "the tests."
+                        "The reviewer flagged the tests below as weak or wrong. "
+                        "Edit each test so it drives the REAL behavior end-to-end "
+                        "and asserts the correct contract value — do not delete or "
+                        "weaken them to dodge the finding."
                     )
                     for j, f in enumerate(tq_findings, 1):
                         name = f.get("test_name", "")
                         issue = (f.get("issue") or "").strip()
+                        fix = (f.get("fix_suggestion") or "").strip()
                         parts.append(f"\nTest-quality {j}. `{name}`".rstrip())
                         if issue:
                             parts.append(f"   - Issue: {issue[:400]}")
+                        if fix:
+                            parts.append(f"   - Suggested fix: {fix[:400]}")
     if prior_attempts:
         # The chain feeds prior failed attempts forward so the LLM sees what
         # was already tried and which assertions are still red. Without this,
@@ -806,9 +803,9 @@ def _build_initial_message(
         parts.append(
             "These attempts ran in the same git worktree and any file changes "
             "they made persist below. Use them to avoid repeating failed "
-            "approaches; if the same test keeps failing for a reason the test "
-            "itself is wrong, emit ``TESTS_NEED_CLARIFICATION:`` on a single "
-            "line followed by which test and why."
+            "approaches; if the same test keeps failing because the test itself "
+            "is wrong, fix the test (you own it) — make it assert the correct "
+            "behavior rather than working around a bad assertion."
         )
         for entry in prior_attempts:
             parts.append("")
