@@ -27,13 +27,17 @@ db = root / "state" / "factory.db"
 cfg = load_app_config("sacrifice", root)
 
 TERMINAL = {
-    StoryState.REVIEWER_DONE.value,
-    StoryState.TECH_WRITER_DONE.value,
     StoryState.PR_OPEN.value,
+    StoryState.DEPLOY_PENDING.value,
     StoryState.DEPLOYED.value,
     StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
+    StoryState.BLOCKED_DEPLOY_FAILED.value,
     StoryState.BLOCKED_REVIEW_NONCONVERGENT.value,
 }
+# Drive the full single-story chain through documentation: dev -> review ->
+# tech_writer -> docs_enforcer -> PR_OPEN. We want to SEE the tech_writer run
+# and the docs commit, not just stop at review.
+ALLOWED = {"dev", "review", "tech_writer", "docs_enforcer"}
 
 
 def load() -> StoryRecord:
@@ -44,20 +48,25 @@ def load() -> StoryRecord:
         return row
 
 
-print(f"=== driving story {STORY_ID} (only dev/review) ===", flush=True)
+print(f"=== driving story {STORY_ID} (dev -> review -> tech_writer -> PR) ===", flush=True)
 for step in range(SAFETY_STEPS):
     s = load()
     if s.state in TERMINAL:
         break
     name = O._dispatch_for_story(s)
-    if name not in ("dev", "review"):
-        print(f"[stop] state={s.state} dispatches '{name}' (past the dev/review loop)", flush=True)
+    if name not in ALLOWED:
+        print(f"[stop] state={s.state} dispatches '{name}' (outside the tracked loop)", flush=True)
         break
     before = s.state
-    res = O._invoke_handler(name, s, cfg, root, dry_run=False, db_path=db)
+    try:
+        res = O._invoke_handler(name, s, cfg, root, dry_run=False, db_path=db)
+        nxt = res.next_state.value
+    except Exception as exc:  # never crash the driver — record and stop
+        print(f"[step {step}] {name}: {before} -> EXCEPTION {type(exc).__name__}: {exc}", flush=True)
+        break
     after = load()
     print(
-        f"[step {step}] {name}: {before} -> {res.next_state.value} "
+        f"[step {step}] {name}: {before} -> {nxt} "
         f"| reviewer_cycles={after.reviewer_cycles} dev_retries={after.dev_retries}",
         flush=True,
     )

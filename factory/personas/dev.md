@@ -64,9 +64,23 @@ AC IDs satisfied) is a courtesy. The deliverable is the commits.
        against your own guess is how tests "pass" while contradicting the
        contract. When in doubt, the story file + `api_spec.md` are the
        authority; make the test cite the same value the implementation uses.
+    3. **THE #1 rejection: asserting on a value the TEST built, not one the CODE
+       returned.** A test must CALL a production function/endpoint and assert on
+       what IT returns. NEVER write `expected = f"{base}/{id}/x"; assert
+       expected == f"{base}/{id}/x"` — that re-implements the logic in the test
+       and asserts it against itself; it passes even if the production code is
+       missing or wrong. If an AC describes a FORMAT or CONVENTION (a storage
+       path, a slug, a filename), the production code MUST expose a function that
+       produces it (e.g. `media_storage_path(goal_id)` in `app/...`), and the
+       test must call THAT function and assert on its output. If no such
+       function exists yet, create it — the convention belongs in production
+       code, not duplicated in the test. Rule of thumb: every meaningful test
+       imports something from `app`/`src` and calls it; a test that imports
+       nothing from production code is almost always hollow.
   Self-check before you exit GREEN: for each test, ask "would this fail if the
-  feature were subtly wrong?" If not, it's hollow — fix it now, not after a
-  review round-trip.
+  production code were deleted or subtly wrong?" If it would still pass (because
+  it only checks values the test itself constructed), it's hollow — fix it now
+  by calling real code, not after a review round-trip.
 * If a story's acceptance criterion genuinely cannot be expressed as a
   runnable test in this harness (e.g. pure visual UI with no DOM/API surface),
   say so explicitly in your `SELF_SUMMARY:` and cover the testable slice;
