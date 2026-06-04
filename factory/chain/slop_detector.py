@@ -118,6 +118,160 @@ def _ast_findings_python(path_str: str, source: str) -> list[SlopFinding]:
             out.extend(_assert_on_just_set(path_str, node))
             out.extend(_self_throwing_raises(path_str, node))
             out.extend(_mock_only_assertions(path_str, node))
+            out.extend(_self_constructed_compare(path_str, node))
+    return out
+
+
+def _param_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Names bound as function parameters — pytest fixtures, ``self``/``cls``.
+
+    A reference to one of these is treated as IMPURE (it may carry production
+    behavior injected by pytest), so an assertion that touches a parameter is
+    never flagged as self-constructed.
+    """
+    a = fn.args
+    names = {p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)}
+    if a.vararg:
+        names.add(a.vararg.arg)
+    if a.kwarg:
+        names.add(a.kwarg.arg)
+    return names
+
+
+def _is_pure_constructed(
+    expr: ast.expr, local_pure: dict[str, ast.expr], params: set[str]
+) -> bool:
+    """True if ``expr`` is built ENTIRELY inside the test from literals / f-strings
+    / string concat / local names that are themselves pure — i.e. it involves NO
+    call to production code, no fixture/param reference, no attribute/subscript on
+    a non-pure value. Precision-biased: anything we don't recognise → impure.
+    """
+    if isinstance(expr, ast.Constant):
+        return True
+    if isinstance(expr, ast.JoinedStr):  # f-string
+        return all(_is_pure_constructed(v, local_pure, params) for v in expr.values)
+    if isinstance(expr, ast.FormattedValue):
+        return _is_pure_constructed(expr.value, local_pure, params)
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+        return _is_pure_constructed(expr.left, local_pure, params) and _is_pure_constructed(
+            expr.right, local_pure, params
+        )
+    if isinstance(expr, (ast.Tuple, ast.List)):
+        return all(_is_pure_constructed(e, local_pure, params) for e in expr.elts)
+    if isinstance(expr, ast.Name):
+        # A parameter (fixture) is impure; a local bound to a pure expr is pure.
+        if expr.id in params:
+            return False
+        bound = local_pure.get(expr.id)
+        return bound is not None and _is_pure_constructed(bound, local_pure, params)
+    return False  # Call, Attribute, Subscript, Await, etc. → exercises something
+
+
+def _contains_stringish(expr: ast.expr, local_pure: dict[str, ast.expr]) -> bool:
+    """True if ``expr`` (resolving local names) is string-ish — an f-string, a
+    str literal, or string concatenation. Keeps the check focused on the
+    path/format/sentinel anti-pattern rather than numeric tautologies."""
+    if isinstance(expr, ast.JoinedStr):
+        return True
+    if isinstance(expr, ast.Constant):
+        return isinstance(expr.value, str)
+    if isinstance(expr, ast.BinOp):
+        return _contains_stringish(expr.left, local_pure) or _contains_stringish(
+            expr.right, local_pure
+        )
+    if isinstance(expr, ast.Name):
+        bound = local_pure.get(expr.id)
+        return bound is not None and _contains_stringish(bound, local_pure)
+    return False
+
+
+def _eq_operands(node: ast.AST) -> tuple[ast.expr, ast.expr, int] | None:
+    """Return ``(lhs, rhs, lineno)`` for an ``assert a == b`` or a
+    ``*.assertEqual(a, b)`` / ``assertEqual(a, b)`` call; else None."""
+    if isinstance(node, ast.Assert) and isinstance(node.test, ast.Compare):
+        cmp = node.test
+        if len(cmp.ops) == 1 and isinstance(cmp.ops[0], ast.Eq):
+            return cmp.left, cmp.comparators[0], node.lineno
+        return None
+    if isinstance(node, ast.Call) and len(node.args) >= 2:
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else (
+            func.id if isinstance(func, ast.Name) else ""
+        )
+        if name in ("assertEqual", "assertEquals"):
+            return node.args[0], node.args[1], getattr(node, "lineno", 0)
+    return None
+
+
+def _self_constructed_compare(
+    path_str: str, fn: ast.FunctionDef | ast.AsyncFunctionDef
+) -> list[SlopFinding]:
+    """Flag the #1 hollow-test anti-pattern: an equality assertion where BOTH
+    sides are values the TEST itself constructed (literals / f-strings / local
+    pure names) and NEITHER side calls production code or touches a fixture.
+
+    Example::
+
+        expected = f"{base}/{goal_id}/file"
+        path = f"{base}/{goal_id}/file"   # also built in the test
+        assert path == expected            # passes even if production is absent
+
+    Such a test verifies the test's own string-building, not the code under
+    test. The check is precision-biased: if EITHER operand involves a call, a
+    fixture/parameter, or an attribute/subscript on a non-literal, it is NOT
+    flagged (it probably exercises real behavior).
+    """
+    params = _param_names(fn)
+    # Names assigned exactly once to a pure expression (top-down; a name may
+    # depend on earlier pure names). Names reassigned or assigned from impure
+    # expressions are excluded so a later real call can't be mistaken for pure.
+    local_pure: dict[str, ast.expr] = {}
+    seen: set[str] = set()
+    for stmt in ast.walk(fn):
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(
+            stmt.targets[0], ast.Name
+        ):
+            nm = stmt.targets[0].id
+            if nm in seen:
+                local_pure.pop(nm, None)  # reassigned → no longer trustworthy
+                continue
+            seen.add(nm)
+            if _is_pure_constructed(stmt.value, local_pure, params):
+                local_pure[nm] = stmt.value
+
+    out: list[SlopFinding] = []
+    for node in ast.walk(fn):
+        ops = _eq_operands(node)
+        if ops is None:
+            continue
+        lhs, rhs, lineno = ops
+        if (
+            _is_pure_constructed(lhs, local_pure, params)
+            and _is_pure_constructed(rhs, local_pure, params)
+            and (
+                _contains_stringish(lhs, local_pure)
+                or _contains_stringish(rhs, local_pure)
+            )
+        ):
+            try:
+                excerpt = f"assert {ast.unparse(lhs)} == {ast.unparse(rhs)}"[:120]
+            except Exception:
+                excerpt = "assert <test-built value> == <test-built value>"
+            out.append(
+                SlopFinding(
+                    path=path_str,
+                    line=lineno,
+                    kind="self_constructed_compare",
+                    code_excerpt=excerpt,
+                    why_slop=(
+                        "Both sides of this equality are strings the test itself "
+                        "built (literals/f-strings); neither calls production "
+                        "code. The test passes even if the implementation is "
+                        "missing or wrong. Call the production function/endpoint "
+                        "that produces the value and assert on ITS output."
+                    ),
+                )
+            )
     return out
 
 

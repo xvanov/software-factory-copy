@@ -307,3 +307,73 @@ def test_slopfinding_as_dict_carries_all_fields() -> None:
         "code_excerpt": "assert True",
         "why_slop": "...",
     }
+
+
+# --------------------------------------------------------------------------- #
+# self_constructed_compare — the #1 hollow-test anti-pattern (Loop-4)
+# --------------------------------------------------------------------------- #
+
+
+def _kinds(findings: list[SlopFinding]) -> set[str]:
+    return {f.kind for f in findings}
+
+
+def test_detects_self_constructed_fstring_compare(tmp_path: Path) -> None:
+    """assert <test-built f-string> == <test-built f-string> → flagged."""
+    src = (
+        "def test_path_convention():\n"
+        "    base = '/var/media'\n"
+        "    goal_id = 'g1'\n"
+        "    path = f'{base}/{goal_id}/file'\n"
+        "    expected = f'{base}/{goal_id}/file'\n"
+        "    assert path == expected\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    assert "self_constructed_compare" in _kinds(findings)
+
+
+def test_detects_inline_fstring_tautology(tmp_path: Path) -> None:
+    src = (
+        "def test_x():\n"
+        "    gid = 'abc'\n"
+        "    assert f'media/{gid}' == f'media/{gid}'\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    assert "self_constructed_compare" in _kinds(findings)
+
+
+def test_self_constructed_compare_not_flagged_when_calling_production(tmp_path: Path) -> None:
+    """If a side CALLS production code, it exercises behavior → NOT flagged."""
+    src = (
+        "from app.media import storage_path\n"
+        "def test_path_convention():\n"
+        "    base = '/var/media'\n"
+        "    assert storage_path('g1') == f'{base}/g1/file'\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    assert "self_constructed_compare" not in _kinds(findings)
+
+
+def test_self_constructed_compare_not_flagged_for_fixture_endpoint_test(tmp_path: Path) -> None:
+    """A fixture-driven endpoint test references a param (client/response) →
+    impure → NOT flagged, even though one side is a literal."""
+    src = (
+        "def test_upload_endpoint(client):\n"
+        "    response = client.post('/uploads', json={'x': 1})\n"
+        "    assert response.status_code == 201\n"
+        "    assert response.json()['path'] == '/var/media/g1/file'\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    assert "self_constructed_compare" not in _kinds(findings)
+
+
+def test_self_constructed_compare_not_flagged_for_settings_call(tmp_path: Path) -> None:
+    """Constructing a production object and asserting on its attr is real."""
+    src = (
+        "from app.config import Settings\n"
+        "def test_media_dir_default():\n"
+        "    s = Settings(_env_file=None)\n"
+        "    assert s.media_dir == '/var/sacrifice/media'\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    assert "self_constructed_compare" not in _kinds(findings)
