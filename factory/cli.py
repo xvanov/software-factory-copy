@@ -503,6 +503,35 @@ def tick_cmd(
         scheduled_results.append(
             (due.schedule.name, out.status, out.findings_count, len(out.directions_filed))
         )
+
+    # Auto PM-sync: triage directions still in ``status: created`` /
+    # ``needs-direction`` (filed by the scheduled personas above, or by
+    # ``factory tell``) into stories, so the queue refills without an
+    # operator remembering ``factory pm-sync``. Runs AFTER the scheduler so
+    # directions filed this very tick are picked up immediately.
+    from factory.chain.pm_sync import maybe_auto_pm_sync
+
+    try:
+        sync_summary, sync_reason = maybe_auto_pm_sync(
+            app_name,
+            _FACTORY_ROOT,
+            dry_run=dry_run,
+            github_client_factory=None if dry_run else _ensure_github_client,
+        )
+        if sync_summary is not None:
+            scheduled_results.append(
+                (
+                    "auto_pm_sync",
+                    "ok" if not sync_summary.errors else f"errors:{len(sync_summary.errors)}",
+                    sync_summary.processed,
+                    sync_summary.validated,
+                )
+            )
+        elif sync_reason not in {"disabled", "no_pending"}:
+            scheduled_results.append(("auto_pm_sync", sync_reason, 0, 0))
+    except Exception as exc:  # noqa: BLE001 - never fail the tick on triage
+        scheduled_results.append(("auto_pm_sync", f"errored:{exc!r}"[:60], 0, 0))
+
     if scheduled_results:
         sched_table = Table(title="scheduled personas fired this tick")
         sched_table.add_column("schedule")
@@ -1239,7 +1268,7 @@ def trace_cmd(
             sid = int(target)
         except ValueError:
             console.print(f"[red]error:[/red] expected story id (int); got {target!r}")
-            raise typer.Exit(code=2)
+            raise typer.Exit(code=2) from None
         story = session.get(StoryRecord, sid)
 
     slug = story.slug if story is not None else ""

@@ -623,3 +623,81 @@ def pm_sync(
             summary.errors.append((direction.id or direction.slug, repr(exc)))
 
     return summary
+
+
+def _pm_runs_last_hour(db_path: Path) -> int:
+    """Count real ``pm`` persona rows recorded in the last hour."""
+    import sqlite3
+    from datetime import UTC, datetime, timedelta
+
+    if not db_path.exists():
+        return 0
+    cutoff = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM runs WHERE persona='pm' AND ts > ?",
+                (cutoff,),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        # Fresh DB without a runs table yet — nothing has run.
+        return 0
+
+
+def maybe_auto_pm_sync(
+    app: str,
+    software_factory_root: Path,
+    *,
+    dry_run: bool = False,
+    github_client_factory: Any = None,
+    state_db_path: Path | None = None,
+) -> tuple[PMSyncSummary | None, str]:
+    """Tick-driven auto-triage of pending directions.
+
+    Directions filed by the scheduled personas (or ``factory tell``) used to
+    sit in ``status: created`` until an operator remembered to run
+    ``factory pm-sync`` — generated work rotted at the inbox. When
+    ``auto_pm_sync.enabled`` is set, every tick calls this; it runs the
+    pm-sync pipeline only when there is something to triage and the
+    ``pm_invocations_per_hour`` budget (measured from real ``pm`` rows in the
+    runs table) has headroom, so an erroring direction can't burn spend by
+    being retriaged on every tick.
+
+    ``github_client_factory`` is called (no args) only when a real sync will
+    actually run, so ticks on hosts without GitHub credentials don't fail
+    when there's nothing to triage.
+
+    Returns ``(summary_or_None, reason)`` with reason in
+    {"disabled", "no_pending", "rate_limited", "synced"}.
+    """
+    from factory.settings.loader import load_settings
+
+    root = Path(software_factory_root)
+    db_path = state_db_path or (root / "state" / "factory.db")
+
+    settings = load_settings(root)
+    if not settings.auto_pm_sync.enabled:
+        return None, "disabled"
+
+    if not pending_directions(app, root, db_path):
+        return None, "no_pending"
+
+    if _pm_runs_last_hour(db_path) >= settings.rate_limits.pm_invocations_per_hour:
+        return None, "rate_limited"
+
+    github_client: Any = None
+    if not dry_run and github_client_factory is not None:
+        github_client = github_client_factory()
+
+    summary = pm_sync(
+        app=app,
+        software_factory_root=root,
+        dry_run=dry_run,
+        github_client=github_client,
+        state_db_path=db_path,
+    )
+    return summary, "synced"

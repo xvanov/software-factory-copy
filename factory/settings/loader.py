@@ -87,6 +87,22 @@ class AutoMergeConfig(BaseModel):
     wait_for_ci: bool = True
 
 
+class AutoPMSyncConfig(BaseModel):
+    """Controls automatic PM triage of pending directions on every tick.
+
+    When ``enabled``, ``factory tick`` runs the pm-sync pipeline whenever
+    directions with status ``created``/``needs-direction`` exist, so work
+    filed by the scheduled personas (ralph, bug_hunter, ux_auditor, …) or
+    by ``factory tell`` flows into stories without an operator remembering
+    to run ``factory pm-sync``. Bounded by
+    ``rate_limits.pm_invocations_per_hour`` (counted from real ``pm`` rows
+    in the runs table) so an erroring direction can't burn spend by being
+    retriaged every tick.
+    """
+
+    enabled: bool = True
+
+
 class FactorySettings(BaseModel):
     caps: CapsConfig = Field(default_factory=CapsConfig)
     queues: QueuesConfig = Field(default_factory=QueuesConfig)
@@ -94,6 +110,7 @@ class FactorySettings(BaseModel):
     modes: ModesConfig = Field(default_factory=ModesConfig)
     direction_defaults: DirectionDefaults = Field(default_factory=DirectionDefaults)
     auto_merge: AutoMergeConfig = Field(default_factory=AutoMergeConfig)
+    auto_pm_sync: AutoPMSyncConfig = Field(default_factory=AutoPMSyncConfig)
 
 
 _CACHED: dict[Path, FactorySettings] = {}

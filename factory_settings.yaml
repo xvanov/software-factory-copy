@@ -54,6 +54,14 @@ auto_merge:
   merge_method: squash
   delete_branch_after_merge: true
   wait_for_ci: true
+# Auto PM-sync. When enabled, ``factory tick`` triages any direction still
+# in ``status: created`` / ``needs-direction`` into stories (same pipeline
+# as ``factory pm-sync``), so directions filed by scheduled personas or
+# ``factory tell`` never rot waiting for an operator. Bounded by
+# ``rate_limits.pm_invocations_per_hour`` counted from real pm rows in the
+# runs table.
+auto_pm_sync:
+  enabled: true
 # Phase 6 scheduled personas. ``factory tick`` consults this on every run
 # and dispatches due entries via ``factory.chain.scheduled_tasks``. Rate
 # limits referenced by ``rate_limit_key`` look up the same-named field in
