@@ -12,7 +12,8 @@ Establish the persistence and configuration foundation for media uploads by addi
 # Acceptance Criteria
 
 - A new table `media_uploads` persists per-upload metadata: `id`, `user_id`, `goal_id` (nullable), `sha256`, `size_bytes`, `duration_seconds`, `mime_type`, `storage_path`, `created_at`. Migration generated via Alembic autogenerate.
-- Recorded videos are stored under a configurable path keyed by `(user_id, goal_id_or_unassigned, upload_id)`. Default: `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}/<user_id>/<goal_or_orphan>/<upload_id>.mp4`. The setting lives in `backend/app/config.py`.
+- Recorded videos are stored under a configurable path keyed by `(user_id, goal_id_or_orphan, upload_id)`. Default: `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}/<user_id>/<goal_or_orphan>/<upload_id>.mp4`, where `<goal_or_orphan>` is the goal id when `goal_id` is set, or the literal segment `orphan` when it is not. The setting lives in `backend/app/config.py`. The convention is expressed as a pure path helper `media_storage_path(user_id, goal_id, upload_id)` in `backend/app/models/media.py` (no filesystem access) — NOT in a service module; the upload service is the next story's scope.
+- The `SACRIFICE_MEDIA_DIR` override is verified by a test that sets the environment variable (e.g. via monkeypatch) and observes the loaded setting honor it — not by passing a constructor kwarg.
 
 # Tasks / Subtasks
 
@@ -21,8 +22,8 @@ Establish the persistence and configuration foundation for media uploads by addi
 - [ ] Ensure nullable `goal_id` and ownership linkage via `user_id` are represented in the model.
 - [ ] Generate Alembic migration for `media_uploads` via autogenerate.
 - [ ] Verify migration creates the required columns and nullability constraints.
-- [ ] Verify default storage convention is expressible by later service logic using the new config setting.
-- [ ] Do not add upload routes or file-write business logic in this story.
+- [ ] Express the storage convention as the pure helper `media_storage_path(...)` in `backend/app/models/media.py` using the config setting; tests must call this helper for expected paths instead of precomputing them inline.
+- [ ] Do not add upload routes, file-write business logic, or any `backend/app/services/uploads.py` module in this story — that module belongs to the follow-on uploads-service story. If a previous attempt created it, remove it from this branch.
 
 # Dev Notes
 
