@@ -486,8 +486,8 @@ def _recover_blocked_stories(
     """Re-dispatch blocked stories so since-shipped chain fixes reach them.
 
     For each story in an auto-recoverable blocked state, reset it to the
-    re-entry point (SM_DONE → dev) with a clean slate (retry/cycle counters
-    cleared, stale reviewer payload cleared) so it flows through the current
+    re-entry point (SM_DONE → dev) with retry/cycle counters cleared (the
+    last reviewer findings are kept — see inline comment) so it flows through the current
     chain from scratch. Bounded to ``_MAX_AUTO_RECOVERIES``
     per story via ``auto_recovery`` events in the per-story log; once exhausted
     the story stays blocked and an ``auto_recovery_exhausted`` /
@@ -549,7 +549,11 @@ def _recover_blocked_stories(
         story.error = None
         story.dev_retries = 0
         story.reviewer_cycles = 0
-        story.reviewer_result_json = None
+        # Deliberately KEEP reviewer_result_json: the last reviewer verdict is
+        # the record of why the story blocked, the worktree still contains the
+        # rejected code, and handle_dev feeds findings into the prompt whenever
+        # they exist — so the first post-recovery dev pass starts informed
+        # instead of burning a cycle rediscovering the same objections.
         story.last_rejection_reason = None
         story.current_model_tier = "standard"
         story.harness_precheck_passed = False

@@ -107,3 +107,31 @@ def test_old_regime_recoveries_do_not_consume_budget(tmp_path: Path) -> None:
     assert out == [
         ("e", StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value, StoryState.SM_DONE.value)
     ]
+
+
+def test_recovery_preserves_reviewer_findings(tmp_path: Path) -> None:
+    """The last reviewer verdict survives recovery: the worktree still holds
+    the rejected code, and handle_dev feeds findings into the prompt whenever
+    they exist — clearing them made the first post-recovery dev pass blind
+    and burned a cycle rediscovering the same objections."""
+    import json
+
+    db = _seed(tmp_path)
+    s = persist_story(
+        StoryRecord(
+            direction_id="099", app="sacrifice", title="t", slug="f",
+            scope="backend", state=StoryState.BLOCKED_REVIEW_NONCONVERGENT.value,
+            dev_retries=6, reviewer_cycles=6,
+            reviewer_result_json=json.dumps({"verdict": "request_changes",
+                                             "findings": [{"severity": "medium", "what": "x"}]}),
+        ),
+        db,
+    )
+    out = _recover_blocked_stories(db, "sacrifice", root=tmp_path)
+    assert out
+    from sqlmodel import Session, select
+    with Session(create_engine(f"sqlite:///{db}")) as ses:
+        r = ses.exec(select(StoryRecord).where(StoryRecord.id == s.id)).one()
+    assert r.reviewer_cycles == 0 and r.dev_retries == 0
+    assert r.reviewer_result_json is not None
+    assert "request_changes" in r.reviewer_result_json
