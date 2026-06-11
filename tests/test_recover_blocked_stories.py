@@ -74,10 +74,12 @@ def test_recovery_is_bounded_then_escalates(tmp_path: Path) -> None:
     db = _seed(tmp_path)
     s = _blocked_story(db, state=StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value, slug="d")
 
-    # Simulate the story having already been recovered the max number of times.
+    # Simulate the story having already been recovered the max number of times
+    # under the CURRENT regime (re-entry at sm_done).
     for i in range(_MAX_AUTO_RECOVERIES):
         log_story_event(
-            s.id, "auto_recovery", {"attempt": i + 1},
+            s.id, "auto_recovery",
+            {"attempt": i + 1, "to_state": StoryState.SM_DONE.value},
             software_factory_root=tmp_path, slug_hint=s.slug,
         )
 
@@ -85,3 +87,23 @@ def test_recovery_is_bounded_then_escalates(tmp_path: Path) -> None:
     assert out == []  # cap reached → not recovered again
     events = read_story_events(s.id, software_factory_root=tmp_path, slug_hint=s.slug)
     assert [e for e in events if e.get("event") == "auto_recovery_exhausted"]
+
+
+def test_old_regime_recoveries_do_not_consume_budget(tmp_path: Path) -> None:
+    """A chain redesign changes the re-entry target; attempts burnt under the
+    old regime (e.g. to_state=tests_red, pre-Loop-4) must not count against
+    the new regime's budget — the new chain deserves its own honest attempts."""
+    db = _seed(tmp_path)
+    s = _blocked_story(db, state=StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value, slug="e")
+
+    for i in range(_MAX_AUTO_RECOVERIES):
+        log_story_event(
+            s.id, "auto_recovery",
+            {"attempt": i + 1, "to_state": "tests_red"},  # old re-entry point
+            software_factory_root=tmp_path, slug_hint=s.slug,
+        )
+
+    out = _recover_blocked_stories(db, "sacrifice", root=tmp_path)
+    assert out == [
+        ("e", StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value, StoryState.SM_DONE.value)
+    ]

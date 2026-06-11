@@ -509,12 +509,17 @@ def _recover_blocked_stories(
         target = _AUTO_RECOVERABLE_STATES.get(story.state)
         if target is None:
             continue
+        # Only recoveries into the CURRENT re-entry point consume the budget.
+        # When the chain is redesigned the re-entry target changes (e.g. the
+        # old test-first regime re-entered at tests_red; Loop-4 re-enters at
+        # sm_done), and attempts burnt under the old regime say nothing about
+        # whether the new chain can converge the story — the budget resets.
         prior = sum(
             1
             for e in read_story_events(
                 story.id, software_factory_root=root, slug_hint=story.slug
             )
-            if e.get("event") == "auto_recovery"
+            if e.get("event") == "auto_recovery" and e.get("to_state") == target
         )
         if prior >= _MAX_AUTO_RECOVERIES:
             # Already re-attempted the allowed number of times and still
