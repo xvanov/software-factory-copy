@@ -119,6 +119,30 @@ def test_hourly_pm_budget_blocks_sync(tmp_path: Path) -> None:
     assert summary is None and reason == "rate_limited"
 
 
+def test_needs_direction_entries_are_not_auto_retriaged(tmp_path: Path) -> None:
+    """Auto-sync must skip needs-direction entries: re-validating them
+    unchanged every tick re-posts the same tracker-issue comment. They are
+    re-checked only by an operator-invoked pm-sync."""
+    import yaml
+
+    db = _seed_app(tmp_path)
+    _seed_pending_direction(tmp_path)
+    _write_settings(tmp_path, enabled=True)
+
+    # Flip the seeded direction to needs-direction (failed backpressure).
+    state_files = list((tmp_path / "apps" / "sacrifice" / "directions").glob("*/state.yaml"))
+    assert state_files
+    for sf in state_files:
+        state = yaml.safe_load(sf.read_text())
+        state["status"] = "needs-direction"
+        sf.write_text(yaml.safe_dump(state), encoding="utf-8")
+
+    summary, reason = maybe_auto_pm_sync(
+        "sacrifice", tmp_path, dry_run=True, state_db_path=db
+    )
+    assert summary is None and reason == "no_pending"
+
+
 def test_github_client_factory_not_called_when_nothing_pending(tmp_path: Path) -> None:
     """Ticks on hosts without GitHub creds must not fail on an idle queue."""
     db = _seed_app(tmp_path)

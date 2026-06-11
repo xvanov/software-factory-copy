@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from factory.app_config import AppConfig, DeployConfig
 from factory.directions.creator import create_direction
 from factory.directions.parser import (
@@ -54,6 +52,13 @@ class _FakeIssue:
 
     def create_comment(self, body: str) -> None:
         self.comments.append(body)
+
+    def get_comments(self) -> list[Any]:
+        class _C:
+            def __init__(self, body: str) -> None:
+                self.body = body
+
+        return [_C(b) for b in self.comments]
 
 
 class _FakeRepo:
@@ -198,6 +203,23 @@ def test_record_needs_direction_labels_and_comments(tmp_path: Path) -> None:
     assert any("user_flow" in c for c in issue.comments)
 
 
+def test_record_needs_direction_does_not_repost_identical_comment(tmp_path: Path) -> None:
+    """Re-validating an unchanged direction must not append the same comment
+    again — auto pm-sync runs every tick and was spamming tracker issues."""
+    direction = _seed(tmp_path)
+    gh = _FakeGithub()
+    cfg = _app_config()
+    for _ in range(3):
+        record_needs_direction(direction, ["user_flow"], cfg, gh)
+        direction = parse_direction_dir("sacrifice", direction.dir_path)
+    issue = gh.repo.issues[100]
+    assert len(issue.comments) == 1
+
+    # A DIFFERENT missing-list is new information and must post.
+    record_needs_direction(direction, ["api_spec"], cfg, gh)
+    assert len(issue.comments) == 2
+
+
 # ─── tracker body chain rendering tests ───────────────────────────────
 
 
@@ -235,7 +257,7 @@ def _make_direction(
 
 
 def test_tracker_body_renders_chain_line(tmp_path: Path) -> None:
-    parent = _make_direction(
+    _make_direction(
         tmp_path, "060-parent", tracker_issue_num=42
     )
     child = _make_direction(tmp_path, "061-child", parent_direction="060-parent")
@@ -268,7 +290,7 @@ def test_tracker_body_no_chain_when_parent_not_set(tmp_path: Path) -> None:
 
 def test_tracker_body_parent_without_tracker_issue_no_hash(tmp_path: Path) -> None:
     # Parent has no tracker_issue in state.yaml
-    parent = _make_direction(tmp_path, "063-parent", tracker_issue_num=None)
+    _make_direction(tmp_path, "063-parent", tracker_issue_num=None)
     child = _make_direction(tmp_path, "064-child", parent_direction="063-parent")
     chain = resolve_direction_chain(child, tmp_path)
 

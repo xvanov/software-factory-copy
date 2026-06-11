@@ -457,8 +457,17 @@ def pm_sync(
     dry_run: bool = False,
     github_client: Any = None,
     state_db_path: Path | None = None,
+    pending_statuses: frozenset[str] = frozenset({"created", "needs-direction"}),
 ) -> PMSyncSummary:
-    """Run the PM-sync pipeline once for ``app``. Returns a summary record."""
+    """Run the PM-sync pipeline once for ``app``. Returns a summary record.
+
+    ``pending_statuses`` narrows which pending directions are processed.
+    The default (operator-invoked ``factory pm-sync``) re-validates
+    ``needs-direction`` entries too, so an operator who just fleshed out a
+    direction gets it re-checked. Automated callers should pass
+    ``frozenset({"created"})`` — re-validating an unchanged insufficient
+    direction on every tick only re-posts the same tracker-issue comment.
+    """
     root = Path(software_factory_root)
     db_path = state_db_path or (root / "state" / "factory.db")
 
@@ -478,7 +487,9 @@ def pm_sync(
         )
 
     summary = PMSyncSummary()
-    pending = pending_directions(app, root, db_path)
+    pending = [
+        d for d in pending_directions(app, root, db_path) if d.status in pending_statuses
+    ]
     summary.processed = len(pending)
 
     # App repo path for the context prelude. Phase 7 resolves this via the
@@ -671,6 +682,14 @@ def maybe_auto_pm_sync(
     actually run, so ticks on hosts without GitHub credentials don't fail
     when there's nothing to triage.
 
+    Only ``status: created`` directions are auto-triaged. ``needs-direction``
+    entries are deliberately excluded: they failed backpressure validation
+    and re-validating them unchanged every tick just re-posts the same
+    "Needs direction" comment on their tracker issues (observed live
+    2026-06-11: 15 stuck directions x one comment per 5-minute tick). They
+    are re-checked by an operator-invoked ``factory pm-sync`` after the
+    missing artifacts are added.
+
     Returns ``(summary_or_None, reason)`` with reason in
     {"disabled", "no_pending", "rate_limited", "synced"}.
     """
@@ -683,7 +702,8 @@ def maybe_auto_pm_sync(
     if not settings.auto_pm_sync.enabled:
         return None, "disabled"
 
-    if not pending_directions(app, root, db_path):
+    auto_statuses = frozenset({"created"})
+    if not any(d.status in auto_statuses for d in pending_directions(app, root, db_path)):
         return None, "no_pending"
 
     if _pm_runs_last_hour(db_path) >= settings.rate_limits.pm_invocations_per_hour:
@@ -699,5 +719,6 @@ def maybe_auto_pm_sync(
         dry_run=dry_run,
         github_client=github_client,
         state_db_path=db_path,
+        pending_statuses=auto_statuses,
     )
     return summary, "synced"

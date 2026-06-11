@@ -170,10 +170,30 @@ def record_needs_direction(
     repo = github_client.get_repo(app_config.repo)
     issue = repo.get_issue(issue_number)
     missing_text = ", ".join(missing) if missing else "(unspecified)"
-    issue.create_comment(
+    comment_body = (
         f"**Needs direction.** Missing: {missing_text}.\n\n"
         "Add the missing artifact(s) (flow.md / api_spec.md / acceptance "
         "criteria) to the direction directory and the factory will re-validate "
         "on the next pm-sync."
     )
+    # Idempotent: re-validating an unchanged direction must not append the
+    # same comment again — repeated pm-sync passes were spamming one
+    # identical comment per pass onto every needs-direction tracker issue.
+    if _last_comment_body(issue) != comment_body:
+        issue.create_comment(comment_body)
     return issue_number
+
+
+def _last_comment_body(issue: Any) -> str | None:
+    """Best-effort body of the issue's most recent comment (None on failure)."""
+    try:
+        comments = issue.get_comments()
+        total = getattr(comments, "totalCount", None)
+        if total is None:
+            seq = list(comments)
+            return getattr(seq[-1], "body", None) if seq else None
+        if total == 0:
+            return None
+        return getattr(comments[total - 1], "body", None)
+    except Exception:  # noqa: BLE001 - never block the comment on a read error
+        return None
