@@ -16,9 +16,12 @@ Establish the persistence and configuration foundation for media uploads by addi
 - The `SACRIFICE_MEDIA_DIR` override is verified by a test that sets the environment variable (e.g. via monkeypatch) and observes the loaded setting honor it — not by passing a constructor kwarg.
 - **Settings-access pattern (operator clarification, 2026-06-11 — both dev and
   reviewer should treat this as the contract):**
-  - `media_storage_path(...)` reads the storage root from the app's loaded
-    settings (`from app.config import settings`) at call time — neither a fresh
-    `Settings()` per call nor a captured copy at import time.
+  - `media_storage_path(...)` reads the storage root via module-attribute
+    lookup at call time — `from app import config` at module top, then
+    `config.settings.sacrifice_media_dir` inside the function — so a reload
+    or rebind of `app.config.settings` is observed. NOT a fresh `Settings()`
+    per call, NOT a value captured at import, and NOT `from app.config
+    import settings` (that binding misses rebinds).
   - The env-override test monkeypatches the environment AND constructs/reloads
     a `Settings` instance to prove env wins, OR monkeypatches
     `settings.sacrifice_media_dir` and asserts the helper output follows it.
