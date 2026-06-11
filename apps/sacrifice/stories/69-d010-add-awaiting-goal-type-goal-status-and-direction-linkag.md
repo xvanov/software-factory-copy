@@ -21,6 +21,14 @@ As a user, I want d010 add awaiting_goal_type goal status and direction linkage,
 - Read context/current-state.md and context/modules/backend.md before implementing.
 [Source: context/current-state.md]
 [Source: context/modules/backend.md]
+- **Operator note (2026-06-11) — table ownership:** the `chat_sessions` table
+  and its migration belong to D009 ("add chat_sessions model, migration, and
+  create-session endpoint"), which is merging ahead of this story. Do NOT
+  create `chat_sessions` (or any D009-owned table) in this story's migrations;
+  this story's migration scope is the awaiting-goal-type status, direction
+  linkage columns, and its own additions only. If `chat_sessions` is missing
+  on this branch, rebase/merge the base branch once D009's PR lands rather
+  than duplicating the table.
 
 #### Flow (verbatim from direction)
 
@@ -194,3 +202,17 @@ Attempt 8 (reviewer re-revision). Addressed all 5 reviewer code change requests 
 ## Senior Developer Review
 
 ## Review Follow-ups
+
+### Round 2 (2026-01-20) — All 7 items addressed
+
+**CR1 (chat_history):** Added `chat_history: list[dict] | None = None` to `RequestNewGoalTypeBody` (`backend/app/routes/chat.py:78`). The `synthesize_direction` call now passes `body.chat_history` as the second argument (line 248).
+
+**CR2 (slug normalization):** Rewrote the iterate slug derivation to strip chain-position tokens (`iterate`, `iteration`, `iter`) and standalone numbers, and restricted tokens (`v2`–`v5`). User feedback like "iterate 2 with side angle" now produces `pushup-counter-with-side-angle` instead of a forbidden `iterate-N` shape (`backend/app/routes/chat.py:489-507`).
+
+**CR3 (compensating transaction):** Wrapped `write_direction` and the subsequent DB commit in separate try/except blocks; any failure in either cleans up the orphaned direction directory before re-raising (`backend/app/routes/chat.py:553-590`).
+
+**TQ1 (404 test side-effect assertions):** `test_request_new_goal_type_returns_404_for_missing_session` now verifies no goal row was created (via fresh engine/select) and no direction directory was written (via `temp_directions_path.iterdir()`) (`backend/tests/test_awaiting_goal_type.py:259-277`).
+
+**TQ2 (normal goal guard):** `test_normal_goal_has_null_awaiting_direction_id` is retained as the sole regression guard ensuring non-generated goals return `awaiting_direction_id: null`. No other test covers this.
+
+**Pre-existing failures:** 6 pre-existing test failures (2× YouTube verification, 2× API endpoint verification, goal type smoke metadata, notifications auto-create) are unrelated to D010 changes; confirmed present on the pre-change commit.
