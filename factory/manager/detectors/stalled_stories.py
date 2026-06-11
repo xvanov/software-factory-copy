@@ -130,6 +130,7 @@ def stalled_stories(
     stuck_in_progress: list[dict] = []
     stalled: list[dict] = []
     non_terminal_total = 0
+    minutes_since_any_story_update: float | None = None
 
     if db_path.exists():
         conn: sqlite3.Connection | None = None
@@ -145,10 +146,17 @@ def stalled_stories(
                 conn.close()
 
         for story_id, state, app, slug, updated_at in rows:
+            ts = _parse_ts(updated_at)
+            if ts is not None:
+                age_min_any = (now - ts).total_seconds() / 60.0
+                if (
+                    minutes_since_any_story_update is None
+                    or age_min_any < minutes_since_any_story_update
+                ):
+                    minutes_since_any_story_update = round(age_min_any, 1)
             if state in _TERMINAL_STATES:
                 continue
             non_terminal_total += 1
-            ts = _parse_ts(updated_at)
             if ts is None:
                 continue
             age_min = (now - ts).total_seconds() / 60.0
@@ -180,7 +188,19 @@ def stalled_stories(
             f"in a *_in_progress state (handler never returned): "
             + ", ".join(f"#{e['story_id']}@{e['state']}" for e in stuck_in_progress[:10])
         )
-    if stalled:
+    # An aged backlog is only an ALARM when the factory is actually idle.
+    # While the chain drains a large queue serially, the oldest stories'
+    # updated_at keeps aging even though work is flowing — a truly stuck
+    # factory shows NO recent story updates AND/OR no recent ticks. Alarming
+    # on "old stories exist while the factory is visibly working" caused an
+    # L1->L2->L3 churn loop on every watcher cycle (2026-06-11, ~$2/hour of
+    # duplicate halt-urgency concerns during a healthy drain).
+    draining = (
+        not no_tick_recently
+        and minutes_since_any_story_update is not None
+        and minutes_since_any_story_update < in_progress_stall_minutes
+    )
+    if stalled and not draining:
         alarms.append(
             f"{len(stalled)} non-terminal story(ies) with no state change in "
             f">{stall_minutes:g}m: "
@@ -200,5 +220,7 @@ def stalled_stories(
         "minutes_since_last_tick": minutes_since_last_tick,
         "no_tick_recently": no_tick_recently,
         "non_terminal_total": non_terminal_total,
+        "minutes_since_any_story_update": minutes_since_any_story_update,
+        "draining": draining,
         "now": now.isoformat(),
     }

@@ -124,3 +124,37 @@ def test_does_not_depend_on_event_window(tmp_path: Path) -> None:
     # But the two aged non-terminal stories still alarm.
     assert len(res["stalled"]) + len(res["stuck_in_progress"]) == 2
     assert res["alarms"]
+
+
+def test_aged_backlog_suppressed_while_actively_draining(tmp_path: Path) -> None:
+    """Old queued stories are NOT an alarm while the factory is visibly
+    working: recent tick + a recently-updated story means the queue is
+    draining serially. Alarming here caused an L1->L2->L3 churn loop on
+    every watcher cycle during a healthy post-recovery drain (2026-06-11)."""
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
+    old = (now - timedelta(hours=10)).isoformat()
+    fresh = (now - timedelta(minutes=3)).isoformat()
+    _make_db(
+        tmp_path,
+        [(1, "sm_done", old), (2, "sm_done", old), (3, "tests_green", fresh)],
+    )
+    _write_tick(tmp_path, now - timedelta(minutes=1))
+
+    res = stalled_stories(root=tmp_path, now=now)
+    assert res["draining"] is True
+    assert res["stalled"], "aged stories still REPORTED for visibility"
+    assert res["alarms"] == [], "but not alarmed while draining"
+
+
+def test_aged_backlog_still_alarms_when_factory_idle(tmp_path: Path) -> None:
+    """The original blind spot stays covered: a dead factory (no recent story
+    updates, no recent tick) with an aged backlog must alarm."""
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
+    old = (now - timedelta(hours=10)).isoformat()
+    _make_db(tmp_path, [(1, "sm_done", old), (2, "tests_green", old)])
+    _write_tick(tmp_path, now - timedelta(hours=9))
+
+    res = stalled_stories(root=tmp_path, now=now)
+    assert res["draining"] is False
+    assert any("no state change" in a for a in res["alarms"])
+    assert any("no orchestrator tick" in a for a in res["alarms"])
