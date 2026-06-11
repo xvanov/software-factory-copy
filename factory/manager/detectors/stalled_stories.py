@@ -78,12 +78,64 @@ def _last_tick_ts(root: Path) -> datetime | None:
                     rec = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(rec, dict):
+                    continue
                 ts = _parse_ts(rec.get("ts"))
                 if ts is not None:
                     last = ts
     except OSError:
         return None
     return last
+
+
+def _tick_in_flight(root: Path) -> bool:
+    """True when the last tick event is a ``tick_start`` with no ``tick_end``.
+
+    A serial tick over a long queue can legitimately run for an hour-plus;
+    during that time the event stream is silent and tick "silence" is
+    expected, not a liveness failure.
+    """
+    stream = root / "state" / "events" / "ticks.ndjson"
+    if not stream.exists():
+        return False
+    last_event: str | None = None
+    try:
+        with stream.open(encoding="utf-8") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rec, dict) and rec.get("event") in ("tick_start", "tick_end"):
+                    last_event = str(rec.get("event"))
+    except OSError:
+        return False
+    return last_event == "tick_start"
+
+
+def _live_handler_count(root: Path) -> int:
+    """Number of persona sandboxes/LLM calls running RIGHT NOW.
+
+    The ``live_handlers`` heartbeat table holds a row only while a handler
+    is in flight. A long dev sandbox emits no events until it finishes, so
+    the event window looks like "only control-plane activity" — this is the
+    signal that real work is happening anyway.
+    """
+    db_path = root / "state" / "factory.db"
+    if not db_path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM live_handlers").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
 
 
 def stalled_stories(
@@ -176,9 +228,25 @@ def stalled_stories(
     minutes_since_last_tick: float | None = None
     if last_tick is not None:
         minutes_since_last_tick = round((now - last_tick).total_seconds() / 60.0, 1)
+    tick_in_flight = _tick_in_flight(root)
+    live_handlers_active = _live_handler_count(root)
+    # Tick silence is only a liveness failure when no tick is mid-run. A
+    # serial tick over a long queue emits tick_start, then nothing for an
+    # hour-plus — treat a dangling tick_start as alive as long as work is
+    # visibly progressing (an in-flight handler or a recent story update);
+    # a tick that crashed without tick_end goes quiet on BOTH and still
+    # alarms.
+    tick_visibly_working = tick_in_flight and (
+        live_handlers_active > 0
+        or (
+            minutes_since_any_story_update is not None
+            and minutes_since_any_story_update < in_progress_stall_minutes
+        )
+    )
     no_tick_recently = (
         minutes_since_last_tick is not None
         and minutes_since_last_tick >= tick_silence_minutes
+        and not tick_visibly_working
     )
 
     alarms: list[str] = []
@@ -195,10 +263,12 @@ def stalled_stories(
     # on "old stories exist while the factory is visibly working" caused an
     # L1->L2->L3 churn loop on every watcher cycle (2026-06-11, ~$2/hour of
     # duplicate halt-urgency concerns during a healthy drain).
-    draining = (
-        not no_tick_recently
-        and minutes_since_any_story_update is not None
-        and minutes_since_any_story_update < in_progress_stall_minutes
+    draining = not no_tick_recently and (
+        live_handlers_active > 0
+        or (
+            minutes_since_any_story_update is not None
+            and minutes_since_any_story_update < in_progress_stall_minutes
+        )
     )
     if stalled and not draining:
         alarms.append(
@@ -213,12 +283,24 @@ def stalled_stories(
             f"nothing is being dispatched."
         )
 
+    # While draining, present the aged list under a neutral key. The L1
+    # watcher is an LLM — a 31-item list named "stalled" reads as an
+    # emergency even with zero alarm strings; it escalated on exactly that
+    # during a healthy drain (2026-06-11).
+    if draining:
+        aged_backlog_while_draining, stalled = stalled, []
+    else:
+        aged_backlog_while_draining = []
+
     return {
         "alarms": alarms,
         "stuck_in_progress": stuck_in_progress,
         "stalled": stalled,
+        "aged_backlog_while_draining": aged_backlog_while_draining,
         "minutes_since_last_tick": minutes_since_last_tick,
         "no_tick_recently": no_tick_recently,
+        "tick_in_flight": tick_in_flight,
+        "live_handlers_active": live_handlers_active,
         "non_terminal_total": non_terminal_total,
         "minutes_since_any_story_update": minutes_since_any_story_update,
         "draining": draining,

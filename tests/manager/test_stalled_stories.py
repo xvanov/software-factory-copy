@@ -142,8 +142,9 @@ def test_aged_backlog_suppressed_while_actively_draining(tmp_path: Path) -> None
 
     res = stalled_stories(root=tmp_path, now=now)
     assert res["draining"] is True
-    assert res["stalled"], "aged stories still REPORTED for visibility"
-    assert res["alarms"] == [], "but not alarmed while draining"
+    assert res["stalled"] == [], "not presented as 'stalled' while draining"
+    assert res["aged_backlog_while_draining"], "aged stories still reported, neutrally"
+    assert res["alarms"] == [], "and not alarmed while draining"
 
 
 def test_aged_backlog_still_alarms_when_factory_idle(tmp_path: Path) -> None:
@@ -157,4 +158,51 @@ def test_aged_backlog_still_alarms_when_factory_idle(tmp_path: Path) -> None:
     res = stalled_stories(root=tmp_path, now=now)
     assert res["draining"] is False
     assert any("no state change" in a for a in res["alarms"])
+    assert any("no orchestrator tick" in a for a in res["alarms"])
+
+
+def test_long_inflight_tick_with_live_handler_is_not_tick_silence(tmp_path: Path) -> None:
+    """A serial tick can run >tick_silence_minutes with only tick_start
+    written. With a live handler row present (a dev sandbox mid-run), that
+    silence is expected — no no-tick alarm."""
+    import json as _json
+
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
+    old = (now - timedelta(hours=10)).isoformat()
+    _make_db(tmp_path, [(1, "sm_done", old), (2, "dev_in_progress", (now - timedelta(minutes=5)).isoformat())])
+    conn = sqlite3.connect(str(tmp_path / "state" / "factory.db"))
+    conn.execute("CREATE TABLE live_handlers (id INTEGER PRIMARY KEY, persona TEXT)")
+    conn.execute("INSERT INTO live_handlers (persona) VALUES ('dev')")
+    conn.commit()
+    conn.close()
+    stream = tmp_path / "state" / "events" / "ticks.ndjson"
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    stream.write_text(
+        _json.dumps({"ts": (now - timedelta(minutes=40)).isoformat(), "event": "tick_start"}) + "\n"
+    )
+
+    res = stalled_stories(root=tmp_path, now=now)
+    assert res["tick_in_flight"] is True
+    assert res["live_handlers_active"] == 1
+    assert res["no_tick_recently"] is False
+    assert res["alarms"] == []
+
+
+def test_crashed_tick_dangling_start_still_alarms(tmp_path: Path) -> None:
+    """A tick_start with no tick_end AND no live handlers AND no recent
+    story updates is a crashed tick — silence must still alarm."""
+    import json as _json
+
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
+    old = (now - timedelta(hours=10)).isoformat()
+    _make_db(tmp_path, [(1, "sm_done", old)])
+    stream = tmp_path / "state" / "events" / "ticks.ndjson"
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    stream.write_text(
+        _json.dumps({"ts": (now - timedelta(hours=2)).isoformat(), "event": "tick_start"}) + "\n"
+    )
+
+    res = stalled_stories(root=tmp_path, now=now)
+    assert res["tick_in_flight"] is True
+    assert res["no_tick_recently"] is True
     assert any("no orchestrator tick" in a for a in res["alarms"])
