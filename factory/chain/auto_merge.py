@@ -305,7 +305,23 @@ def _gh_pr_merge(
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
-        return f"gh exit={exc.returncode}: {exc.stderr.strip()}"
+        stderr = (exc.stderr or "").strip()
+        # ``--auto`` ENABLES auto-merge, which GitHub refuses when nothing
+        # blocks the merge: "clean status" (no required checks pending) or
+        # "Protected branch rules not configured". The PR is immediately
+        # mergeable — merge it directly instead of reporting failure
+        # (PR 111, 2026-06-11; also the May-29/30 docs-chain merge errors).
+        if wait_for_ci and (
+            "clean status" in stderr
+            or "Protected branch rules not configured" in stderr
+        ):
+            direct_cmd = [c for c in cmd if c != "--auto"]
+            try:
+                subprocess.run(direct_cmd, check=True, capture_output=True, text=True)
+                return None
+            except subprocess.CalledProcessError as exc2:
+                return f"gh exit={exc2.returncode}: {(exc2.stderr or '').strip()}"
+        return f"gh exit={exc.returncode}: {stderr}"
     except FileNotFoundError:
         # gh not installed — fall back to pygithub if available.
         if github_client is None:
