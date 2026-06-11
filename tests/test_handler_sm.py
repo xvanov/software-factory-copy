@@ -304,3 +304,63 @@ def test_sm_prelude_receives_parent_direction_chain(
     # The prelude output must contain the parent's direction.md body text.
     assert len(captured_prelude) == 1
     assert "PARENT_BODY_SENTINEL_TOKEN" in captured_prelude[0]
+
+
+def test_truncated_db_slug_matches_full_sm_slug(temp_root: Path, app_config: AppConfig) -> None:
+    """The DB slug is truncated (column cap) while the SM emits full slugs;
+    matching must be by prefix, not equality."""
+    _write_direction(temp_root)
+    s = _story(temp_root)
+    s.slug = "add-chat-match-service-with-configurable-llm-match-cont"  # truncated
+    db = temp_root / "state" / "factory.db"
+    persist_story(s, db)
+    fixture = {
+        "stories": [
+            {
+                "title": "foundation", "slug": "add-chat-sessions-model",
+                "scope": "backend", "file_content": "# WRONG sibling contract\n",
+                "target_path": "stories/0-add-chat-sessions-model.md",
+            },
+            {
+                "title": s.title,
+                "slug": "add-chat-match-service-with-configurable-llm-match-contract",
+                "scope": "backend", "file_content": "# correct match-service story\n",
+                "target_path": "stories/0-add-chat-match-service-with-configurable-llm-match-contract.md",
+            },
+        ],
+        "summary": "fixture",
+    }
+    handle_sm(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
+    written = (temp_root / "apps" / "sacrifice" / s.story_file_path).read_text()
+    assert "correct match-service story" in written
+    assert "WRONG sibling" not in written
+
+
+def test_no_matching_sm_entry_errors_instead_of_first_fallback(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    """No silent fallback-to-first: writing a sibling's contract into this
+    story's file sent dev off to re-build the sibling (9 corrupted stories,
+    2026-06-11). An unmatched story must error loudly and write nothing."""
+    _write_direction(temp_root)
+    s = _story(temp_root)
+    s.slug = "totally-unrelated-story-slug"
+    db = temp_root / "state" / "factory.db"
+    persist_story(s, db)
+    original_path = s.story_file_path
+    fixture = {
+        "stories": [
+            {
+                "title": "foundation", "slug": "add-chat-sessions-model",
+                "scope": "backend", "file_content": "# WRONG sibling contract\n",
+                "target_path": "stories/0-add-chat-sessions-model.md",
+            },
+        ],
+        "summary": "fixture",
+    }
+    result = handle_sm(s, app_config, temp_root, dry_run=True, db_path=db, fixture=fixture)
+    assert result.error and "no story matching slug" in result.error
+    # The sibling's file content must NOT have been written anywhere for us.
+    if original_path:
+        p = temp_root / "apps" / "sacrifice" / original_path
+        assert not p.exists() or "WRONG sibling" not in p.read_text()

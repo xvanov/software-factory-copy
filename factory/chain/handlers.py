@@ -666,18 +666,32 @@ def handle_sm(
             )
         result = result_any
 
-    # Find the story entry that matches this StoryRecord (by slug, fall back to first).
+    # Find the story entry that matches this StoryRecord. The DB slug is
+    # TRUNCATED (column cap) while the SM emits full slugs, so exact equality
+    # misses (e.g. "...llm-match-cont" vs "...llm-match-contract") — match by
+    # prefix in either direction. And NEVER fall back to "the first story":
+    # that silent default wrote the FIRST sibling's contract into 9 stories'
+    # files (D009/D010, found 2026-06-11) — dev faithfully re-built story
+    # 22's scope under story 23's title, the reviewer approved it against the
+    # same wrong file, and the duplicate PR conflicted with the real merged
+    # implementation. Writing the wrong contract is strictly worse than
+    # failing loudly.
     stories_out = result.get("stories") or []
     matched: dict[str, Any] | None = None
     for s in stories_out:
-        if s.get("slug") == story.slug:
+        s_slug = str(s.get("slug") or "")
+        if s_slug == story.slug or (
+            s_slug and (s_slug.startswith(story.slug) or story.slug.startswith(s_slug))
+        ):
             matched = s
             break
-    if matched is None and stories_out:
-        matched = stories_out[0]
 
     if matched is None:
-        story.error = "sm produced no stories"
+        story.error = (
+            f"sm output has no story matching slug {story.slug!r} "
+            f"(got: {[str(s.get('slug'))[:40] for s in stories_out[:6]]!r}); "
+            "refusing to write a sibling's contract into this story's file"
+        )
         story.state = advance(story, EVENT_SM_DONE).value
         story.sm_result_json = json.dumps(result)
         persist_story(story, db)
