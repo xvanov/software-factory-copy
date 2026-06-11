@@ -14,6 +14,23 @@ Establish the persistence and configuration foundation for media uploads by addi
 - A new table `media_uploads` persists per-upload metadata: `id`, `user_id`, `goal_id` (nullable), `sha256`, `size_bytes`, `duration_seconds`, `mime_type`, `storage_path`, `created_at`. Migration generated via Alembic autogenerate.
 - Recorded videos are stored under a configurable path keyed by `(user_id, goal_id_or_orphan, upload_id)`. Default: `${SACRIFICE_MEDIA_DIR:-/var/sacrifice/media}/<user_id>/<goal_or_orphan>/<upload_id>.mp4`, where `<goal_or_orphan>` is the goal id when `goal_id` is set, or the literal segment `orphan` when it is not. The setting lives in `backend/app/config.py`. The convention is expressed as a pure path helper `media_storage_path(user_id, goal_id, upload_id)` in `backend/app/models/media.py` (no filesystem access) — NOT in a service module; the upload service is the next story's scope.
 - The `SACRIFICE_MEDIA_DIR` override is verified by a test that sets the environment variable (e.g. via monkeypatch) and observes the loaded setting honor it — not by passing a constructor kwarg.
+- **Settings-access pattern (operator clarification, 2026-06-11 — both dev and
+  reviewer should treat this as the contract):**
+  - `media_storage_path(...)` reads the storage root from the app's loaded
+    settings (`from app.config import settings`) at call time — neither a fresh
+    `Settings()` per call nor a captured copy at import time.
+  - The env-override test monkeypatches the environment AND constructs/reloads
+    a `Settings` instance to prove env wins, OR monkeypatches
+    `settings.sacrifice_media_dir` and asserts the helper output follows it.
+    Either is acceptable; demanding more than this is out of scope.
+  - Model-persistence tests obtain the EXPECTED path by calling
+    `media_storage_path(...)` and compare it to the PERSISTED row's
+    `storage_path` — the helper is the single source of the convention; tests
+    must not duplicate the format as a hand-built literal.
+  - One direct helper test asserting the full default-format output (with the
+    literal `orphan` segment for the no-goal case) is sufficient coverage of
+    the format itself; additional permutations of the same assertion are not
+    required.
 
 # Tasks / Subtasks
 
