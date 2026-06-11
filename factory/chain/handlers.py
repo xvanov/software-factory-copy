@@ -976,6 +976,40 @@ def handle_dev(
         # the next tick), bounded by a consecutive-error cap so a persistent
         # fault escalates loudly rather than looping.
         if not dry_run and _is_premodel_infra_failure(run_res):
+            # Provider content-filter blocks are NOT infrastructure: the same
+            # conversation deterministically re-trips the filter (observed
+            # 2026-06-11, Azure "ResponsibleAI" blocking deepseek's own
+            # completion 3/3 on story 32), so retrying the same model just
+            # marches to the breaker cap and terminally blocks the story.
+            # Escalate to the hard-tier model instead — a different model has
+            # a different filter profile. One-shot: if the hard tier also
+            # filters, fall through to the bounded infra path below.
+            if (
+                "content_filter" in (run_res.error or "")
+                and story.current_model_tier != "hard"
+            ):
+                story.current_model_tier = "hard"
+                story.state = advance(story, EVENT_DEV_TESTS_RED).value
+                story.error = None
+                persist_story(story, db)
+                log_story_event(
+                    story.id,
+                    "dev_content_filter_tier_escalation",
+                    {
+                        "to_tier": "hard",
+                        "error": (run_res.error or "")[:300],
+                    },
+                    software_factory_root=software_factory_root,
+                    slug_hint=story.slug,
+                )
+                return HandlerResult(
+                    next_state=StoryState(story.state),
+                    payload={
+                        "test_run_passed": False,
+                        "content_filter_tier_escalation": True,
+                    },
+                    error=None,
+                )
             prior_infra = _consecutive_trailing_infra_errors(
                 story, software_factory_root
             )

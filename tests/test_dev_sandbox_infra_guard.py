@@ -220,3 +220,66 @@ def test_genuine_red_tests_still_counts_as_a_retry(
     assert story.dev_retries == 1
     events = read_story_events(story.id, software_factory_root=temp_root, slug_hint=story.slug)
     assert not [e for e in events if e.get("event") == "dev_sandbox_infra_error"]
+
+
+def _content_filter_sandbox():
+    """Fake sandbox_run mimicking a provider content-filter block."""
+
+    async def _fake(*args: object, **kwargs: object) -> RunResult:
+        return RunResult(
+            success=False,
+            files_changed=[],
+            test_run_passed=None,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            error=(
+                "sandbox run raised: ConversationRunError(\"litellm.BadRequestError: "
+                "AzureException - 400 - finish_reason: content_filter - "
+                "ResponsibleAI result indicated block action.\")"
+            ),
+            summary="content filter block",
+        )
+
+    return _fake
+
+
+def test_content_filter_escalates_model_tier_instead_of_blocking(
+    temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider content-filter block deterministically re-trips on the same
+    model, so retrying is futile — escalate to the hard-tier model (different
+    family, different filter profile) without burning infra or dev budget."""
+    story = _story_at(StoryState.SM_DONE, temp_root)
+    db = temp_root / "state" / "factory.db"
+    monkeypatch.setattr(runner_module, "sandbox_run", _content_filter_sandbox(), raising=True)
+    monkeypatch.setattr(handlers_module, "route", lambda *a, **kw: "azure/deepseek-v4-pro")
+
+    result = handle_dev(story, app_config, temp_root, dry_run=False, db_path=db)
+
+    assert result.next_state is StoryState.DEV_RETRY
+    assert story.current_model_tier == "hard"
+    assert story.dev_retries == 0
+    events = read_story_events(story.id, software_factory_root=temp_root, slug_hint=story.slug)
+    assert [e for e in events if e.get("event") == "dev_content_filter_tier_escalation"]
+    assert not [e for e in events if e.get("event") == "dev_sandbox_infra_error"]
+
+
+def test_content_filter_on_hard_tier_falls_through_to_infra_path(
+    temp_root: Path, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the hard tier ALSO trips the filter, the bounded infra path takes
+    over so the story can't ping-pong between tiers forever."""
+    story = _story_at(StoryState.SM_DONE, temp_root)
+    story.current_model_tier = "hard"
+    db = temp_root / "state" / "factory.db"
+    persist_story(story, db)
+    monkeypatch.setattr(runner_module, "sandbox_run", _content_filter_sandbox(), raising=True)
+    monkeypatch.setattr(handlers_module, "route", lambda *a, **kw: "azure/gpt-5.4")
+
+    result = handle_dev(story, app_config, temp_root, dry_run=False, db_path=db)
+
+    assert result.next_state is StoryState.DEV_RETRY
+    assert story.current_model_tier == "hard"
+    events = read_story_events(story.id, software_factory_root=temp_root, slug_hint=story.slug)
+    assert [e for e in events if e.get("event") == "dev_sandbox_infra_error"]

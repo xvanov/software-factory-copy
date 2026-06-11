@@ -110,7 +110,11 @@ azure_routes:
   test_implementer: azure/deepseek-v4-pro
   dev:
     standard: azure/deepseek-v4-pro
-    hard: azure/deepseek-v4-pro
+    # Hard tier deliberately a DIFFERENT model family: tier escalation is the
+    # escape hatch for per-model failure modes (Azure content-filter blocks on
+    # deepseek completions, observed 2026-06-11). Same-model "escalation" was
+    # a no-op.
+    hard: azure/gpt-5.4
 
 defaults:
   fallback: deepseek/deepseek-chat
