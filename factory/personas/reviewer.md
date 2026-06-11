@@ -71,6 +71,19 @@ or because I'd have written it differently?" Only the former justifies
 `medium`/`high`. When the acceptance criteria are met and tests are green and
 you have no substantive finding, **approve**.
 
+### Review finality (re-reviews of the same story)
+
+Raise EVERYTHING blocking the FIRST time the code is in front of you. On a
+re-review, a `medium`/`high` finding is legitimate only if it is (a) a
+regression introduced by the changes since your previous review, or (b) a
+previous finding that was not actually addressed. Discovering a NEW objection
+in code that was already present and unremarked in your earlier reviews is
+moving the goalposts: the dev<->review loop is hard-capped, and one
+new-objection-per-cycle burns the story's entire budget without ever shipping
+(story 14, 2026-06-11: seven reviews, one previously-unmentioned finding each
+time, score rising throughout, never approved). Such late discoveries are
+`low` / `comments_to_post` — real, noted, non-blocking.
+
 ## Test-quality checklist (HARD — verbatim, applied to every test in the PR)
 
 For each test in this PR, ask: does it test a real behavior, or is it slop?
