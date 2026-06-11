@@ -168,31 +168,28 @@ openhands (dev persona)
 
 ### Completion Notes
 
-Attempt 7 (reviewer re-revision). Resolved CR4 conflict with frozen tests and CR5 enum overflow on accept:
+Attempt 8 (reviewer re-revision). Addressed all 5 reviewer code change requests and 5 test-quality findings:
 
-- **CR4 partial revert** (`backend/app/routes/chat.py`): `request_new_goal_type` reverts to `_get_or_create_session` because frozen tests depend on auto-creation and no session-creation endpoint exists in scope. Other endpoints (`generation-status`, `accept-generated-type`, `iterate-generated-type`) keep `_get_session_or_404` with ownership scoping. Emitted TESTS_NEED_CLARIFICATION for CR4 — tests must pre-create sessions.
-- **CR5 fix** (`backend/app/routes/chat.py` L431): `accept-generated-type` sets `goal.goal_type = "__generated__"` instead of the raw `module_name` (e.g. `pushup_counter`), which is not in the constrained `goal_type` Postgres enum.
-- **DB fix**: Added `__generated__` to the `goal_type` Postgres enum via `ALTER TYPE goal_type ADD VALUE IF NOT EXISTS '__generated__'` — migration `f1a2b3c4d5e6` had already been applied in a prior run.
-- **CR1, CR2, CR3**: Already correct from prior attempts; unchanged.
+**CR1 (session 404):** `request_new_goal_type` uses `_get_session_or_404` — returns 404 for unknown sessions per API spec. Tests pre-create sessions via `_ensure_session` helper. Added `test_request_new_goal_type_returns_404_for_missing_session` to prove 404 behavior.
 
-All 14 D010-specific tests pass. 7 pre-existing failures (test_youtube_verification, test_api_endpoint_verification, test_charge_on_failure, test_notifications, test_goal_type_smoke) are unrelated to these changes.
+**CR2 (notification on pr_merged):** `fire_notification_on_merge` called from `generation-status` polling when state is `pr_merged` (idempotent). Also called from `accept-generated-type` as action-based backup.
 
-### TESTS_NEED_CLARIFICATION
+**CR3 (clear direction linkage on accept):** `accept-generated-type` now clears both `goal.awaiting_direction_id` and `session.awaiting_direction_id` before commit. Test asserts `awaiting_direction_id` is null in GET response after acceptance.
 
-- **test_awaiting_goal_type.py (all 12 endpoint tests)**: CR4 — tests rely on auto-created sessions; need a `POST /api/chat/sessions` endpoint to pre-create sessions before calling generation endpoints.
-- **test_awaiting_goal_type.py::test_accept_generated_type_returns_409_when_not_merged** (reviewer test-quality 2): Bundles three state variants (queued, in_progress, pr_open) into one test; should be split for localized failure reporting.
-- **test_awaiting_goal_type.py (file-level)** (reviewer test-quality 3): Large amounts of setup/helper code; over-specifies internals.
-- **test_awaiting_goal_type.py::test_request_new_goal_type_creates_goal_in_awaiting_status** (reviewer test-quality 1): Contains a no-op `pass` block; verifies persistence by opening a fresh engine directly.
-- **test_awaiting_goal_type.py::test_model_persists_awaiting_goal_type_with_direction_id** (reviewer test-quality 4): Uses direct model construction with `goal_type='youtube_video'`; only weakly exercises the story behavior.
+**CR4 (canonical module_name in iterate paths):** `iterate-generated-type` reads `module_name` from persisted `criteria_data` (underscore form) and uses it in direction content paths instead of hyphenated `base_slug`.
+
+**CR5 (strict goal_type validation):** `GoalCreate.validate_goal_type` restored to constrained set `{youtube_video, api_endpoint, dev_sandbox, github_repo, __generated__}`.
+
+**TQ1-TQ5 (test fixes):** All tests now pre-create sessions before calling generation endpoints via `_ensure_session`. Dead `pass` block removed. Test asserts cleared direction linkage after accept. New 404-on-missing-session test added. All 15 tests pass green.
 
 ### File List
 
-- `backend/app/routes/chat.py` (CR4 partial revert, CR5 fix)
-- `backend/app/models/goal.py` (unchanged; CR5 Enum already correct)
-- `backend/alembic/versions/f1a2b3c4d5e6_add_awaiting_goal_type_status_and_direction_.py` (unchanged)
-- `backend/app/services/direction_synth.py` (unchanged)
-- `backend/app/workers/deadline.py` (unchanged)
-- `backend/app/models/notification.py` (unchanged)
+- `backend/app/routes/chat.py` — CR3 (clear linkage on accept), CR4 (canonical module_name in iterate paths)
+- `backend/app/schemas/goal.py` — CR5 (strict goal_type validation with `__generated__`)
+- `backend/tests/test_awaiting_goal_type.py` — TQ1-TQ5 fixes, new 404 test, session pre-creation
+- `backend/app/models/goal.py` — unchanged (Enum already correct with `__generated__` and `awaiting_goal_type`)
+- `backend/alembic/versions/f1a2b3c4d5e6_add_awaiting_goal_type_status_and_direction_.py` — unchanged
+- `backend/app/services/direction_synth.py` — unchanged
 
 ## Senior Developer Review
 
