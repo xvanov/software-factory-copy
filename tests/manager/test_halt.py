@@ -249,6 +249,69 @@ class TestResumeClears:
         assert is_halted(root=tmp_path) is False
 
 
+class TestResumeGrace:
+    """An operator resume suppresses manager re-halts for a grace window.
+
+    Stall-class concerns ("no ticks for N minutes") can only clear AFTER a
+    resume lets the orchestrator run; an immediate re-halt deadlocks the
+    factory against its own manager (observed live 2026-06-11: re-halt 94s
+    after resume, before the first post-resume tick).
+    """
+
+    def test_request_halt_suppressed_within_grace(self, tmp_path: Path) -> None:
+        request_halt(
+            root=tmp_path, concern_title=_CONCERN_TITLE, proposal_path=None, reason=_REASON
+        )
+        clear_halt(root=tmp_path, cleared_by="operator", reason="resume")
+
+        out = request_halt(
+            root=tmp_path,
+            concern_title=_CONCERN_TITLE + "-continued",
+            proposal_path=None,
+            reason=_REASON,
+        )
+        assert out is None
+        assert is_halted(root=tmp_path) is False
+
+    def test_request_halt_allowed_after_grace_expires(self, tmp_path: Path) -> None:
+        from datetime import timedelta
+
+        from factory.manager.halt import _RESUME_GRACE_MINUTES
+
+        old = (
+            datetime.now(UTC) - timedelta(minutes=_RESUME_GRACE_MINUTES + 1)
+        ).isoformat()
+        history = tmp_path / "state" / ".halt_history.json"
+        history.parent.mkdir(parents=True, exist_ok=True)
+        history.write_text(
+            json.dumps([{"mode": "halted", "cleared_at": old, "cleared_by": "operator"}]),
+            encoding="utf-8",
+        )
+
+        out = request_halt(
+            root=tmp_path, concern_title=_CONCERN_TITLE, proposal_path=None, reason=_REASON
+        )
+        assert out is not None
+        assert is_halted(root=tmp_path) is True
+
+    def test_grace_uses_latest_clear_even_after_later_archives(self, tmp_path: Path) -> None:
+        """Archive entries written by request_halt overwrites (no cleared_at)
+        after an operator clear must not mask the clear's recency."""
+        request_halt(
+            root=tmp_path, concern_title="first", proposal_path=None, reason=_REASON
+        )
+        clear_halt(root=tmp_path, cleared_by="operator")
+        # Manually append a non-clear archive entry AFTER the operator clear.
+        history = json.loads(_history_path(tmp_path).read_text())
+        history.append({"mode": "halted", "concern_title": "noise"})
+        _history_path(tmp_path).write_text(json.dumps(history), encoding="utf-8")
+
+        out = request_halt(
+            root=tmp_path, concern_title="second", proposal_path=None, reason=_REASON
+        )
+        assert out is None  # still inside the grace window
+
+
 # ---------------------------------------------------------------------------
 # Diagnostician integration tests
 # ---------------------------------------------------------------------------

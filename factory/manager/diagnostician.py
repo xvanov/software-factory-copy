@@ -1006,18 +1006,30 @@ def run_diagnostician_once(
             try:
                 from factory.manager.halt import request_halt as _request_halt
 
-                _request_halt(
+                halt_file = _request_halt(
                     root=root,
                     concern_title=concern_title,
                     proposal_path=str(proposal_path),
                     reason=halt_reason.strip(),
                 )
-                halt_requested = True
-                print(
-                    f"[diagnostician] HALT requested: concern={concern_title!r} "
-                    f"reason={halt_reason!r}",
-                    file=sys.stderr,
-                )
+                if halt_file is None:
+                    # Operator cleared a halt moments ago — the resume grace
+                    # window overrides halt authority so the factory can
+                    # demonstrate liveness instead of deadlocking against
+                    # its own manager. The proposal still lands for review.
+                    proposal["halt_suppressed_by_resume_grace"] = True
+                    print(
+                        f"[diagnostician] halt SUPPRESSED (operator resume "
+                        f"grace window): concern={concern_title!r}",
+                        file=sys.stderr,
+                    )
+                else:
+                    halt_requested = True
+                    print(
+                        f"[diagnostician] HALT requested: concern={concern_title!r} "
+                        f"reason={halt_reason!r}",
+                        file=sys.stderr,
+                    )
             except Exception as exc:  # noqa: BLE001
                 print(
                     f"[diagnostician] WARNING: halt request failed: {exc!r}",
