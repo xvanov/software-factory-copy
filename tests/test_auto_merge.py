@@ -281,3 +281,62 @@ def test_attempt_pr_reconcile_returns_false_on_conflict(monkeypatch: pytest.Monk
     monkeypatch.setattr(subprocess, "run", _fake_run, raising=True)
     cfg = AppConfig(name="sacrifice", repo="x/sacrifice", default_branch="main")
     assert am._attempt_pr_reconcile(app_config=cfg, pr_number=90) is False
+
+
+def test_loop4_story_merges_on_surviving_gates(tmp_path) -> None:
+    """A Loop-4 story (dev-owns-tests; no test_implementer/test_designer
+    payloads, no recorded lint/coverage flags, no labels applied by anyone)
+    must be mergeable when the surviving gates pass: tests-green (recorded
+    green dev run), tests-meaningful (no slop), docs-current (tech_writer
+    result), canonical-paths-only. The historical 10-label requirement
+    permanently blocked every Loop-4 merge (PRs 110/111, 2026-06-11)."""
+    import json
+
+    from factory.chain.auto_merge import FixturePR, auto_merge_tick
+    from factory.chain.state_machine import StoryRecord, StoryState
+
+    root = tmp_path
+    (root / "apps" / "sacrifice").mkdir(parents=True, exist_ok=True)
+    (root / "apps" / "sacrifice" / "config.yaml").write_text(
+        "name: sacrifice\nrepo: x/y\ndefault_branch: main\n", encoding="utf-8"
+    )
+    db = root / "state" / "factory.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    from sqlmodel import SQLModel, create_engine
+
+    SQLModel.metadata.create_all(create_engine(f"sqlite:///{db}"))
+    from factory.chain.handlers import persist_story
+
+    story = persist_story(
+        StoryRecord(
+            direction_id="007", app="sacrifice", title="t", slug="loop4",
+            scope="frontend", state=StoryState.PR_OPEN.value, chain_kind="tdd",
+            github_pr_number=110,
+            test_implementer_result_json=json.dumps({"exit_code": 0}),
+            tech_writer_result_json=json.dumps(
+                {"context_updates": ["context/modules/frontend.md"], "rationale": "updated"}
+            ),
+        ),
+        db,
+    )
+    # Record a green dev run shape the tests-green gate reads in dry-run.
+    import sqlite3 as _sq
+
+    conn = _sq.connect(str(db))
+    conn.execute("UPDATE stories SET dev_attempts_json=? WHERE id=?",
+                 (json.dumps([{"test_run_passed": True, "test_output_tail": "ok"}]), story.id))
+    conn.commit()
+    conn.close()
+
+    fixture = FixturePR(
+        pr_number=110, head_sha="abc", base_branch="main", labels=[],
+        files_changed=["frontend/services/api.ts"], ci_state="success",
+        story=story, repo_root=None,
+    )
+    actions = auto_merge_tick(
+        app="sacrifice", software_factory_root=root, dry_run=True,
+        fixture_prs=[fixture], db_path=db,
+    )
+    assert len(actions) == 1
+    act = actions[0]
+    assert act.merged, f"expected merge, got reason={act.reason!r}"

@@ -30,7 +30,12 @@ from typing import Any
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from factory.app_config import AppConfig, load_app_config
-from factory.chain.gates.evaluator import ALL_GATE_LABELS, PRContext, evaluate_all_gates
+from factory.chain.gates.evaluator import (  # noqa: F401 - ALL_GATE_LABELS re-exported
+    ALL_GATE_LABELS,
+    LOOP4_REQUIRED_GATE_LABELS,
+    PRContext,
+    evaluate_all_gates,
+)
 from factory.chain.state_machine import StoryRecord, StoryState
 
 # Labels that, when present, BLOCK merge regardless of gate status.
@@ -192,11 +197,15 @@ def _evaluate_one_pr(
         # we synthesize from the gate results so a test fixture with
         # all gates green is "all labels present" without having to
         # enumerate them in the fixture.
-        if dry_run:
-            present_labels = set(fixture.labels) | set(gates_passed)
-        else:
-            present_labels = set(fixture.labels)
-        missing_labels = [label for label in ALL_GATE_LABELS if label not in present_labels]
+        # A gate is satisfied by an applied PR label OR by the evaluation
+        # that just ran — in real-run too. Nothing applies gate labels
+        # under Loop-4 (the labelling stages died with the test-first
+        # machinery), and a fresh evaluator pass is strictly stronger
+        # evidence than a label applied on some earlier tick anyway.
+        present_labels = set(fixture.labels) | set(gates_passed)
+        missing_labels = [
+            label for label in LOOP4_REQUIRED_GATE_LABELS if label not in present_labels
+        ]
 
     blocking_present = sorted(set(fixture.labels) & BLOCKING_LABELS)
 

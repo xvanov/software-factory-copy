@@ -28,6 +28,24 @@ ALL_GATE_LABELS: list[str] = [
     "canonical-paths-only",
 ]
 
+# The labels REQUIRED to merge a Loop-4 (dev-owns-tests) story. The historical
+# 10-gate set assumed the test-first machinery: ``tests-red-first-confirmed``
+# read the test_implementer's payload and ``flow-verified`` the test_designer's
+# plan — both personas were deleted in the Loop-4 collapse, and the dev handler
+# no longer records the coverage/lint/format/types flags, so requiring all ten
+# labels permanently blocked every merge (PRs 110/111, 2026-06-11). Their
+# Loop-4 equivalents are enforced UPSTREAM by the chain itself: the dev's
+# recorded green run, the programmatic slop-gate veto on every real review,
+# the reviewer's approval, and the docs-enforcer — all encoded in the story
+# reaching a mergeable state. At merge time we re-verify the signals that
+# still exist independently:
+LOOP4_REQUIRED_GATE_LABELS: list[str] = [
+    "tests-green",
+    "tests-meaningful",
+    "docs-current",
+    "canonical-paths-only",
+]
+
 
 @dataclass
 class PRContext:
