@@ -38,9 +38,7 @@ from typing import Any
 
 from sqlmodel import Session, create_engine, select
 
-from factory.chain.event_log import read_story_events
-from factory.chain.state_machine import StoryRecord, StoryState, _TRANSITIONS
-
+from factory.chain.state_machine import _TRANSITIONS, StoryRecord, StoryState
 
 # Upper bound on the assembled JSON bundle handed to the persona.
 # The personas/ tree alone is ~90KB; events + state machine round it
@@ -145,6 +143,11 @@ def aggregate_factory_needs_redesign_events(
                     try:
                         rec = json.loads(line)
                     except json.JSONDecodeError:
+                        continue
+                    # Valid JSON that isn't an object (a bare int/str from a
+                    # stray non-NDJSON file in state/logs/) must be skipped,
+                    # not crash the tick.
+                    if not isinstance(rec, dict):
                         continue
                     if rec.get("event") != "factory_needs_redesign":
                         continue

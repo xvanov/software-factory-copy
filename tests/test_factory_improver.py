@@ -15,13 +15,10 @@ What we verify:
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-
-import pytest
 
 from factory.chain.factory_improver import (
     FactoryImproverResult,
@@ -31,7 +28,6 @@ from factory.chain.factory_improver import (
     run_factory_improver,
     should_fire_improver,
 )
-
 
 # ---------------------------------------------------------------------------
 # Persona file + route
@@ -553,3 +549,26 @@ def test_record_improver_fired_prunes_old_history(tmp_path: Path) -> None:
     )
     assert len(persisted) == 1
     assert persisted[0].startswith(now.isoformat()[:19])
+
+
+def test_aggregate_skips_non_dict_json_lines(tmp_path) -> None:
+    """A stray non-NDJSON file in state/logs/ (bare ints/strings parse as
+    valid JSON) must be skipped, not crash the tick. Crashed live 2026-06-11."""
+    from factory.chain.factory_improver import aggregate_factory_needs_redesign_events
+
+    logs = tmp_path / "state" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "stray.log").write_text("123\n\"text\"\n[1,2]\nnot json {{{\n", encoding="utf-8")
+    (logs / "0001-story.log").write_text(
+        '{"event": "factory_needs_redesign", "ts": "2026-06-11T12:00:00+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    from datetime import UTC, datetime
+
+    out = aggregate_factory_needs_redesign_events(
+        software_factory_root=tmp_path,
+        window_hours=24,
+        now=datetime(2026, 6, 11, 13, 0, 0, tzinfo=UTC),
+    )
+    assert len(out) == 1

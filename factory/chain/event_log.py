@@ -121,9 +121,14 @@ def read_story_events(
                 if not line:
                     continue
                 try:
-                    out.append(json.loads(line))
+                    rec = json.loads(line)
                 except json.JSONDecodeError:
-                    out.append({"event": "malformed_log_line", "raw": line})
+                    rec = None
+                if not isinstance(rec, dict):
+                    # Either undecodable or valid JSON that isn't an object
+                    # (a bare int/str) — callers expect dicts with .get().
+                    rec = {"event": "malformed_log_line", "raw": line}
+                out.append(rec)
     except OSError:
         return []
     if limit is not None and limit > 0:
