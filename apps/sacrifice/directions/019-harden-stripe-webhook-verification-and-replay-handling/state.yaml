@@ -1,0 +1,9 @@
+status: created
+source: scheduled-security
+created_at: '2026-06-01T01:07:53.859229+00:00'
+audit:
+- ts: '2026-06-01T01:07:53.859231+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-security

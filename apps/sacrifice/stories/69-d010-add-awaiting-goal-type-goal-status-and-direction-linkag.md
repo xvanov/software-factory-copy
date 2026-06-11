@@ -164,9 +164,35 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 
 ### Agent Model Used
 
-(populated by dev)
+openhands (dev persona)
+
+### Completion Notes
+
+Attempt 7 (reviewer re-revision). Resolved CR4 conflict with frozen tests and CR5 enum overflow on accept:
+
+- **CR4 partial revert** (`backend/app/routes/chat.py`): `request_new_goal_type` reverts to `_get_or_create_session` because frozen tests depend on auto-creation and no session-creation endpoint exists in scope. Other endpoints (`generation-status`, `accept-generated-type`, `iterate-generated-type`) keep `_get_session_or_404` with ownership scoping. Emitted TESTS_NEED_CLARIFICATION for CR4 — tests must pre-create sessions.
+- **CR5 fix** (`backend/app/routes/chat.py` L431): `accept-generated-type` sets `goal.goal_type = "__generated__"` instead of the raw `module_name` (e.g. `pushup_counter`), which is not in the constrained `goal_type` Postgres enum.
+- **DB fix**: Added `__generated__` to the `goal_type` Postgres enum via `ALTER TYPE goal_type ADD VALUE IF NOT EXISTS '__generated__'` — migration `f1a2b3c4d5e6` had already been applied in a prior run.
+- **CR1, CR2, CR3**: Already correct from prior attempts; unchanged.
+
+All 14 D010-specific tests pass. 7 pre-existing failures (test_youtube_verification, test_api_endpoint_verification, test_charge_on_failure, test_notifications, test_goal_type_smoke) are unrelated to these changes.
+
+### TESTS_NEED_CLARIFICATION
+
+- **test_awaiting_goal_type.py (all 12 endpoint tests)**: CR4 — tests rely on auto-created sessions; need a `POST /api/chat/sessions` endpoint to pre-create sessions before calling generation endpoints.
+- **test_awaiting_goal_type.py::test_accept_generated_type_returns_409_when_not_merged** (reviewer test-quality 2): Bundles three state variants (queued, in_progress, pr_open) into one test; should be split for localized failure reporting.
+- **test_awaiting_goal_type.py (file-level)** (reviewer test-quality 3): Large amounts of setup/helper code; over-specifies internals.
+- **test_awaiting_goal_type.py::test_request_new_goal_type_creates_goal_in_awaiting_status** (reviewer test-quality 1): Contains a no-op `pass` block; verifies persistence by opening a fresh engine directly.
+- **test_awaiting_goal_type.py::test_model_persists_awaiting_goal_type_with_direction_id** (reviewer test-quality 4): Uses direct model construction with `goal_type='youtube_video'`; only weakly exercises the story behavior.
 
 ### File List
+
+- `backend/app/routes/chat.py` (CR4 partial revert, CR5 fix)
+- `backend/app/models/goal.py` (unchanged; CR5 Enum already correct)
+- `backend/alembic/versions/f1a2b3c4d5e6_add_awaiting_goal_type_status_and_direction_.py` (unchanged)
+- `backend/app/services/direction_synth.py` (unchanged)
+- `backend/app/workers/deadline.py` (unchanged)
+- `backend/app/models/notification.py` (unchanged)
 
 ## Senior Developer Review
 
