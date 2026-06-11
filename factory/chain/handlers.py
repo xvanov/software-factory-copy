@@ -2506,8 +2506,15 @@ def _open_pr_for_story(
     )
     try:
         # Push the branch first; gh pr create needs an upstream ref.
+        # --force-with-lease: story branches are factory-owned and single-
+        # writer, and origin may hold STALE commits from abandoned earlier
+        # attempts (pre-rewrite runs pushed work-preservation commits). The
+        # locally approved state is authoritative; a plain push gets a
+        # non-fast-forward rejection against that stale history (story 5,
+        # 2026-06-11). The lease still aborts if origin moved unexpectedly
+        # since our last fetch.
         subprocess.run(
-            ["git", "push", "-u", "origin", str(branch)],
+            ["git", "push", "--force-with-lease", "-u", "origin", str(branch)],
             cwd=str(target_repo),
             check=True,
             capture_output=True,
