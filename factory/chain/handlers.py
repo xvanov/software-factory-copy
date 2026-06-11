@@ -1069,6 +1069,30 @@ def handle_dev(
         # ``_MAX_DEV_RETRIES`` caps total attempts.
 
     if tests_green:
+        # Record the GREEN run's test output too. The reviewer's
+        # ``_fetch_latest_test_output`` prefers the last dev_attempts_json
+        # entry; when only red attempts were recorded, a story with any red
+        # history showed the reviewer stale failures forever — story 32 was
+        # rejected on 2026-06-11 over a "still 12 failing tests" tail that
+        # was ten days old.
+        if not dry_run:
+            green_record = {
+                "attempt": story.dev_retries,
+                "ts": datetime.now(UTC).isoformat(),
+                "test_run_passed": True,
+                "files_touched": (run_res.files_changed or [])[:20],
+                "test_output_tail": (run_res.summary or "")[-1800:],
+                "summary": "tests green",
+                "self_summary": (getattr(run_res, "self_summary", "") or "")[:2000],
+            }
+            try:
+                prior_green = json.loads(story.dev_attempts_json or "[]")
+                if not isinstance(prior_green, list):
+                    prior_green = []
+            except (json.JSONDecodeError, TypeError):
+                prior_green = []
+            prior_green.append(green_record)
+            story.dev_attempts_json = json.dumps(prior_green[-5:])
         story.state = advance(story, EVENT_DEV_TESTS_GREEN).value
         persist_story(story, db)
         return HandlerResult(next_state=StoryState(story.state), payload=payload)
@@ -1088,6 +1112,7 @@ def handle_dev(
         attempt_record = {
             "attempt": story.dev_retries,
             "ts": datetime.now(UTC).isoformat(),
+            "test_run_passed": False,
             "files_touched": (run_res.files_changed or [])[:20],
             "test_output_tail": (run_res.summary or "")[-1800:],
             "summary": (run_res.error or "tests not green after run")[:300],
@@ -1428,10 +1453,17 @@ def _fetch_latest_test_output(
             last = attempts[-1]
             tail = (last.get("test_output_tail") or "").strip()
             if tail:
+                passed = last.get("test_run_passed")
+                verdict = (
+                    "PASSED" if passed is True
+                    else "FAILED" if passed is False
+                    else "unknown"
+                )
                 header = (
                     f"(from dev_attempts[-1]; "
                     f"attempt={last.get('attempt')!r} "
-                    f"ts={last.get('ts')!r})\n"
+                    f"ts={last.get('ts')!r} "
+                    f"run_verdict={verdict})\n"
                 )
                 body = header + tail
                 if len(body) > _TEST_OUTPUT_CAP_BYTES:
