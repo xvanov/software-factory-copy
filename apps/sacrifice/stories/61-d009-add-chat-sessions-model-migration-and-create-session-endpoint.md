@@ -1,10 +1,10 @@
 # Story
 
 ## Title
-D009 add chat_sessions model, migration, and create-session endpoint
+D009 implement chat message endpoint for match and no-match actions
 
 ## Summary
-Establish the persisted chat session foundation for chat-driven goal creation by adding the `chat_sessions` table, Alembic migration, route skeleton, router registration, and `POST /api/chat/sessions` endpoint returning the initial assistant greeting per `api_spec.md`.
+Implement `POST /api/chat/sessions/{session_id}/messages` to persist user turns, enforce session ownership, call `chat_match` exactly once per turn, and return assistant messages for matched, no-match, and retryable-failure paths with structured `action` payloads per `api_spec.md`.
 
 ## Acceptance Criteria
 - A new screen `frontend/screens/ChatGoalCreateScreen.tsx` is the primary "Create goal" entry from the home screen. The home screen's "Create goal" affordance routes to this screen.
@@ -29,31 +29,39 @@ Establish the persisted chat session foundation for chat-driven goal creation by
 - `context/modules/backend-app.md` rewritten to include the new `chat.py` route.
 
 ## Tasks / Subtasks
-- [ ] Add persistence for chat sessions.
-  - [ ] Create `chat_sessions` model with columns exactly named in direction: `id`, `user_id`, `created_at`, `updated_at`, `messages`, `draft_goal`, `status`.
-  - [ ] Ensure `messages` stores a JSONB list of `{role, content, action}` objects.
-  - [ ] Ensure `draft_goal` stores partial goal payload JSONB.
-  - [ ] Constrain `status` to `active`, `goal_created`, `awaiting_goal_type`.
-- [ ] Generate and wire Alembic migration.
-  - [ ] Use Alembic autogenerate as required by direction.
-  - [ ] Verify downgrade path removes `chat_sessions` cleanly.
-- [ ] Add backend chat route module skeleton.
-  - [ ] Create `backend/app/routes/chat.py`.
-  - [ ] Register the router in `backend/app/main.py`.
-- [ ] Implement `POST /api/chat/sessions`.
-  - [ ] Require authenticated user.
-  - [ ] Persist a new session owned by the caller.
-  - [ ] Seed the initial assistant greeting message exactly as specified in `api_spec.md`.
-  - [ ] Return `201` with `session_id`, `messages`, and `status`.
-- [ ] Add tests for this slice.
-  - [ ] Endpoint test for `201` response shape.
-  - [ ] Auth test for `401` unauthenticated.
-  - [ ] Persistence test that greeting message and status are stored.
-  - [ ] Migration test or schema verification aligned with repository conventions.
+- [ ] Implement `POST /api/chat/sessions/{session_id}/messages`.
+  - [ ] Validate authenticated caller.
+  - [ ] Validate session exists.
+  - [ ] Validate session ownership and return `403` when not owned by user.
+  - [ ] Validate non-empty, non-whitespace `content`; return `422` on invalid input.
+- [ ] Persist user chat turn.
+  - [ ] Append `{role, content, action}` user message to session `messages`.
+  - [ ] Update `updated_at` on every accepted turn.
+- [ ] Invoke match service once per turn.
+  - [ ] Pass user message + prior chat context + catalog.
+  - [ ] Use configured confidence threshold.
+- [ ] Return matched-path assistant response.
+  - [ ] Persist assistant message with `action.type = match_proposed` when above threshold.
+  - [ ] Include `goal_type`, `confidence`, and `missing_criteria` in action payload.
+  - [ ] Populate `draft_goal` with any extracted partial fields that are available at this stage.
+- [ ] Return no-match assistant response.
+  - [ ] Persist assistant message with `action.type = no_match` and `suggested_action = generate_new_goal_type` when below threshold or `none`.
+- [ ] Handle upstream LLM failure.
+  - [ ] Map transient match failure to endpoint `502`.
+  - [ ] Ensure behavior remains compatible with frontend retry card flow from `flow.md`.
+- [ ] Add tests.
+  - [ ] `200` match response test.
+  - [ ] `200` no-match response test.
+  - [ ] `401` unauthenticated test.
+  - [ ] `403` ownership test.
+  - [ ] `404` session missing test.
+  - [ ] `422` whitespace input test.
+  - [ ] `502` upstream failure test.
+  - [ ] Persistence test covering stored user and assistant messages.
 
 ## Dev Notes
 ### Child story scope
-This story is limited to persistence + migration + route skeleton + create-session endpoint. Do not implement match behavior, message-turn processing, create-goal handoff, or request-new-goal-type behavior in this slice.
+This story ends at match/no-match assistant actions. Do not implement the create-goal endpoint, final review, or full conversational criterion filling here unless needed only to produce `missing_criteria` and draft placeholders.
 
 ### Verbatim flow.md
 ```md
@@ -209,20 +217,19 @@ This story is limited to persistence + migration + route skeleton + create-sessi
 
 ### Context pointers to load
 - [Source: context/project.md#Identity]
-- [Source: context/project.md#Stack]
 - [Source: context/project.md#Active constraints]
 - [Source: context/navigation.md#When working on backend HTTP behavior]
 
 ### Implementation notes
-- The create-session greeting must match the `api_spec.md` text exactly: `Tell me what you want to do, and I'll figure out how to track it.`
-- Session persistence is required because flow states: `User leaves the chat mid-flow and returns later → the chat session resumes from the last assistant message (session id stored locally).`
-- Keep this slice backend-only even though direction ACs mention frontend replacement.
+- Preserve exact action shapes from `api_spec.md`; frontend card rendering depends on them.
+- For this slice, `awaiting_input` and `ready_to_create` may remain for later story unless needed for a narrow successful match response path; do not overreach into create-goal.
+- The 5xx failure mode in `flow.md` must stay retry-friendly; endpoint contract exposes this as `502`.
 
 ## References
 - Direction: `direction.md`
 - Flow: `flow.md`
 - API: `api_spec.md`
-- Story source title: PM `child_stories[0]`
+- Story source title: PM `child_stories[2]`
 
 ## Dev Agent Record
 - Status: Not started

@@ -1,20 +1,23 @@
 # Story
 
 ## Title
-D010 add awaiting_goal_type goal status and direction linkage
+D010 direction_synth service builds direction payload from chat
 
 ## Description
-Add the persisted pending-generation lifecycle primitives required by D010: extend `Goal.status` with `awaiting_goal_type` and add nullable `awaiting_direction_id` linkage on `goals`, using an Alembic autogenerate migration so later request/accept/iterate flows have canonical storage.
+Create a service-shaped, unit-testable synthesis layer at `backend/app/services/direction_synth.py` that turns chat history / prompt intent into a complete factory direction payload (`direction.md`, and when appropriate `flow.md` and `api_spec.md`) using a configurable LLM client abstraction.
 
 ## Acceptance Criteria
-- A new lifecycle state `awaiting_goal_type` is added to the `Goal.status` enum. When the user confirms "Yes, build it", Sacrifice creates the goal in `awaiting_goal_type` with a new nullable `awaiting_direction_id` column on `goals`. Migration generated via Alembic autogenerate.
+- The `POST /api/chat/sessions/{session_id}/request-new-goal-type` endpoint (stubbed in D009) is implemented:
+  - Backend uses an LLM call (configurable model) to synthesize a complete direction from the chat history: `direction.md` (title, type=`feature`, why, acceptance), and where appropriate `flow.md` and `api_spec.md`. The synthesis is service-shaped, lives in `backend/app/services/direction_synth.py`, and is unit-testable with a mocked LLM client.
+- Direction synthesis fails (LLM cannot produce a coherent direction). Chat returns: "I couldn't pin down what you want — try rephrasing with more concrete success criteria."
 
 ## Tasks / Subtasks
-- [ ] Update backend goal status enum/model definitions to include `awaiting_goal_type`.
-- [ ] Add nullable `awaiting_direction_id` to the `goals` table model/schema layer where persistence is defined.
-- [ ] Generate and validate Alembic migration via autogenerate for enum/column changes.
-- [ ] Add/adjust backend tests covering persistence of `awaiting_goal_type` and `awaiting_direction_id`.
-- [ ] Confirm no existing goal lifecycle paths regress when reading existing statuses.
+- [ ] Add `backend/app/services/direction_synth.py` with a clear service contract for synthesized direction payload output.
+- [ ] Define/configure injectable LLM client/model dependency boundary so tests can mock it.
+- [ ] Implement prompt/response shaping sufficient to produce `direction.md` and optional `flow.md` / `api_spec.md` artifacts.
+- [ ] Validate service behavior for coherent output vs refusal / too-vague output.
+- [ ] Add unit tests for happy path, optional artifact inclusion, and vague/refusal failure path.
+- [ ] Keep endpoint wiring out of scope except for any interfaces needed by later stories.
 
 ## Dev Notes
 ### Verbatim flow.md
@@ -149,32 +152,32 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 ```
 
 ### Context pointers
-- [Source: context/project.md#Active constraints]
+- [Source: context/project.md#Identity]
+- [Source: context/navigation.md#When working on chat or goal-type matching]
 - [Source: context/navigation.md#When working on backend HTTP behavior]
-- [Source: context/navigation.md#When working on goal creation]
 
 ### Verbatim direction acceptance criteria relevant to this story
 ```md
-- A new lifecycle state `awaiting_goal_type` is added to the `Goal.status` enum. When the user confirms "Yes, build it", Sacrifice creates the goal in `awaiting_goal_type` with a new nullable `awaiting_direction_id` column on `goals`. Migration generated via Alembic autogenerate.
+- The `POST /api/chat/sessions/{session_id}/request-new-goal-type` endpoint (stubbed in D009) is implemented:
+  - Backend uses an LLM call (configurable model) to synthesize a complete direction from the chat history: `direction.md` (title, type=`feature`, why, acceptance), and where appropriate `flow.md` and `api_spec.md`. The synthesis is service-shaped, lives in `backend/app/services/direction_synth.py`, and is unit-testable with a mocked LLM client.
 ```
 
 ## References
-- `backend/app/models/goal.py`
-- `backend/app/schemas/goal.py`
-- `backend/alembic/`
-- `backend/app/routes/goals.py`
+- `backend/app/services/`
+- `backend/app/routes/`
+- `backend/app/config.py`
 
 ## Dev Agent Record
-- Agent Model Used: openhands
-- Debug Log References: N/A (local worktree run)
-- Completion Notes: All AC met. `awaiting_goal_type` added to goal_status enum, `goal_type_ready` added to notification_type enum, `awaiting_direction_id` (String(255), nullable) added to goals table. Migration a40c6b79a019 created via autogenerate and applied idempotently. All 7 tests pass. 4 pre-existing test failures unrelated to this change.
-- File List: backend/app/models/goal.py, backend/app/models/notification.py, backend/app/schemas/goal.py, backend/app/services/goal.py, backend/app/routes/goals.py, backend/app/workers/deadline.py, backend/alembic/versions/a40c6b79a019_add_awaiting_goal_type_status_and_.py, backend/tests/test_d010_awaiting_goal_type.py
+- Agent Model Used: 
+- Debug Log References: 
+- Completion Notes: 
+- File List: 
 
 ## Senior Developer Review
-- [ ] Goal enum updated consistently across model/schema/persistence layers.
-- [ ] Alembic migration is autogenerate-derived and applies cleanly.
-- [ ] Nullable `awaiting_direction_id` supports later endpoint slices without hidden assumptions.
-- [ ] Tests prove persistence behavior and non-regression for existing statuses.
+- [ ] `backend/app/services/direction_synth.py` exists and is service-shaped.
+- [ ] LLM dependency/model selection is configurable and mockable.
+- [ ] Unit tests cover coherent output and refusal/vagueness handling.
+- [ ] Output contract is stable for downstream writer/endpoint stories.
 
 ## Review Follow-ups
 - [ ] None yet.

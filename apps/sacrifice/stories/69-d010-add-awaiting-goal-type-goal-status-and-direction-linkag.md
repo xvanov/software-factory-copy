@@ -176,28 +176,33 @@ openhands (dev persona)
 
 ### Completion Notes
 
-Attempt 8 (reviewer re-revision). Addressed all 5 reviewer code change requests and 5 test-quality findings:
+Addressed the current reviewer requests for D010’s scoped backend work.
 
-**CR1 (session 404):** `request_new_goal_type` uses `_get_session_or_404` — returns 404 for unknown sessions per API spec. Tests pre-create sessions via `_ensure_session` helper. Added `test_request_new_goal_type_returns_404_for_missing_session` to prove 404 behavior.
+**CR1 [high] (session auto-creation):** Restored first-use session auto-creation in `POST /api/chat/sessions/{session_id}/request-new-goal-type` so generation no longer 404s when no prior session row exists. Session-scoped read endpoints still use `_get_session_or_404`. (`backend/app/routes/chat.py`)
 
-**CR2 (notification on pr_merged):** `fire_notification_on_merge` called from `generation-status` polling when state is `pr_merged` (idempotent). Also called from `accept-generated-type` as action-based backup.
+**CR2 [medium] (migration scope):** Narrowed `a7b8c9d0e1f2_add_chat_spend_ledger_and_notification_type.py` so it no longer creates the D009-owned `chat_sessions` table. The migration now stays within the spend-ledger / notification-type scope. (`backend/alembic/versions/a7b8c9d0e1f2_add_chat_spend_ledger_and_notification_type.py`)
 
-**CR3 (clear direction linkage on accept):** `accept-generated-type` now clears both `goal.awaiting_direction_id` and `session.awaiting_direction_id` before commit. Test asserts `awaiting_direction_id` is null in GET response after acceptance.
+**CR3 + TQ1 (test plan / split suite):** Replaced the oversized `backend/tests/test_awaiting_goal_type.py` suite with focused files split by persistence, request flow, and lifecycle behavior. Each file now contains an explicit `TEST_PLAN` mapping from D010 acceptance slices to concrete tests. (`backend/tests/test_goal_generation_persistence.py`, `backend/tests/test_goal_generation_request.py`, `backend/tests/test_goal_generation_lifecycle.py`)
 
-**CR4 (canonical module_name in iterate paths):** `iterate-generated-type` reads `module_name` from persisted `criteria_data` (underscore form) and uses it in direction content paths instead of hyphenated `base_slug`.
+**TQ2 (create/read path coverage):** Kept the direct ORM persistence assertion, but added service-level and API-level end-to-end coverage proving the real create/read paths preserve `awaiting_goal_type` and nullable `awaiting_direction_id`. (`backend/tests/test_goal_generation_persistence.py`)
 
-**CR5 (strict goal_type validation):** `GoalCreate.validate_goal_type` restored to constrained set `{youtube_video, api_endpoint, dev_sandbox, github_repo, __generated__}`.
+**Test harness stability:** Hardened test DB enum cleanup/recreation to make repeated D010 runs stable while creating and dropping PostgreSQL enums across story retries. (`backend/tests/conftest.py`)
 
-**TQ1-TQ5 (test fixes):** All tests now pre-create sessions before calling generation endpoints via `_ensure_session`. Dead `pass` block removed. Test asserts cleared direction linkage after accept. New 404-on-missing-session test added. All 15 tests pass green.
+Verification:
+- `python -m pytest tests/test_goal_generation_persistence.py tests/test_goal_generation_request.py tests/test_goal_generation_lifecycle.py -q` → **15 passed**
+- `python -m pytest tests -q` → **6 unrelated pre-existing failures remain** in API proof validation, notification patching, and `_smoke` registry discovery.
+- `python -m pytest -q` additionally includes standalone `backend/e2e_test.py`, which still has pre-existing fixture/setup errors outside D010 scope.
 
 ### File List
 
-- `backend/app/routes/chat.py` — CR3 (clear linkage on accept), CR4 (canonical module_name in iterate paths)
-- `backend/app/schemas/goal.py` — CR5 (strict goal_type validation with `__generated__`)
-- `backend/tests/test_awaiting_goal_type.py` — TQ1-TQ5 fixes, new 404 test, session pre-creation
-- `backend/app/models/goal.py` — unchanged (Enum already correct with `__generated__` and `awaiting_goal_type`)
-- `backend/alembic/versions/f1a2b3c4d5e6_add_awaiting_goal_type_status_and_direction_.py` — unchanged
-- `backend/app/services/direction_synth.py` — unchanged
+- `backend/app/routes/chat.py` — restored auto-create behavior for `request-new-goal-type`
+- `backend/alembic/versions/a7b8c9d0e1f2_add_chat_spend_ledger_and_notification_type.py` — removed unintended `chat_sessions` table creation
+- `backend/tests/conftest.py` — stabilized enum teardown/recreation for repeated test DB setup
+- `backend/tests/test_goal_generation_persistence.py` — D010 persistence/create-read coverage with explicit test plan
+- `backend/tests/test_goal_generation_request.py` — D010 request endpoint coverage with explicit test plan
+- `backend/tests/test_goal_generation_lifecycle.py` — D010 lifecycle/worker/notification/iterate coverage with explicit test plan
+- `backend/tests/utils_goal_generation.py` — shared D010 test helpers
+- `backend/tests/test_awaiting_goal_type.py` — removed; replaced by focused suites above
 
 ## Senior Developer Review
 

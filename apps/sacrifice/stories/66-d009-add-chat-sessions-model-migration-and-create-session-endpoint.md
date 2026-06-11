@@ -1,12 +1,12 @@
 # Story
 
 ## Title
-D009 add chat_sessions model, migration, and create-session endpoint
+D009 hook chat UI to create goal and handle stubbed 501 honestly
 
 ## Story
-**As a** signed-in Sacrifice user
-**I want** a persisted chat session to be created when I start goal creation
-**so that** the chat creation flow can resume on return and later turns have a stable session id.
+**As a** Sacrifice user
+**I want** the chat UI to complete goal creation and surface the D010 stub honestly
+**so that** matched flows end on a real goal detail screen and no-match flows fail transparently without crashing.
 
 ## Acceptance Criteria
 - A new screen `frontend/screens/ChatGoalCreateScreen.tsx` is the primary "Create goal" entry from the home screen. The home screen's "Create goal" affordance routes to this screen.
@@ -31,15 +31,15 @@ D009 add chat_sessions model, migration, and create-session endpoint
 - `context/modules/backend-app.md` rewritten to include the new `chat.py` route.
 
 ## Tasks / Subtasks
-- [ ] Add persistence model for `chat_sessions` with required columns and status enum values exactly as directed.
-- [ ] Generate Alembic migration via autogenerate for the new table.
-- [ ] Add request/response schemas for `POST /api/chat/sessions` response contract.
-- [ ] Implement `backend/app/routes/chat.py` with `POST /api/chat/sessions` returning `201` and greeting message payload.
-- [ ] Register chat router in `backend/app/main.py`.
-- [ ] Persist initial assistant greeting message in the created session.
-- [ ] Enforce authentication behavior for create-session endpoint (`401` when unauthenticated).
-- [ ] Add backend tests for model persistence, endpoint auth, `201` response shape, and greeting message content.
-- [ ] Confirm this slice does not implement message-turn matching, create-goal, or request-new-goal-type behavior beyond route/module scaffolding needed here.
+- [ ] Wire `Use this` and subsequent conversational input flow to backend message/create endpoints.
+- [ ] Submit `Create goal` using `POST /api/chat/sessions/{session_id}/create-goal`.
+- [ ] On successful create response, navigate to the goal detail screen for the returned `goal_id`.
+- [ ] Support `Edit` continuation by returning to chat input flow.
+- [ ] Wire `Yes, build it` to `POST /api/chat/sessions/{session_id}/request-new-goal-type`.
+- [ ] Surface the stubbed `501` response as an honest assistant message in chat with no crash.
+- [ ] Preserve `Let me rephrase` as a continuation path.
+- [ ] Add frontend tests for successful create-goal navigation and truthful `501` surfaced message.
+- [ ] Ensure retry interaction remains functional for transient failure path if already implemented.
 
 ## Dev Notes
 ### Verbatim flow.md
@@ -171,13 +171,11 @@ D009 add chat_sessions model, migration, and create-session endpoint
 ```
 
 ### Context pointers
-- [Source: context/project.md#Identity]
-- [Source: context/project.md#Stack]
-- [Source: context/current-state.md#Router composition and surfaced backend features]
-- [Source: context/current-state.md#Goal creation remains type-first]
-- [Source: context/modules/backend-app.md#FastAPI app and mounted routers]
-- [Source: context/modules/backend-app.md#Goal-facing interfaces]
-- [Source: context/navigation.md#When working on backend HTTP behavior]
+- [Source: context/project.md#Active constraints]
+- [Source: context/modules/frontend.md#App shell and screen switching]
+- [Source: context/modules/goal-creation.md#Current creation flow]
+- [Source: context/navigation.md#When working on the Expo client]
+- [Source: context/navigation.md#When working on proof submission notifications or dashboard behavior]
 
 ### Verbatim direction acceptance criteria
 ```md
@@ -204,13 +202,11 @@ D009 add chat_sessions model, migration, and create-session endpoint
 ```
 
 ## References
-- `backend/app/main.py`
-- `backend/app/routes/`
-- `backend/app/models/`
-- `backend/app/schemas/`
-- `backend/alembic/`
-- `backend/app/routes/goals.py`
-- `backend/app/models/goal.py`
+- `frontend/screens/ChatGoalCreateScreen.tsx`
+- `frontend/services/api.ts`
+- `frontend/hooks/useNavigation.tsx`
+- `frontend/App.tsx`
+- `frontend/AGENTS.md`
 
 ## Dev Agent Record
 - Agent Model Used: 
@@ -219,11 +215,11 @@ D009 add chat_sessions model, migration, and create-session endpoint
 - File List: 
 
 ## Senior Developer Review
-- [ ] AC coverage verified against direction text
-- [ ] Migration generated and reviewed
-- [ ] Endpoint contract matches `api_spec.md`
-- [ ] Router registration confirmed
-- [ ] Authentication behavior covered by tests
+- [ ] Create-goal action calls correct endpoint
+- [ ] Success path navigates to goal detail by returned id
+- [ ] `501` stub is surfaced honestly in chat with no crash
+- [ ] `Edit` returns control to chat continuation
+- [ ] Scope excludes inventing D010 UX beyond truthful message
 
 ## Review Follow-ups
 - None.

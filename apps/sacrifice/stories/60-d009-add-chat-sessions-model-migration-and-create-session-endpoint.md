@@ -1,24 +1,27 @@
 # Story
 
 ## Title
-D009 add chat_sessions model, migration, and create-session endpoint
+D009 add chat_match service with configurable LLM match contract
 
 ## Summary
-Create persisted chat session storage and the initial `POST /api/chat/sessions` endpoint so frontend chat creation can start from a stable session contract with the required greeting message.
+Implement the isolated chat matching service that builds the D007 catalog, performs one structured LLM match call per turn, and is configurable and unit-testable before endpoint wiring.
 
 ## Acceptance Criteria
-- A new table `chat_sessions` persists session state with columns: `id`, `user_id`, `created_at`, `updated_at`, `messages` (JSONB list of `{role, content, action}`), `draft_goal` (JSONB partial goal payload), `status` (`active`, `goal_created`, `awaiting_goal_type`). Migration generated via Alembic autogenerate.
-- A new backend route module `backend/app/routes/chat.py` exposes the endpoints in `api_spec.md`. The router is registered in `backend/app/main.py`.
+- Matching uses one LLM call per chat turn:
+  - Backend builds the catalog from D007's registry (`name`, `description`, `sample_prompts`).
+  - Backend prompts the LLM with the user message + chat context + catalog and asks for structured JSON: `{match: <name>|"none", confidence: 0..1, rationale: <str>}`.
+  - The model id and confidence threshold (default 0.7) are configurable via `backend/app/config.py`.
+  - The LLM service module lives at `backend/app/services/chat_match.py` and is unit-testable with a mocked LLM client.
 
 ## Tasks / Subtasks
-- [ ] Add `chat_sessions` persistence model aligned to the direction-required columns and status values.
-- [ ] Generate and wire Alembic migration for `chat_sessions`.
-- [ ] Add `backend/app/routes/chat.py` route module with `POST /api/chat/sessions`.
-- [ ] Ensure router registration in `backend/app/main.py`.
-- [ ] Implement authenticated session creation returning `201` with greeting message and `active` status.
-- [ ] Persist initial assistant greeting in `messages` on session creation.
-- [ ] Add backend tests for unauthenticated access and successful session creation payload.
-- [ ] Verify response shape matches `api_spec.md` exactly for this endpoint.
+- [ ] Add `backend/app/services/chat_match.py` service module.
+- [ ] Define service input/output contract for user message, chat context, catalog, parsed structured result, and threshold comparison support.
+- [ ] Build registry catalog from D007 goal-type registry using `name`, `description`, and `sample_prompts`.
+- [ ] Add configuration for model id and confidence threshold default `0.7` in `backend/app/config.py`.
+- [ ] Implement structured JSON prompt/parse/validation for `{match, confidence, rationale}`.
+- [ ] Make service unit-testable with mocked LLM client dependency.
+- [ ] Add service-level tests for matched response, `none` response, malformed JSON/validation failure, and threshold-relevant confidence handling.
+- [ ] Keep this story limited to service/config/test work; no endpoint behavior changes beyond what is required for importability.
 
 ## Dev Notes
 ### Verbatim flow.md
@@ -150,8 +153,9 @@ Create persisted chat session storage and the initial `POST /api/chat/sessions` 
 ```
 
 ### Context pointers
-- [Source: context/project.md#Identity]
+- [Source: context/project.md#Stack]
 - [Source: context/project.md#Active constraints]
+- [Source: context/navigation.md#When working on chat or goal-type matching]
 - [Source: context/navigation.md#When working on backend HTTP behavior]
 
 ### Verbatim direction acceptance criteria
@@ -179,12 +183,11 @@ Create persisted chat session storage and the initial `POST /api/chat/sessions` 
 ```
 
 ## References
-- `backend/app/main.py`
-- `backend/app/routes/`
-- `backend/app/models/`
+- `backend/app/services/`
 - `backend/app/config.py`
-- `backend/alembic/`
+- `backend/app/routes/chat.py`
 - `backend/app/routes/goals.py`
+- D007 goal-type registry code paths in backend
 
 ## Dev Agent Record
 - Agent Model Used: 

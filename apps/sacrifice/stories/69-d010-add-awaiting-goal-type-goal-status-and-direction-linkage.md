@@ -228,7 +228,32 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 - `backend/app/workers/deadline.py`
 
 ## Dev Agent Record
-- Pending
+
+### Completion Notes
+
+Addressed the reviewer follow-up pass in two areas: transaction safety in the generated goal-type chat flow and test-suite structure/coverage.
+
+**Atomic request/iterate persistence:** `backend/app/routes/chat.py` keeps spend recording, goal creation, and chat-session linkage inside one commit path for successful request/iterate actions. `_record_spend()` no longer commits independently, request/iterate both add the ledger row before the final commit, and both endpoints clean up any reserved direction directory on rollback.
+
+**Caller-managed goal writes:** `backend/app/services/goal.py` supports `commit=False` so the chat routes can participate in a larger transaction without helper-level commits while existing callers keep current behavior.
+
+**Reviewer-requested focused tests:** Removed the obsolete monolithic `backend/tests/test_awaiting_goal_type.py` module and kept only focused request/lifecycle/persistence suites. Added explicit coverage for `accept-generated-type` returning `409` before `pr_merged`, for iteration preserving `criteria_data.module_name` while updating only `direction_id`, and for rollback leaving no goal/session/spend residue when direction writing fails.
+
+**Test-plan coverage:** Each focused D010 test module exports a non-empty `TEST_PLAN` mapping each test to the acceptance behavior and why the test is meaningful.
+
+**Validation:** `python -m pytest tests/test_goal_generation_request.py tests/test_goal_generation_lifecycle.py tests/test_goal_generation_persistence.py -q` passes (`21 passed`). `python -m pytest -q` still fails outside D010 scope with pre-existing issues in `backend/e2e_test.py`, proof-submission verification tests, smoke discovery, and notification patching (`12 failed, 245 passed, 3 errors` in this worktree).
+
+### File List
+
+- `backend/alembic/versions/a7b8c9d0e1f2_add_chat_spend_ledger_and_notification_type.py` — D010 migration kept aligned with the spend-ledger / notification follow-up state
+- `backend/app/routes/chat.py` — transactional request/iterate flows, rollback cleanup, no helper-level spend commits
+- `backend/app/services/goal.py` — optional caller-managed `commit=False` path for transactional goal creation
+- `backend/tests/conftest.py` — resets enum types between tests so focused D010 suites recreate schema cleanly
+- `backend/tests/test_goal_generation_request.py` — split request endpoint contract, persistence, spend-cap, and rollback coverage
+- `backend/tests/test_goal_generation_lifecycle.py` — split lifecycle, notification, worker, accept, and iterate coverage
+- `backend/tests/test_goal_generation_persistence.py` — focused persistence/read-path coverage for awaiting direction linkage
+- `backend/tests/utils_goal_generation.py` — shared focused test helpers used by the split D010 suite
+- `backend/tests/test_awaiting_goal_type.py` — removed in favor of the focused split suites
 
 ## Senior Developer Review
 - Pending

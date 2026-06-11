@@ -1,24 +1,26 @@
 # Story
 
 ## Title
-D009 add chat_sessions model, migration, and create-session endpoint
+D009 add ChatGoalCreateScreen and route create-goal from home
 
 ## Description
-Establish persisted chat session storage and the initial session creation API contract for chat-driven goal creation. This story covers the `chat_sessions` table, Alembic migration, `POST /api/chat/sessions`, and router registration required to make the endpoint callable.
+Replace the typed creation entrypoint with the new chat creation screen shell. This story covers the home-screen route change, removal of legacy `GoalCreateScreen.tsx`, creation-session bootstrap, greeting display, message list, input box, send-disable-on-empty, and local session resume.
 
 ## Acceptance Criteria
-- A new backend route module `backend/app/routes/chat.py` exposes the endpoints in `api_spec.md`. The router is registered in `backend/app/main.py`.
-- A new table `chat_sessions` persists session state with columns: `id`, `user_id`, `created_at`, `updated_at`, `messages` (JSONB list of `{role, content, action}`), `draft_goal` (JSONB partial goal payload), `status` (`active`, `goal_created`, `awaiting_goal_type`). Migration generated via Alembic autogenerate.
+- A new screen `frontend/screens/ChatGoalCreateScreen.tsx` is the primary "Create goal" entry from the home screen. The home screen's "Create goal" affordance routes to this screen.
+- The legacy `frontend/screens/GoalCreateScreen.tsx` is removed entirely. Any internal references (navigation routes, hook calls) are updated to route to the chat screen.
+- The chat screen presents a message list, a text input, and structured assistant affordances rendered as cards when the assistant returns a structured action (see `api_spec.md`): "Use this goal type" card, "Build a new goal type" card, "Awaiting input" prompt for a single criterion.
 
 ## Tasks / Subtasks
-- [x] Add `chat_sessions` persistence model with required columns and status domain.
-- [x] Generate and wire Alembic migration for `chat_sessions`.
-- [x] Create `backend/app/routes/chat.py` with `POST /api/chat/sessions`.
-- [x] Persist initial assistant greeting message on session creation.
-- [x] Return `201` response body matching `api_spec.md` for create-session.
-- [x] Enforce authenticated access and specified `401` behavior.
-- [x] Register chat router in `backend/app/main.py`.
-- [x] Add backend tests for model/migration shape and create-session endpoint contract.
+- [ ] Add `frontend/screens/ChatGoalCreateScreen.tsx`.
+- [ ] Update home-screen create-goal affordance to navigate to chat creation.
+- [ ] Update internal navigation routes / hook calls from typed goal creation to chat creation.
+- [ ] Remove `frontend/screens/GoalCreateScreen.tsx` and clean up references.
+- [ ] On screen load, create or resume chat session using locally stored session id.
+- [ ] Render assistant greeting from session bootstrap response.
+- [ ] Render message list and text input.
+- [ ] Disable send button for empty or whitespace input.
+- [ ] Add frontend tests for navigation replacement, greeting display, input validation, and session resume behavior.
 
 ## Dev Notes
 ### Verbatim flow.md
@@ -153,7 +155,8 @@ Establish persisted chat session storage and the initial session creation API co
 - [Source: context/project.md#Identity]
 - [Source: context/project.md#Stack]
 - [Source: context/project.md#Active constraints]
-- [Source: context/navigation.md#When working on backend HTTP behavior]
+- [Source: context/navigation.md#When working on the Expo client]
+- [Source: context/navigation.md#When working on goal creation]
 - [Source: context/navigation.md#When working on chat or goal-type matching]
 
 ### Verbatim direction acceptance criteria
@@ -181,17 +184,17 @@ Establish persisted chat session storage and the initial session creation API co
 ```
 
 ## References
-- `backend/app/main.py`
-- `backend/app/routes/goals.py`
-- `backend/app/models/goal.py`
-- `backend/app/schemas/goal.py`
-- `backend/app/config.py`
+- `frontend/App.tsx`
+- `frontend/screens/HomeScreen.tsx`
+- `frontend/hooks/useNavigation.tsx`
+- `frontend/services/api.ts`
+- `frontend/AGENTS.md`
 
 ## Dev Agent Record
-- Agent Model Used: openhands
+- Agent Model Used: 
 - Debug Log References: 
-- Completion Notes: All 6 chat session tests pass (test_chat_sessions.py). 6 pre-existing test failures in unrelated areas (proof submission, notifications, goal_type_smoke) — these predate this story and are not caused by these changes. Implementation already committed in faa35c4 (model, migration, route, router registration) and 0d104d9 (uv.lock fix for asyncpg).
-- File List: backend/app/models/chat.py, backend/app/models/__init__.py, backend/app/routes/chat.py, backend/app/main.py, backend/alembic/versions/21a8b70bd9be_add_chat_sessions.py, backend/alembic/env.py, backend/tests/test_chat_sessions.py 
+- Completion Notes: 
+- File List: 
 
 ## Senior Developer Review
 - Status: Pending
