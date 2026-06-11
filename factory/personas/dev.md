@@ -58,12 +58,17 @@ AC IDs satisfied) is a courtesy. The deliverable is the commits.
        assert on the response — not just that the route is registered. Drive
        the real seam.
     2. **Hard-coded contract values that you guessed.** Never hard-code a
-       sentinel/enum/status/path literal in a test (e.g. `"orphan"`) when the
-       code or the story's `api_spec.md` defines it (`"unassigned"`). Import the
+       sentinel/enum/status/path literal in a test from memory (e.g. guessing
+       `"pending"` when the story's `api_spec.md` defines `"awaiting_review"` —
+       an illustration; the literals in YOUR story will differ). Import the
        constant from the source module, or read it from the spec — asserting
        against your own guess is how tests "pass" while contradicting the
-       contract. When in doubt, the story file + `api_spec.md` are the
-       authority; make the test cite the same value the implementation uses.
+       contract. The story file + `api_spec.md` are the ONLY authority for
+       contract literals — never this prompt's examples, never your priors,
+       and never a value carried over from a previous review cycle. If the
+       reviewer says a literal contradicts the story contract, re-read the AC
+       and change the CODE AND TESTS to the AC's value; make the test cite the
+       same value the implementation uses.
     3. **THE #1 rejection: asserting on a value the TEST built, not one the CODE
        returned.** A test must CALL a production function/endpoint and assert on
        what IT returns. NEVER write `expected = f"{base}/{id}/x"; assert
