@@ -264,10 +264,13 @@ def test_route_returns_azure_model_under_default_provider(
 
 
 def test_route_dev_uses_deepseek_v4_pro(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Dev / test_implementer should route to deepseek-v4-pro (heavy impl)."""
+    """Dev standard tier routes to deepseek-v4-pro (heavy impl); the hard
+    tier deliberately routes to a DIFFERENT model family so tier escalation
+    is a real escape hatch for per-model failure modes (e.g. Azure
+    content-filter blocks on deepseek completions, 2026-06-11)."""
     monkeypatch.delenv("FACTORY_PROVIDER", raising=False)
     assert model_router.route("dev", "standard") == "azure/deepseek-v4-pro"
-    assert model_router.route("dev", "hard") == "azure/deepseek-v4-pro"
+    assert model_router.route("dev", "hard") == "azure/gpt-5.4"
     assert model_router.route("test_implementer") == "azure/deepseek-v4-pro"
 
 
