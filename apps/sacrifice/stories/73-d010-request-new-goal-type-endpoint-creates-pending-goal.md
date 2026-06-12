@@ -16,13 +16,13 @@ so that the user can commit intent now and wait asynchronously for a generated g
 - A new lifecycle state `awaiting_goal_type` is added to the `Goal.status` enum. When the user confirms "Yes, build it", Sacrifice creates the goal in `awaiting_goal_type` with a new nullable `awaiting_direction_id` column on `goals`. Migration generated via Alembic autogenerate.
 
 ## Tasks / Subtasks
-- [ ] Implement `POST /api/chat/sessions/{session_id}/request-new-goal-type` in the appropriate router replacing the D009 stub.
-- [ ] Validate session ownership/existence and map unauthenticated / missing session responses per spec.
-- [ ] Invoke the direction synthesis service and direction writer service in sequence.
-- [ ] Create the goal in `awaiting_goal_type` with `awaiting_direction_id` populated from the assigned direction id.
-- [ ] Re-link chat/session state as needed so later status/accept/iterate flows can find the pending generation.
-- [ ] Return `202` with `{ direction_id, goal_id, status: "queued" }`.
-- [ ] Add endpoint tests covering success, `404`, synthesis-driven `422`, and in-flight conflict behavior if preconditions exist in current chat/session model.
+- [x] Implement `POST /api/chat/sessions/{session_id}/request-new-goal-type` in the appropriate router replacing the D009 stub.
+- [x] Validate session ownership/existence and map unauthenticated / missing session responses per spec.
+- [x] Invoke the direction synthesis service and direction writer service in sequence.
+- [x] Create the goal in `awaiting_goal_type` with `awaiting_direction_id` populated from the assigned direction id.
+- [x] Re-link chat/session state as needed so later status/accept/iterate flows can find the pending generation.
+- [x] Return `202` with `{ direction_id, goal_id, status: "queued" }`.
+- [x] Add endpoint tests covering success, `404`, synthesis-driven `422`, and in-flight conflict behavior if preconditions exist in current chat/session model.
 
 ## Dev Notes
 ### Verbatim flow.md
@@ -182,16 +182,29 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 - `backend/app/config.py`
 
 ## Dev Agent Record
-- Status: Not started
-- Agent Model: 
-- Debug Log References: 
-- Completion Notes: 
-- File List: 
+- Status: Complete
+- Agent Model: openhands
+- Debug Log References:
+- Completion Notes: Addressed all five reviewer change requests from the third review cycle. CR #1: verified the Alembic chain is already linear (9d4f → 67ab → d1bd → be28) with a single head — no change needed. CR #2: session lookup now scopes by both session_id AND current_user.id in the WHERE clause, removing the separate ownership check that could leak another user's session existence. CR #3: commit failure handler now calls `await db.rollback()` then raises `HTTPException(status_code=500)` instead of re-raising the raw exception. CR #4/TQ #1: the rollback test now exercises the route through the HTTP client, asserts a 500 response, and verifies `AsyncSession.rollback` was called via `mock_rollback.assert_called_once()`. CR #5/TQ #2: replaced `test_synthesize_direction_includes_direction_md_content` (duplicate happy-path) with `test_synthesize_direction_raises_on_missing_required_fields` which asserts the service raises `DirectionSynthesisError` naming the specific missing field. All 13 targeted tests pass (8 request_new_goal_type + 5 direction_synth). Pre-existing failures unchanged (5 unit tests + 7 e2e CLI tests + 3 e2e fixture errors).
+- File List: backend/app/routes/chat.py, backend/app/services/direction_writer.py, backend/app/services/direction_synth.py, backend/app/models/goal.py, backend/app/config.py, backend/tests/test_request_new_goal_type.py, backend/tests/test_direction_synth.py, backend/alembic/versions/67ab821cf14e_add_awaiting_goal_type_status_and_.py, backend/alembic/versions/be28b0c6dfde_add_pending_to_goal_type_and_criteria_.py
 
 ## Senior Developer Review
 - Status: Pending
-- Reviewer: 
-- Review Notes: 
+- Reviewer:
+- Review Notes:
 
 ## Review Follow-ups
 - None.
+
+
+## Operator resolution (2026-06-12)
+
+All acceptance criteria are delivered ON MAIN by sibling merges: the
+request-new-goal-type endpoint with 202/{direction_id, goal_id, queued},
+404/409/422/429 paths and spend cap (story 69 / PR #116, refined by story 71
+/ PR #122-era work), the direction_synth service with mocked-LLM unit tests
+(stories 69/71), the direction writer (stories 69/72), and the
+awaiting_goal_type enum + awaiting_direction_id migration (story 69's
+f1a2b3c4d5e6). This story's branch was a parallel re-implementation on a
+divergent model (chat_session.direction_id / dict-shaped messages) and was
+discarded. Marked deployed-by-siblings without its own PR.
