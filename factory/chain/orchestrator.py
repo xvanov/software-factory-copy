@@ -813,6 +813,28 @@ def tick(
                 from factory.chain.worktree import prune_stale_worktrees
 
                 active_ids: set[int] = {s.id for s in stories if s.id is not None}
+                # KEEP worktrees of blocked stories: blocked states mean
+                # "awaiting operator resolution or auto-recovery", and both
+                # use the worktree — the operator resolves merge conflicts in
+                # it, and recovery re-dispatches dev into it. Pruning them
+                # destroyed in-progress operator conflict resolutions three
+                # times on 2026-06-11/12. Only DEPLOYED (and rows gone from
+                # the DB) are truly done with their worktree.
+                eng_keep = create_engine(f"sqlite:///{db_path}", echo=False)
+                with Session(eng_keep) as _ks:
+                    blocked_rows = _ks.exec(
+                        select(StoryRecord).where(
+                            StoryRecord.app == app,
+                            StoryRecord.state.in_(  # type: ignore[attr-defined]
+                                [
+                                    StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
+                                    StoryState.BLOCKED_DEPLOY_FAILED.value,
+                                    StoryState.BLOCKED_REVIEW_NONCONVERGENT.value,
+                                ]
+                            ),
+                        )
+                    ).all()
+                active_ids |= {r.id for r in blocked_rows if r.id is not None}
                 source_repo = resolve_app_repo_path(cfg, root)
                 if source_repo.exists():
                     prune_stale_worktrees(
