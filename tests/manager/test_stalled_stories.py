@@ -197,7 +197,11 @@ def test_crashed_tick_dangling_start_still_alarms(
     tick may be running on the host during the test.)"""
     import json as _json
 
-    import factory.manager.detectors.stalled_stories as mod
+    import sys
+
+    # detectors/__init__ re-exports the function under the submodule's name,
+    # so attribute-style import resolves to the function; go via sys.modules.
+    mod = sys.modules["factory.manager.detectors.stalled_stories"]
     monkeypatch.setattr(mod, "_tick_process_alive", lambda: False)
 
     now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
