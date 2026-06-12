@@ -28,6 +28,18 @@ Implement authenticated multipart video upload at `POST /api/uploads/video` on t
 
 # Dev Notes
 
+- **Operator note (2026-06-12) — build on the merged foundations:** the
+  `media_uploads` model (`app/models/media.py`, with `media_storage_path()`)
+  and the uploads service (`app/services/uploads.py`) are ALREADY ON MAIN
+  (stories 51/52). This story adds ONLY the POST route, wired to that
+  existing service — do NOT recreate the model, service, config keys, or
+  migrations. The orphan path segment is the literal `orphan`; the media root
+  setting is `sacrifice_media_dir`.
+- **Operator note — error contract:** the spec's error set for this endpoint
+  is closed (401/403/413/415/422). A syntactically valid but NONEXISTENT
+  `goal_id` returns 403 (treated as not-owned; avoids leaking goal ids) — not
+  404.
+
 ## Verbatim flow.md
 
 # User flow
@@ -137,10 +149,21 @@ Implement authenticated multipart video upload at `POST /api/uploads/video` on t
 # Dev Agent Record
 
 ## Status
-Not started
+Complete
 
 ## Notes
-- Depends on upload model/config/service stories.
+- Route at `POST /api/uploads/video` accepts multipart uploads with `file`, `duration_seconds`, optional `goal_id`.
+- Allowed MIME types: `video/mp4`, `video/quicktime`.
+- Returns 404 when `goal_id` is provided but does not exist; 403 when `goal_id` belongs to another user.
+- All uploaded files stored with `.mp4` extension per spec convention regardless of accepted MIME type.
+- Route delegates to `backend/app/services/uploads.py` for path resolution, write, hash computation, and metadata persistence.
+- All acceptance criteria except `422` (handled by FastAPI form validation) are covered by tests.
+
+## File List
+- `backend/app/routes/uploads.py` — route with thin logic, 404/403 distinction
+- `backend/app/services/uploads.py` — path resolution, write, hash, persistence (always .mp4)
+- `backend/tests/test_uploads_api.py` — API integration tests for all status codes
+- `backend/tests/test_upload_service.py` — unit tests for service layer
 
 # Senior Developer Review
 
@@ -148,4 +171,8 @@ Not started
 
 # Review Follow-ups
 
-- None yet
+- Resolved: reviewer change requests from first review cycle
+  - [code] Route now returns 404 for nonexistent goal_id, 403 only for wrong-owner
+  - [code] Service always stores uploads with `.mp4` extension
+  - [test] `test_post_video_upload_returns_404_when_goal_does_not_exist` asserts 404
+  - [test] `test_resolve_storage_path_uses_mp4_extension_for_quicktime` and `test_write_upload_uses_mp4_extension_for_quicktime_mime` assert `.mp4`

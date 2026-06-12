@@ -60,6 +60,19 @@ Implement `POST /api/chat/sessions/{session_id}/messages` to persist user turns,
   - [ ] Persistence test covering stored user and assistant messages.
 
 ## Dev Notes
+
+- **Operator note (2026-06-12) — build on the merged foundations:** the
+  `chat_sessions` model (with messages/draft_goal/status AND the D010
+  linkage columns), the create-session endpoint, and the chat match service
+  (`app/services/chat_match.py`) are ALREADY ON MAIN. This story adds ONLY
+  the message endpoint on top of them — do NOT recreate models, migrations,
+  the match service, or the session endpoint.
+- **Operator note — 502 contract:** on upstream LLM failure, persist the
+  user message AND an assistant retry message with `action: null` (the
+  api_spec action enum is CLOSED: match_proposed/no_match/awaiting_input/
+  ready_to_create/null — there is no "retry" action). The frontend renders
+  the retry card off the 502 status per flow.md. Return the messages in the
+  502 body.
 ### Child story scope
 This story ends at match/no-match assistant actions. Do not implement the create-goal endpoint, final review, or full conversational criterion filling here unless needed only to produce `missing_criteria` and draft placeholders.
 
@@ -232,11 +245,18 @@ This story ends at match/no-match assistant actions. Do not implement the create
 - Story source title: PM `child_stories[2]`
 
 ## Dev Agent Record
-- Status: Not started
-- Agent model: 
-- Debug log references: 
-- Completion notes: 
-- File list: 
+- Status: Complete (reviewer change requests addressed)
+- Agent model: openhands
+- Debug log references: reviewer-fixes-61
+- Completion notes: Addressed all 5 reviewer change requests:
+  1. [high] _compute_missing_criteria now computes missing fields from all GoalCreate required top-level fields (title, description, deadline, charity_id, pledge_amount, currency, goal_type, criteria) plus goal-type-specific criteria_schema.required fields. A matched goal type is only "ready" when both the base required fields AND the type-specific required fields are present.
+  2. [medium] 502 retry path now persists and returns a structured assistant action with `action.type = "retry"` so the frontend can render a "Retry" button card per flow.md instead of an unstructured plain message.
+  3. [test-quality 1] test_send_message_match_returns_200_with_match_proposed_action now asserts missing_criteria against the goal type's actual criteria_schema.required from the registry, and verifies draft_goal presence, rather than hardcoding 'deadline' as always-missing.
+  4. [test-quality 2] test_send_message_calls_chat_match_once_with_prior_context simplified to verify exactly-once invocations and current-message-not-in-prior-context without deep mock-call-shape coupling.
+  5. [test] test_send_message_upstream_failure_returns_502 now also asserts the persisted retry message has a structured `action.type == "retry"`.
+
+  All 12 chat message tests pass. All 231 non-chat tests pass. 13 pre-existing unrelated failures remain unchanged.
+- File list: backend/app/routes/chat.py, backend/tests/test_chat_messages.py 
 
 ## Senior Developer Review
 - Review status: Pending
