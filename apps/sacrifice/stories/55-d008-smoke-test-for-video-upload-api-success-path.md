@@ -142,34 +142,26 @@ OpenHands dev persona (Amelia)
 
 - Previous attempts failed with `ModuleNotFoundError: No module named 'asyncpg'` — dependency not installed.
 - Fix: `VIRTUAL_ENV=.venv uv sync --active --extra dev` installed asyncpg, pytest, and all required packages.
-- All previous attempts: test file declared "frozen" so CRs #2, #6, TQ #1, TQ #2 could not be addressed.
-- Attempt 8 (current): Reviewer explicitly requested changes to both production code AND tests. All CRs addressed directly.
+- Attempts 3-6: test file declared "frozen" so reviewer CRs could not be addressed.
+- Attempt 8: Reviewer explicitly requested changes to both production code AND tests.
+- Attempt 9 (current): Resolved remaining CR #2 — deleted stray `e2e/playwright.config.ts`. CR #1/TQ #1 (`uuid.UUID()` parse) was already resolved in the test at line 52.
 
 ## Completion Notes List
 
-1. All 4 code CRs resolved in this pass:
-   - CR #1 (high, failing smoke test): ✅ Resolved — test passes (1/1) after all production fixes applied.
-   - CR #2 (medium, `File(...)` annotation): ✅ Resolved — `backend/app/routes/uploads.py:22` uses `file: UploadFile = File(...)` with `File` imported at line 3.
-   - CR #3 (medium, hard-coded `.mp4` extension): ✅ Resolved — `backend/app/services/uploads.py:14-17` defines `_MIME_TO_EXT` mapping `video/mp4→.mp4`, `video/quicktime→.mov`. `_resolve_storage_path` accepts `mime_type` parameter and derives extension from the mapping.
-   - CR #4 (medium, missing Alembic migration): ✅ Resolved — `backend/alembic/versions/29683944c0b5_add_media_uploads.py` creates `media_uploads` table with all specified columns, foreign keys to `users` and `goals`, and downgrade.
+1. Both reviewer CRs from this review pass resolved:
+   - CR #1 (medium, UUID assertion): ✅ Already resolved — `test_video_upload_smoke.py:52` uses `uuid.UUID(body["upload_id"])` which will raise `ValueError` on malformed UUIDs.
+   - CR #2 (medium, Playwright config): ✅ Resolved — deleted `e2e/playwright.config.ts`. The `e2e/fixtures/minimal.mp4` fixture is retained (still used by the pytest smoke test).
 2. Both test-quality findings resolved:
-   - TQ #1 (manual UUID segment checks): ✅ Resolved — replaced manual 8-4-4-4-12 segment-length assertions with `uuid.UUID(body["upload_id"])` parse at `test_video_upload_smoke.py:52`.
-   - TQ #2 (stray Playwright spec): ✅ Resolved — deleted `e2e/video-upload-api.smoke.spec.ts`. No Playwright harness exists in this repository; the pytest/httpx smoke test covers the acceptance criterion.
+   - TQ #1 (manual UUID segment checks): ✅ Already resolved — `uuid.UUID()` parse at line 52.
+   - TQ #2 (stray Playwright surface): ✅ Resolved — `e2e/playwright.config.ts` deleted. No Playwright harness exists in this repository; the pytest/httpx smoke test is the sole coverage.
 3. Smoke test passes: `tests/test_video_upload_smoke.py::test_video_upload_success_returns_201_with_expected_shape` — 1 passed.
-4. Full test suite: 224 passed, 13 failed, 3 errors — identical to pre-existing baseline plus the smoke test (zero regressions). All 13 failing tests are pre-existing and unrelated to this story.
+4. Full test suite: 224 passed, 13 failed, 3 errors — zero regressions. All 13 failing tests are pre-existing and unrelated to this story.
 
 ## File List
 
-- `backend/app/routes/uploads.py` — `File(...)` annotation (CR #2), POST /video, GET /{upload_id}, goal ownership 403
-- `backend/app/services/uploads.py` — MIME-to-extension mapping (CR #3), write_upload, get_upload_by_id, path resolution
-- `backend/app/schemas/upload.py` — UploadResponse, UploadDetailResponse
-- `backend/app/models/upload.py` — MediaUpload model
-- `backend/alembic/versions/29683944c0b5_add_media_uploads.py` — Migration creating media_uploads table (CR #4)
-- `backend/alembic/env.py` — MediaUpload import for autogenerate
-- `backend/app/config.py` — media_dir default, max_upload_size_bytes
-- `backend/app/main.py` — uploads_router registration
-- `backend/tests/test_video_upload_smoke.py` — UUID parse (TQ #1), smoke test passes
-- `e2e/video-upload-api.smoke.spec.ts` — DELETED (TQ #2)
+- `backend/tests/test_video_upload_smoke.py` — `uuid.UUID()` parse (CR #1/TQ #1), smoke test passes
+- `e2e/playwright.config.ts` — DELETED (CR #2/TQ #2)
+- `e2e/fixtures/minimal.mp4` — RETAINED (fixture still used by smoke test)
 
 # Senior Developer Review
 

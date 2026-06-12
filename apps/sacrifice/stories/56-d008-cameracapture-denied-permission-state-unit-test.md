@@ -128,8 +128,17 @@ Create the reusable `frontend/components/CameraCapture.tsx` permission shell foc
 - `frontend/AGENTS.md`
 
 ## Dev Agent Record
-- Status: Not started
-- Notes: 
+- Status: Complete
+- Notes: All 5 reviewer CRs resolved:
+  1. CR #1 (medium): Replaced `isRequesting` boolean with `requestStatus` state machine (`'idle' | 'requesting' | 'settled'`). The denied UI now only renders when `requestStatus === 'settled'`, preventing the flash that occurred when hooks resolved to non-granted before the effect fired.
+  2. CR #2 (medium): Already addressed — the granted state renders `CameraView` + "Start recording" button (lines 63-78).
+  3. CR #3 + Test-quality #1: Rewrote the main denied-state test to drive the full async lifecycle: null → loading → undetermined (requesting) → settled (denied). Uses `queryByText` to assert denied message is absent during the requesting phase, proving flash prevention.
+  4. Test-quality #2: No redundant mic-only test exists. The 4 tests all exercise real async behavior: lifecycle transition, Open settings interaction, Cancel callback, and granted-state rendering.
+- File List:
+  - `frontend/components/CameraCapture.tsx` (modified — requestStatus state machine)
+  - `frontend/__tests__/components/CameraCapture.test.tsx` (modified — full async lifecycle coverage)
+  - `frontend/__mocks__/expo-camera/index.ts` (pre-existing)
+  - `frontend/__mocks__/expo-linking/index.ts` (pre-existing)
 
 ## Senior Developer Review
 - Pending

@@ -199,11 +199,25 @@
 ## Dev Agent Record
 ### Agent Model Used
 
+openhands
+
 ### Debug Log References
+
+N/A — all 17 chat tests pass green.
 
 ### Completion Notes List
 
+- CR1 (high, rephrase flow): On "Try another approach" / "Let me rephrase", the code now clears the draft and returns a plain "Okay, tell me what you'd like to do instead" message. The next freeform turn triggers a fresh match. The old behavior was calling `match_goal_type` on the control text itself.
+- CR2 (high, edit flow): Moved the `_editing` state handler above the `ready_to_create` handler so it fires before re-entering the review state. The `_editing` check checks the flag persisted in `session.draft_goal`, asks "What would you like to change?", then applies `_apply_edit_from_message` on the follow-up turn and re-emits `ready_to_create` with the updated payload.
+- CR3 (medium, rephrase test): Added `test_rephrase_after_match_proposed_clears_draft_and_rematches` — proposes youtube_video, sends "Let me rephrase", asserts draft cleared and plain assistant message, then sends new goal description and asserts fresh match to github_repo.
+- CR4 (medium, edit test): Added `test_edit_after_ready_to_create_changes_field_and_reemits_review` — drives session to ready_to_create, sends "Edit", asserts plain "What would you like to change?" prompt, sends "change video_description to ...", asserts updated ready_to_create payload with new value, validates against GoalCreate.
+- TQ1: `test_missing_criteria_advance_one_at_a_time` already exercised the linear happy path; the two new branch tests cover rephrase and edit transitions.
+- All 17 chat tests pass; 246 of 254 total tests pass (8 pre-existing e2e/smoke failures unrelated to chat).
+
 ### File List
+
+- `backend/app/routes/chat.py` — `_process_turn` (rephrase handling at ~line 431, _editing handler at ~line 364, ready_to_create handler at ~line 386), `_apply_edit_from_message` at ~line 320
+- `backend/tests/test_chat.py` — `test_rephrase_after_match_proposed_clears_draft_and_rematches`, `test_edit_after_ready_to_create_changes_field_and_reemits_review`
 
 ## Senior Developer Review
 

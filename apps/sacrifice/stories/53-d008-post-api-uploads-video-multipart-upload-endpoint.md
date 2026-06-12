@@ -149,21 +149,23 @@ Implement authenticated multipart video upload at `POST /api/uploads/video` on t
 # Dev Agent Record
 
 ## Status
-Complete
+Implemented; broader backend suite has unrelated blockers
 
 ## Notes
-- Route at `POST /api/uploads/video` accepts multipart uploads with `file`, `duration_seconds`, optional `goal_id`.
-- Allowed MIME types: `video/mp4`, `video/quicktime`.
-- Returns 404 when `goal_id` is provided but does not exist; 403 when `goal_id` belongs to another user.
-- All uploaded files stored with `.mp4` extension per spec convention regardless of accepted MIME type.
-- Route delegates to `backend/app/services/uploads.py` for path resolution, write, hash computation, and metadata persistence.
-- All acceptance criteria except `422` (handled by FastAPI form validation) are covered by tests.
+- `POST /api/uploads/video` is present and accepts authenticated `multipart/form-data` with `file`, `duration_seconds`, and optional `goal_id`.
+- The route enforces the closed error contract from the story/operator note: `401`, `403`, `413`, `415`, and `422`; a syntactically valid but nonexistent `goal_id` returns `403`, not `404`.
+- The route stays thin by delegating file write, path resolution, SHA-256 computation, and metadata persistence to `backend/app/services/uploads.py`.
+- To keep migration-based tests working after newer schema work introduced two Alembic heads, a no-op merge migration was added so `alembic upgrade head` resolves to a single head again.
+- Verified green: `python -m pytest tests/test_uploads_api.py tests/services/test_uploads.py tests/test_media_uploads.py tests/test_chat_sessions_api.py -q` (`45 passed`).
+- `python -m pytest -q` still fails in unrelated pre-existing areas (`backend/e2e_test.py`, proof-submission/notification tests, and goal-type smoke discovery), so the full backend suite is not green yet.
 
 ## File List
-- `backend/app/routes/uploads.py` — route with thin logic, 404/403 distinction
-- `backend/app/services/uploads.py` — path resolution, write, hash, persistence (always .mp4)
-- `backend/tests/test_uploads_api.py` — API integration tests for all status codes
-- `backend/tests/test_upload_service.py` — unit tests for service layer
+- `backend/app/routes/uploads.py` — authenticated thin `POST /api/uploads/video` route with MIME, ownership, and size checks before service delegation
+- `backend/app/config.py` — upload-size configuration used for `413` enforcement
+- `backend/app/main.py` — uploads router registration
+- `backend/tests/conftest.py` — includes `media_uploads` in test-database truncation/cleanup
+- `backend/tests/test_uploads_api.py` — API coverage for `201`, `401`, `403`, `413`, `415`, and `422` endpoint behavior
+- `backend/alembic/versions/c4d5e6f7a8b9_merge_goal_status_and_chat_session_heads.py` — no-op merge migration restoring a single Alembic head
 
 # Senior Developer Review
 
@@ -171,8 +173,4 @@ Complete
 
 # Review Follow-ups
 
-- Resolved: reviewer change requests from first review cycle
-  - [code] Route now returns 404 for nonexistent goal_id, 403 only for wrong-owner
-  - [code] Service always stores uploads with `.mp4` extension
-  - [test] `test_post_video_upload_returns_404_when_goal_does_not_exist` asserts 404
-  - [test] `test_resolve_storage_path_uses_mp4_extension_for_quicktime` and `test_write_upload_uses_mp4_extension_for_quicktime_mime` assert `.mp4`
+- (none)

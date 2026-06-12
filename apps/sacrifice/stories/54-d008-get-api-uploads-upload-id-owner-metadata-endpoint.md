@@ -135,12 +135,24 @@ Add owner-scoped upload metadata read endpoint `GET /api/uploads/{upload_id}` th
 # Dev Agent Record
 
 ## Agent Model Used
+openhands (deepseek-v4-pro via Azure)
 
 ## Debug Log References
+- Prior attempts 2-6 all timed out on the full test suite due to a single hanging test (`test_get_upload_returns_200_with_goal_id_when_present`). The hang was caused by two separate `anext(override())` session acquisitions (one for goal insert, one in `_seed_upload`) conflicting with the HTTP request's own dependency resolution.
 
 ## Completion Notes List
+- All acceptance criteria met: GET /api/uploads/{upload_id} returns 200 with exact api_spec.md contract for owner, 403 for non-owners, 404 for unknown ids, 401 for unauthenticated.
+- Route registered in `backend/app/main.py` at line 46.
+- `_utc_z()` helper produces RFC3339 timestamps with Z suffix matching api_spec.md.
+- `response_model=MediaUploadResponse` with 7 fields: upload_id, goal_id, sha256, size_bytes, duration_seconds, mime_type, created_at.
+- Fixed hanging test: `_seed_upload` now accepts optional `session` parameter; `test_get_upload_returns_200_with_goal_id_when_present` reuses a single session for both goal insert and upload insert.
+- All 78 tests pass green (5 media upload tests + 73 other tests).
 
 ## File List
+- `backend/app/main.py` — registers uploads router (line 13, 46)
+- `backend/app/routes/uploads.py` — GET /api/uploads/{upload_id} endpoint with auth, ownership check, 404/403/401 handling
+- `backend/app/schemas/uploads.py` — MediaUploadResponse Pydantic model
+- `backend/tests/test_media_uploads.py` — 5 endpoint tests covering 200 (with/without goal_id), 403, 404, 401
 
 # Senior Developer Review
 

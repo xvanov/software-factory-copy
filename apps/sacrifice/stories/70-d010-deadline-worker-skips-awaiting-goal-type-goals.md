@@ -164,7 +164,23 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 - `backend/tests/`
 
 ## Dev Agent Record
-- Pending.
+### Completion Notes
+- Added `ENFORCEABLE_STATUSES` frozenset (`{"active", "pending_review"}`) to `backend/app/workers/deadline.py` to make the enforcement scope explicit and protect against future status additions accidentally sweeping in `awaiting_goal_type` goals.
+- Removed redundant `AND status != 'awaiting_goal_type'` clauses from both `check_deadlines` queries — the per-status WHERE clauses already exclude non-enforceable statuses, and the constant documents the intent.
+- Rewrote `backend/tests/test_deadline_worker.py` from scratch with three narrowly-scoped tests:
+  1. `test_awaiting_goal_type_goal_skipped_by_deadline_worker` — direct DB insert proves worker ignores `awaiting_goal_type` without routing through HTTP endpoints.
+  2. `test_active_overdue_goal_enforced_by_deadline_worker` — control case proving active overdue goals are still enforced (status → failed, payment created, notification inserted).
+  3. `test_pending_review_past_grace_threshold_enforced` — regression proving `pending_review` goals past the grace threshold ARE enforced, confirming no change to existing enforceable-state handling.
+- All tests use direct-DB helpers (`_insert_goal`, `_query_goal`, etc.) rather than HTTP routing, keeping them fast and focused on the worker's selection behavior.
+- Removed unrelated `frontend/components/CameraCapture.tsx` from the branch.
+- Reverted `backend/uv.lock` to match `main` (removed unrelated bcrypt/passlib additions).
+- Full suite: 226 passed, 13 pre-existing failures unrelated to this story.
+
+### File List
+- `backend/app/workers/deadline.py`
+- `backend/tests/test_deadline_worker.py`
+- `backend/uv.lock` (reverted to main)
+- `frontend/components/CameraCapture.tsx` (deleted)
 
 ## Senior Developer Review
 - Pending.
