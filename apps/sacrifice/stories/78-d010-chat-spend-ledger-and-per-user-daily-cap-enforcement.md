@@ -183,3 +183,8 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 
 ## Review Follow-ups
 - [ ] None yet.
+
+
+## Operator resolution (2026-06-12)
+
+Delivered on main by sibling merges — ChatSpendLedger + per-user daily cap with 429 enforcement at request and iterate endpoints shipped via story 69's merge. Marked deployed-by-siblings without its own PR.

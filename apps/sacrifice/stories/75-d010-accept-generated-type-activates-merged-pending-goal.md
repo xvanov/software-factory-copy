@@ -176,3 +176,8 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 
 ## Review Follow-ups
 - None
+
+
+## Operator resolution (2026-06-12)
+
+Delivered on main by sibling merges — accept-generated-type (activation, linkage clearing, 409-before-merge) shipped via story 69's merge and operator review. Marked deployed-by-siblings without its own PR.

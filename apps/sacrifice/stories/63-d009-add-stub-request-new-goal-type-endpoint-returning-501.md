@@ -196,3 +196,8 @@ Add the explicit no-match stub contract for `POST /api/chat/sessions/{session_id
 
 ## Review Follow-ups
 - None yet.
+
+
+## Operator resolution (2026-06-12)
+
+Delivered on main by sibling merges — The real request-new-goal-type endpoint shipped via story 69's merge; a 501 stub is moot. Marked deployed-by-siblings without its own PR.

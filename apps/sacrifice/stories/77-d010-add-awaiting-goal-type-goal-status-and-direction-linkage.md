@@ -154,3 +154,8 @@ Verbatim direction acceptance criteria embedded in this story's Acceptance Crite
 
 ## Review Follow-ups
 - Pending
+
+
+## Operator resolution (2026-06-12)
+
+Delivered on main by sibling merges — iterate-generated-type (slug normalization, parent linkage, compensating cleanup) shipped via story 69's merge and operator review. Marked deployed-by-siblings without its own PR.

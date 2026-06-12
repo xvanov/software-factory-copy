@@ -141,3 +141,8 @@ Verbatim direction acceptance criteria embedded in this story's Acceptance Crite
 
 ## Review Follow-ups
 - Pending
+
+
+## Operator resolution (2026-06-12)
+
+Delivered on main by sibling merges — fire_notification_on_merge with idempotent dedupe and duplicate-poll test shipped via story 69's merge. Marked deployed-by-siblings without its own PR.
