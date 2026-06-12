@@ -2519,7 +2519,40 @@ def _open_pr_for_story(
         f"when its gates pass (factory_settings.yaml::auto_merge)."
     )
     try:
-        # Push the branch first; gh pr create needs an upstream ref.
+        # Sync with the base before opening the PR. Sibling stories merge
+        # continuously, so a branch cut earlier in the day is stale by PR
+        # time and its PR arrives conflicted (three operator hand-merges on
+        # 2026-06-11). A clean auto-merge here keeps the PR mergeable; on
+        # conflict we abort and proceed — the PR opens conflicted and a
+        # human resolves it (never silently auto-resolve). Best-effort: a
+        # fetch/merge failure must not block PR creation.
+        try:
+            subprocess.run(
+                ["git", "fetch", "origin", base],
+                cwd=str(target_repo),
+                check=False,
+                capture_output=True,
+                timeout=60,
+            )
+            base_merge = subprocess.run(
+                ["git", "merge", "--no-edit", f"origin/{base}"],
+                cwd=str(target_repo),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if base_merge.returncode != 0:
+                subprocess.run(
+                    ["git", "merge", "--abort"],
+                    cwd=str(target_repo),
+                    check=False,
+                    capture_output=True,
+                    timeout=60,
+                )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        # Push the branch; gh pr create needs an upstream ref.
         # --force-with-lease: story branches are factory-owned and single-
         # writer, and origin may hold STALE commits from abandoned earlier
         # attempts (pre-rewrite runs pushed work-preservation commits). The
