@@ -8,6 +8,20 @@ As a user chatting to create a goal,
 I want assistant actions rendered as clear cards,
 so that I can understand and act on match proposals, missing inputs, retries, and no-match outcomes.
 
+## Dev Notes (operator, 2026-06-12)
+
+- **Build on the merged base — most cards EXIST:** main's
+  `ChatGoalCreateScreen.tsx` already renders `match_proposed` (Use this /
+  Try another approach), `no_match` (Yes, build it → request-new-goal-type),
+  and `awaiting_input` cards, plus the 502 retry button, with passing tests.
+  Do NOT recreate the screen, the legacy-screen removal (done), the api
+  client, or any backend code (sibling scope).
+- **This story's remaining delta:** (a) render the `ready_to_create` action
+  as a final-review card (summary of the draft goal payload + a confirm
+  affordance that sends the confirmation message / calls create-goal per the
+  merged flow), and (b) tests for that card and the confirm path. Small,
+  additive changes to the existing screen only.
+
 ## Acceptance Criteria
 - The chat screen presents a message list, a text input, and structured assistant affordances rendered as cards when the assistant returns a structured action (see `api_spec.md`): "Use this goal type" card, "Build a new goal type" card, "Awaiting input" prompt for a single criterion.
 - Matching above confidence threshold → assistant card surfaces the matched type with required criteria fields; chat asks for each missing criterion conversationally. On all criteria filled + user confirmation, the chat backend calls the existing `POST /api/goals` and returns the new goal id.
