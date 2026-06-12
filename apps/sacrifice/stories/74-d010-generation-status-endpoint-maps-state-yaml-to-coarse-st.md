@@ -171,3 +171,15 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 ## Senior Developer Review
 
 ## Review Follow-ups
+
+
+## Operator resolution (2026-06-12)
+
+Delivered on main by sibling merges: GET
+/api/chat/sessions/{session_id}/generation-status reads the direction's
+state.yaml and maps it to the coarse states (queued/in_progress/pr_open/
+pr_merged/rejected) with session-scoped 404s — implemented and reviewed via
+story 69's merge (PR #116) and subsequent D010 refinements. This story's dev
+attempts repeatedly timed out (4.5M-token sandbox sessions on both model
+tiers) re-deriving an endpoint that already exists. Marked
+deployed-by-siblings without its own PR.
