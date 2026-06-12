@@ -820,7 +820,7 @@ def tick(
                 # destroyed in-progress operator conflict resolutions three
                 # times on 2026-06-11/12. Only DEPLOYED (and rows gone from
                 # the DB) are truly done with their worktree.
-                eng_keep = create_engine(f"sqlite:///{db_path}", echo=False)
+                eng_keep = create_engine(f"sqlite:///{db}", echo=False)
                 with Session(eng_keep) as _ks:
                     blocked_rows = _ks.exec(
                         select(StoryRecord).where(
