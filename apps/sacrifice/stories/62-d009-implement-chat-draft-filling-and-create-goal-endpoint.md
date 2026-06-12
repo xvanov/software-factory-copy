@@ -5,6 +5,26 @@
 **I want** the chat backend to collect missing goal criteria and create my goal when I confirm
 **so that** natural-language chat completes the same goal creation outcome as the existing typed API path.
 
+## Dev Notes (operator, 2026-06-12)
+
+- **Build on the merged base — do NOT recreate:** the chat_sessions model,
+  create-session endpoint, chat_match service, and the messages endpoint's
+  match/no-match + 502-retry behavior are ALREADY ON MAIN (stories 59/60/61).
+  This story EXTENDS the existing POST /sessions/{id}/messages handler in
+  `app/routes/chat.py` with the conversational draft-filling state machine
+  (awaiting_input → criterion filling → ready_to_create → user confirmation)
+  and ADDS the POST /sessions/{id}/create-goal endpoint.
+- **Preserve the merged endpoint's reviewed contracts:** 404/403 session
+  semantics, match_proposed/no_match action shapes, and the 502 path that
+  persists an assistant retry message with `action: null` (the action enum is
+  CLOSED: match_proposed/no_match/awaiting_input/ready_to_create/null).
+- **create-goal contract:** 404 for nonexistent AND not-owned sessions (no
+  existence leak); 422 when the session has not reached confirmed
+  ready_to_create; validate goal_payload via the canonical GoalCreate; create
+  through a shared create+notification path; activate via the state machine;
+  session.status -> goal_created.
+- Migrations: none needed — all required schema is on main.
+
 ## Acceptance Criteria
 - Matching above confidence threshold → assistant card surfaces the matched type with required criteria fields; chat asks for each missing criterion conversationally. On all criteria filled + user confirmation, the chat backend calls the existing `POST /api/goals` and returns the new goal id.
 
