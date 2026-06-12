@@ -6,6 +6,16 @@ D010 direction_synth service builds direction payload from chat
 ## Description
 Create a service-shaped, unit-testable synthesis layer at `backend/app/services/direction_synth.py` that turns chat history / prompt intent into a complete factory direction payload (`direction.md`, and when appropriate `flow.md` and `api_spec.md`) using a configurable LLM client abstraction.
 
+## Dev Notes (operator, 2026-06-12)
+
+- **Build on the merged base:** `app/services/direction_synth.py`, the
+  `request-new-goal-type` endpoint, the `chat_sessions` model (with
+  `awaiting_direction_id`/`last_activity_at`), and all related migrations are
+  ALREADY ON MAIN (story 69's merge). Do NOT recreate models, migrations, or
+  the endpoint. Implement only what the ACs below still require beyond the
+  merged code (e.g. the exact vague-prompt 422 chat copy, mocked-LLM unit
+  tests for the service), as additions to the existing modules.
+
 ## Acceptance Criteria
 - The `POST /api/chat/sessions/{session_id}/request-new-goal-type` endpoint (stubbed in D009) is implemented:
   - Backend uses an LLM call (configurable model) to synthesize a complete direction from the chat history: `direction.md` (title, type=`feature`, why, acceptance), and where appropriate `flow.md` and `api_spec.md`. The synthesis is service-shaped, lives in `backend/app/services/direction_synth.py`, and is unit-testable with a mocked LLM client.
