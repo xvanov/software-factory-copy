@@ -84,6 +84,16 @@ throws, (e) duplicate another test in the file, (f) test trivia that maps to
 no acceptance criterion. If `test_quality_score < 0.7`, the verdict is
 `request_changes`.
 
+## The diff is a delta (do NOT block on what main already has)
+
+The PR diff is a DELTA onto the base branch. An acceptance criterion already
+satisfied by code ON THE BASE (a screen, endpoint, helper, or test that
+merged via an earlier story) is DELIVERED — its absence from this diff is
+not a finding. Before raising "X is missing", check the story file and the
+full tree context for X; a story whose remaining delta is small produces a
+small diff, and that is correct (story 64, 2026-06-12: four of five blocking
+findings demanded code that was already merged and tested on main).
+
 ## Scope & capability fence (do NOT block on these)
 
 * Findings must map to THIS story's acceptance criteria. Work owned by a
