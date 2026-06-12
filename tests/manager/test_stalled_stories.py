@@ -188,10 +188,17 @@ def test_long_inflight_tick_with_live_handler_is_not_tick_silence(tmp_path: Path
     assert res["alarms"] == []
 
 
-def test_crashed_tick_dangling_start_still_alarms(tmp_path: Path) -> None:
+def test_crashed_tick_dangling_start_still_alarms(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A tick_start with no tick_end AND no live handlers AND no recent
-    story updates is a crashed tick — silence must still alarm."""
+    story updates AND no running tick process is a crashed tick — silence
+    must still alarm. (The process check is monkeypatched: a real factory
+    tick may be running on the host during the test.)"""
     import json as _json
+
+    import factory.manager.detectors.stalled_stories as mod
+    monkeypatch.setattr(mod, "_tick_process_alive", lambda: False)
 
     now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
     old = (now - timedelta(hours=10)).isoformat()
