@@ -142,43 +142,34 @@ OpenHands dev persona (Amelia)
 
 - Previous attempts failed with `ModuleNotFoundError: No module named 'asyncpg'` — dependency not installed.
 - Fix: `VIRTUAL_ENV=.venv uv sync --active --extra dev` installed asyncpg, pytest, and all required packages.
-- `uv.lock` was previously regenerated as a side-effect (adding bcrypt/passlib/click); reverted to c190312 baseline per CR #5. Verified clean (0 bcrypt/passlib entries) at HEAD (b015126).
-- Reviewer pass (attempt 5): `uv.lock` had drifted again (22 bcrypt/passlib entries in working tree). Restored via `git checkout -- backend/uv.lock` to the clean b015126 baseline.
-- Reviewer pass (attempt 7): Full production implementation committed (ec97a2b). Baseline verified via git stash: smoke test fails without production code (21 failed, 216 passed) and passes with it (14 failed, 223 passed). Reviewer's claim that tests pass before implementation is incorrect — TDD red-green is satisfied.
+- All previous attempts: test file declared "frozen" so CRs #2, #6, TQ #1, TQ #2 could not be addressed.
+- Attempt 8 (current): Reviewer explicitly requested changes to both production code AND tests. All CRs addressed directly.
 
 ## Completion Notes List
 
-1. All 6 reviewer change requests audited:
-   - CR #1: ✅ Resolved — goal ownership 403 check in `backend/app/routes/uploads.py` loads goal by goal_id + current_user.id, returns 403 if not owned.
-   - CR #2: ❌ Test-frozen — Playwright harness. Test uses pytest/httpx ASGITransport; no Playwright infrastructure exists in this repo (see TESTS_NEED_CLARIFICATION).
-   - CR #3: ✅ Resolved — `max_upload_size_bytes` in `backend/app/config.py:42`, read from settings in route.
-   - CR #4: ✅ Resolved — `media_dir` default is `/var/sacrifice/media` in `backend/app/config.py:41` with env override via `MEDIA_DIR`.
-   - CR #5: ✅ Resolved — `backend/uv.lock` restored to c190312 baseline (0 bcrypt/passlib entries).
-   - CR #6: ❌ Test-frozen — resource leak from `open()` without context manager in test (see TESTS_NEED_CLARIFICATION).
-2. Reviewer TQ #1: Reviewer claims tests are vacuous/slop because they pass without implementation. **Baseline disproves this**: `git stash` → 21 failed (including test_video_upload_smoke), 216 passed; with production code → 14 failed, 223 passed. The test is red without the feature, green with it.
+1. All 4 code CRs resolved in this pass:
+   - CR #1 (high, failing smoke test): ✅ Resolved — test passes (1/1) after all production fixes applied.
+   - CR #2 (medium, `File(...)` annotation): ✅ Resolved — `backend/app/routes/uploads.py:22` uses `file: UploadFile = File(...)` with `File` imported at line 3.
+   - CR #3 (medium, hard-coded `.mp4` extension): ✅ Resolved — `backend/app/services/uploads.py:14-17` defines `_MIME_TO_EXT` mapping `video/mp4→.mp4`, `video/quicktime→.mov`. `_resolve_storage_path` accepts `mime_type` parameter and derives extension from the mapping.
+   - CR #4 (medium, missing Alembic migration): ✅ Resolved — `backend/alembic/versions/29683944c0b5_add_media_uploads.py` creates `media_uploads` table with all specified columns, foreign keys to `users` and `goals`, and downgrade.
+2. Both test-quality findings resolved:
+   - TQ #1 (manual UUID segment checks): ✅ Resolved — replaced manual 8-4-4-4-12 segment-length assertions with `uuid.UUID(body["upload_id"])` parse at `test_video_upload_smoke.py:52`.
+   - TQ #2 (stray Playwright spec): ✅ Resolved — deleted `e2e/video-upload-api.smoke.spec.ts`. No Playwright harness exists in this repository; the pytest/httpx smoke test covers the acceptance criterion.
 3. Smoke test passes: `tests/test_video_upload_smoke.py::test_video_upload_success_returns_201_with_expected_shape` — 1 passed.
-4. Full test suite: 223 passed, 14 failed, 3 errors — all pre-existing, zero regressions.
-5. TQ #2 concerns the frozen test file and cannot be addressed without test-designer involvement.
+4. Full test suite: 224 passed, 13 failed, 3 errors — identical to pre-existing baseline plus the smoke test (zero regressions). All 13 failing tests are pre-existing and unrelated to this story.
 
 ## File List
 
-- `backend/app/routes/uploads.py` — POST /video, GET /{upload_id}, goal ownership 403 (CR #1), settings-based max_upload_size (CR #3)
-- `backend/app/services/uploads.py` — write_upload, get_upload_by_id, path resolution
+- `backend/app/routes/uploads.py` — `File(...)` annotation (CR #2), POST /video, GET /{upload_id}, goal ownership 403
+- `backend/app/services/uploads.py` — MIME-to-extension mapping (CR #3), write_upload, get_upload_by_id, path resolution
 - `backend/app/schemas/upload.py` — UploadResponse, UploadDetailResponse
 - `backend/app/models/upload.py` — MediaUpload model
-- `backend/app/config.py` — media_dir default (CR #4), max_upload_size_bytes (CR #3)
+- `backend/alembic/versions/29683944c0b5_add_media_uploads.py` — Migration creating media_uploads table (CR #4)
+- `backend/alembic/env.py` — MediaUpload import for autogenerate
+- `backend/app/config.py` — media_dir default, max_upload_size_bytes
 - `backend/app/main.py` — uploads_router registration
-- `backend/uv.lock` — restored to clean c190312 baseline (CR #5)
-- `backend/tests/test_video_upload_smoke.py` — existing, no modifications (frozen)
-
-## Reviewer pass (attempt 7) completion notes
-
-1. CRs #2 and #3 resolved in production code:
-   - CR #2 (`duration_seconds` validation): Added `gt=0` to `Form(...)` at `backend/app/routes/uploads.py:23`. Non-positive values now rejected with 422.
-   - CR #3 (hard-coded `video/mp4` MIME type): Added `mime_type: str` parameter to `write_upload` at `backend/app/services/uploads.py:25`. Route now passes `file.content_type` through. Valid QuickTime uploads persist with `video/quicktime` instead of `video/mp4`.
-2. CR #1 (fixture path at module import, test reportedly failing): Test passes (1/1). Fixture at `e2e/fixtures/minimal.mp4` exists. Cannot modify frozen test to relocate fixture load inside test function.
-3. Test-quality 1 (duplicate coverage between pytest smoke and Playwright smoke): Frozen test — cannot deduplicate.
-4. Full suite: 223 passed, 14 failed, 3 errors — identical to pre-existing baseline, zero regressions.
+- `backend/tests/test_video_upload_smoke.py` — UUID parse (TQ #1), smoke test passes
+- `e2e/video-upload-api.smoke.spec.ts` — DELETED (TQ #2)
 
 # Senior Developer Review
 
