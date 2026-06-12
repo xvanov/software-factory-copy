@@ -116,6 +116,30 @@ def _tick_in_flight(root: Path) -> bool:
     return last_event == "tick_start"
 
 
+def _tick_process_alive() -> bool:
+    """True when a ``factory tick`` process is currently running.
+
+    A serial tick can run for an hour-plus with quiet gaps between handler
+    invocations (no live_handlers row, no story update) — the process's
+    existence is the ground-truth liveness signal in those gaps. A crashed
+    tick leaves no process and still alarms.
+    """
+    import os
+
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmd = fh.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        parts = cmd.split("\x00")
+        if any(part.endswith("factory") for part in parts) and "tick" in parts:
+            return True
+    return False
+
+
 def _live_handler_count(root: Path) -> int:
     """Number of persona sandboxes/LLM calls running RIGHT NOW.
 
@@ -236,8 +260,10 @@ def stalled_stories(
     # visibly progressing (an in-flight handler or a recent story update);
     # a tick that crashed without tick_end goes quiet on BOTH and still
     # alarms.
+    tick_process_alive = _tick_process_alive()
     tick_visibly_working = tick_in_flight and (
         live_handlers_active > 0
+        or tick_process_alive
         or (
             minutes_since_any_story_update is not None
             and minutes_since_any_story_update < in_progress_stall_minutes
@@ -300,6 +326,7 @@ def stalled_stories(
         "minutes_since_last_tick": minutes_since_last_tick,
         "no_tick_recently": no_tick_recently,
         "tick_in_flight": tick_in_flight,
+        "tick_process_alive": tick_process_alive,
         "live_handlers_active": live_handlers_active,
         "non_terminal_total": non_terminal_total,
         "minutes_since_any_story_update": minutes_since_any_story_update,
