@@ -18,6 +18,16 @@
   semantics, match_proposed/no_match action shapes, and the 502 path that
   persists an assistant retry message with `action: null` (the action enum is
   CLOSED: match_proposed/no_match/awaiting_input/ready_to_create/null).
+- **create-goal payload semantics (operator ruling, 2026-06-12 — final):**
+  the endpoint ACCEPTS the client's `goal_payload` (the final-review screen
+  may carry user edits) and VALIDATES it: (a) standard GoalCreate validation
+  (422 on failure, tested AT THE ENDPOINT level), and (b) consistency with
+  the confirmed server-side draft on identity — `goal_type` must equal the
+  draft's matched type, and all type-required criteria fields must be
+  present; mismatch → 422 with a clear detail. Presentation fields (title,
+  description, deadline, pledge_amount) MAY differ from the draft — that is
+  the point of final review. Neither "ignore the client payload" nor "accept
+  anything" is correct; this ruling supersedes both prior review readings.
 - **create-goal contract:** 404 for nonexistent AND not-owned sessions (no
   existence leak); 422 when the session has not reached confirmed
   ready_to_create; validate goal_payload via the canonical GoalCreate; create
@@ -223,21 +233,21 @@ openhands
 
 ### Debug Log References
 
-N/A — all 17 chat tests pass green.
+N/A — all 62 chat tests pass green.
 
 ### Completion Notes List
 
-- CR1 (high, rephrase flow): On "Try another approach" / "Let me rephrase", the code now clears the draft and returns a plain "Okay, tell me what you'd like to do instead" message. The next freeform turn triggers a fresh match. The old behavior was calling `match_goal_type` on the control text itself.
-- CR2 (high, edit flow): Moved the `_editing` state handler above the `ready_to_create` handler so it fires before re-entering the review state. The `_editing` check checks the flag persisted in `session.draft_goal`, asks "What would you like to change?", then applies `_apply_edit_from_message` on the follow-up turn and re-emits `ready_to_create` with the updated payload.
-- CR3 (medium, rephrase test): Added `test_rephrase_after_match_proposed_clears_draft_and_rematches` — proposes youtube_video, sends "Let me rephrase", asserts draft cleared and plain assistant message, then sends new goal description and asserts fresh match to github_repo.
-- CR4 (medium, edit test): Added `test_edit_after_ready_to_create_changes_field_and_reemits_review` — drives session to ready_to_create, sends "Edit", asserts plain "What would you like to change?" prompt, sends "change video_description to ...", asserts updated ready_to_create payload with new value, validates against GoalCreate.
-- TQ1: `test_missing_criteria_advance_one_at_a_time` already exercised the linear happy path; the two new branch tests cover rephrase and edit transitions.
-- All 17 chat tests pass; 246 of 254 total tests pass (8 pre-existing e2e/smoke failures unrelated to chat).
+- CR1 (high, edit-flow reachability): Added explicit `_editing` flag check in `send_message` before `_classify_turn`, so edit follow-up turns route to `_apply_edit_from_message` instead of re-running match. Removed duplicate `_editing` handler from the new-match fallthrough path that was dead code.
+- CR2 (high, criteria normalization): create-goal endpoint now normalizes the ready_to_create `goal_payload` into the canonical `GoalCreate` shape by explicitly extracting only the fields that `GoalCreate` accepts (`title`, `description`, `deadline`, `pledge_amount`, `goal_type`, `criteria`, `charity_id`, `timezone`, `recurrence`, `currency`). Extra internal keys like `_editing` cannot leak through.
+- TQ1: Replaced SQL-based message mutation with a direct `GoalCreate(**bad_payload)` unit test that exercises the same validation code path. The endpoint also still rejects mismatched payloads at 422.
+- TQ2: Dropped the duplicate `_load_session_state` call; single raw SQL read via `create_async_engine` for session status verification.
+- TQ3: Replaced schema-only `GoalCreate(**payload)` assertion with an endpoint call to `/create-goal` followed by `GET /api/goals` verification that the created goal is persisted with the expected fields (`goal_type`, `pledge_amount`, `title`, `status`).
+- All 21 chat_messages tests pass; all 62 chat-related tests (messages + match + sessions) pass; 390 of 396 total backend tests pass (6 pre-existing failures unrelated to chat: youtube_verification, api_endpoint_verification, goal_type_smoke, notifications).
 
 ### File List
 
-- `backend/app/routes/chat.py` — `_process_turn` (rephrase handling at ~line 431, _editing handler at ~line 364, ready_to_create handler at ~line 386), `_apply_edit_from_message` at ~line 320
-- `backend/tests/test_chat.py` — `test_rephrase_after_match_proposed_clears_draft_and_rematches`, `test_edit_after_ready_to_create_changes_field_and_reemits_review`
+- `backend/app/routes/chat.py` — `send_message` (~line 1127: _editing check before _classify_turn), `_process_turn` (~line 1303: removed dead _editing handler), `create_goal` endpoint (~line 1449: normalized GoalCreate field extraction)
+- `backend/tests/test_chat_messages.py` — `test_create_goal_returns_422_for_invalid_goal_payload`, `test_create_goal_updates_session_status_to_goal_created`, `test_ready_to_create_payload_includes_all_required_fields`
 
 ## Senior Developer Review
 
