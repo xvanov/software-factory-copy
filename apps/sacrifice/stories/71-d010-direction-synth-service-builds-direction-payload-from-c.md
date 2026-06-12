@@ -163,11 +163,27 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 ## Dev Agent Record
 
 ### Agent Model Used
+openhands (via sacrifice factory chain)
 
-(populated by dev)
+### Completion Notes
+- All three reviewer code findings were already addressed in prior attempts:
+  1. Session existence/ownership check (chat.py lines 126-140) returns 404 for missing/foreign sessions.
+  2. Awaiting goals are inserted with goal_type='generated' (a dedicated placeholder), not 'api_endpoint'.
+  3. Direction ID allocation uses fcntl.flock for atomic inter-process-safe counter updates.
+- Addressed reviewer test-quality findings:
+  1. Added `test_request_new_goal_type_returns_404_for_other_users_session` — creates two users, ensures user B gets 404 when accessing user A's session.
+  2. Extended `test_request_new_goal_type_returns_202_and_payload` to query the DB after the request and assert the goal row has status='awaiting_goal_type', goal_type='generated', and awaiting_direction_id matching the returned direction_id.
+- 25 tests pass (18 direction_synth + 7 chat_routes). No regressions in the broader suite (254 passing, 13 pre-existing CLI/e2e failures unchanged).
 
 ### File List
-
+- `backend/app/services/direction_synth.py` — `DirectionSynthService`, `DirectionPayload`, `LLMClient` protocol, `AzureFoundryLLMClient`, `allocate_direction_id` (with fcntl.flock), `write_direction_files`, `_validate_direction_md`
+- `backend/app/routes/chat.py` — `POST /{session_id}/request-new-goal-type` endpoint with session ownership check, direction synthesis, file writing, and goal creation
+- `backend/app/config.py` — `directions_dir` setting
+- `backend/app/models/goal.py` — `generated` goal_type enum value, `awaiting_goal_type` status, `awaiting_direction_id` column
+- `backend/app/models/chat_session.py` — ChatSession model
+- `backend/tests/test_direction_synth.py` — 18 tests covering happy path, validation, refusal, markdown fences, AzureFoundryLLMClient
+- `backend/tests/test_chat_routes.py` — 7 tests covering auth, session existence, cross-user ownership, vague-prompts, synthesis+persistence
+- `backend/tests/conftest.py` — temp directions_dir for tests
 ## Senior Developer Review
 
 ## Review Follow-ups
