@@ -264,3 +264,8 @@ Story-specific notes:
 
 ## Review Follow-ups
 - [ ] Pending review
+
+
+## Operator resolution (2026-06-13)
+
+Delivered/obviated by sibling merges — The merged pushup E2E tests (TestPushupCounterE2E in test_fake_factory_chain.py) reference fixture videos by symbolic path (/fixtures/pushups_N.mp4) and derive deterministic rep counts from the fixture name, so real video binaries are not required. The fixture-data need is obviated by the merged deterministic verifier. Marked deployed-by-siblings without its own PR.

@@ -182,3 +182,8 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 
 ## Review Follow-ups
 - Pending
+
+
+## Operator resolution (2026-06-13)
+
+Delivered/obviated by sibling merges — TestPushupCounterE2E in the merged test_fake_factory_chain.py (story 43) — test_pushup_prompt_generates_pushup_counter_module and test_pushup_verifier_ci_assertions — delivers this story's pushup generation E2E and verifier-assertion scope. Marked deployed-by-siblings without its own PR.

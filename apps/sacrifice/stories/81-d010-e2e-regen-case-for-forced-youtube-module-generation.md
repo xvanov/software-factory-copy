@@ -249,8 +249,14 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 - `context/navigation.md`
 
 ## Dev Agent Record
-- Status: Not started
-- Notes: 
+- Status: Complete
+- Notes: All 21 D010 E2E tests pass. 6 pre-existing failures in unrelated test files (test_api_endpoint_verification.py, test_goal_type_smoke.py, test_notifications.py, test_youtube_verification.py) — unchanged by this story. Addressed all reviewer findings from the second review cycle:
+  - CR1/TQ1: test_generation_without_force_header now asserts matched_existing (status=matched_existing, direction_id=null) and verifies no direction directories appear on disk. Uses patched DIRECTIONS_PATH to control filesystem side effects.
+  - CR2: Removed 4 legacy hand-written verifier tests that duplicated CANONICAL_YOUTUBE_CASES. The parametrized parity tests (test_original_verifier_youtube_parity, test_generated_verifier_youtube_parity) cover all cases including duration_too_short, content_match_passes, content_mismatch_fails, unavailable_transcript_fails.
+  - CR3: FakeFactoryChain now supports watcher mode (start_watching/stop_watching/wait_for). All key tests (creates_module, distinct_name, unaffected_original, _generate_verifier) use watcher + wait_for pattern instead of explicit run() — matching the real factory polling behaviour required by the acceptance criteria.
+  - TQ2: test_generated_module_name_distinct_from_youtube_video now has a single assertion with descriptive failure message comparing module_name to slug.
+- File List:
+  - `backend/tests/test_d010_e2e_forced_generation.py` — E2E test suite (21 tests)
 
 ## Senior Developer Review
 - Status: Pending
@@ -258,3 +264,8 @@ Files a NEW follow-up direction that modifies the existing module per the user's
 
 ## Review Follow-ups
 - None yet.
+
+
+## Operator resolution (2026-06-13)
+
+Delivered/obviated by sibling merges — TestYouTubeRegenE2E in the merged test_fake_factory_chain.py (story 43 / its PR) — including test_youtube_v2_verifier_equivalent_to_youtube_v1, the force-generate env-flag and header module-discovery cases, and canonical-lifecycle+acceptance — delivers this story's forced-YouTube regen E2E and verifier-equivalence scope. This branch was a stale-base re-derivation built on an in-memory _sessions store that no longer exists (main persists sessions in the chat_sessions table). Marked deployed-by-siblings without its own PR.
