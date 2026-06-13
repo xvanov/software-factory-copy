@@ -35,8 +35,9 @@ D010 compose bind-mount for factory directions volume
 - `backend/app/config.py`
 
 ## Dev Agent Record
-- Status: Not started
-- Notes: 
+- Status: Complete
+- Notes: docker-compose.yml backend service bind-mounts ~/software-factory/apps/sacrifice/directions → /var/factory/directions (rw) with FACTORY_DIRECTIONS_PATH env var. Created app/services/directions.py with write_direction() that creates named direction directories with direction.json payload and .manifest file at the configured path. Config default is /var/factory/directions, overridable via FACTORY_DIRECTIONS_PATH env. Tests cover compose volume (exact source/target/rw), config defaults and overrides, and direction writing behavior (create, explicit base path, overwrite). No prod compose variant present.
+- File List: docker-compose.yml, backend/app/config.py, backend/app/services/directions.py, backend/tests/test_factory_directions_volume.py 
 
 ## Senior Developer Review
 - Status: Pending

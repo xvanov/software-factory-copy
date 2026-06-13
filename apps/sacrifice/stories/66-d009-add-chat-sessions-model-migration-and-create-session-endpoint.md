@@ -223,3 +223,15 @@ D009 hook chat UI to create goal and handle stubbed 501 honestly
 
 ## Review Follow-ups
 - None.
+
+
+## Operator resolution (2026-06-13)
+
+Delivered on main by sibling merges. The chat UI's create-goal hookup
+(ChatGoalCreateScreen + ready_to_create card calling POST create-goal,
+stories 25/27/28 / PRs #130/#131/#133) and honest stubbed-501 handling
+(handleRequestBuild surfaces "coming in D010"; D010's real
+request-new-goal-type endpoint then superseded the stub) are both on
+origin/main. This story's branch was a stale-base re-derivation of the
+already-merged chat stack (2,579-line diff). Marked deployed-by-siblings
+without its own PR.
