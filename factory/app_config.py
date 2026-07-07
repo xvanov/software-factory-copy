@@ -71,6 +71,21 @@ class AppGatesConfig(BaseModel):
     # E2E/Playwright and should scope to the backend test_command instead.
     e2e_harness_ready: bool = False
 
+    # Runtime smoke gate (Karpathy Layer-2 "external signal", D002). A command
+    # that BOOTS the running product and exercises one real user journey
+    # (e.g. docker compose up + a scripted sign-up → login → core-action pass).
+    # Distinct from ``test_command`` (unit/integration, app never starts) and
+    # from ``e2e_command`` (declared but historically unrunnable). The factory
+    # shipped a full backlog green while the app could not log in precisely
+    # because nothing booted it; this gate is the oracle that closes that class.
+    smoke_command: str | None = None
+    # Whether a WORKING smoke harness actually exists (stack runnable in the
+    # sandbox + the scripted journey passes). Only when True does ``smoke-green``
+    # become a merge-REQUIRED gate for this app — keeping the rollout per-app
+    # opt-in so apps without a harness are unaffected (no new merge blocks,
+    # avoiding the PRs 110/111 "every merge blocked" regression).
+    smoke_harness_ready: bool = False
+
 
 class AppConfig(BaseModel):
     name: str

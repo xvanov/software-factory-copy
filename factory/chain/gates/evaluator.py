@@ -26,6 +26,7 @@ ALL_GATE_LABELS: list[str] = [
     "types-clean",
     "docs-current",
     "canonical-paths-only",
+    "smoke-green",
 ]
 
 # The labels REQUIRED to merge a Loop-4 (dev-owns-tests) story. The historical
@@ -45,6 +46,23 @@ LOOP4_REQUIRED_GATE_LABELS: list[str] = [
     "docs-current",
     "canonical-paths-only",
 ]
+
+
+def required_gate_labels(app_config: AppConfig) -> list[str]:
+    """The merge-required gate labels for THIS app (D002).
+
+    The Loop-4 base set is universal. Runtime gates are appended per-app, only
+    when the app declares the capability — keeping the rollout opt-in so an app
+    without a smoke harness sees no new merge blocks (the PRs 110/111 regression
+    was caused by making a gate universally required before every app could
+    satisfy it). ``smoke-green`` becomes required exactly when the app has a
+    working, declared smoke harness.
+    """
+    labels = list(LOOP4_REQUIRED_GATE_LABELS)
+    gates = app_config.gates
+    if gates.smoke_harness_ready and gates.smoke_command:
+        labels.append("smoke-green")
+    return labels
 
 
 @dataclass
@@ -98,16 +116,26 @@ def gate_label_for(module_name: str) -> str:
 def _run_command(cmd: str, cwd: Path | None) -> tuple[int, str]:
     """Run a shell command, return (exit_code, captured stderr/stdout).
 
-    Centralized so gates have one place to swap for fakes in tests.
+    Centralized so gates have one place to swap for fakes in tests. A hung
+    command must fail ITS gate, not abort the whole merge evaluation — the
+    smoke gate boots a real stack and is the one command genuinely likely to
+    hit the timeout, and evaluate_all_gates deliberately never short-circuits.
     """
-    proc = subprocess.run(
-        cmd,
-        shell=True,  # noqa: S602 — gate commands come from trusted app config
-        cwd=str(cwd) if cwd is not None else None,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            shell=True,  # noqa: S602 — gate commands come from trusted app config
+            cwd=str(cwd) if cwd is not None else None,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as e:
+        out = (e.stdout or b"", e.stderr or b"")
+        tail = "".join(
+            o.decode(errors="replace") if isinstance(o, bytes) else o for o in out
+        )[-4000:]
+        return 124, f"command timed out after 600s: {cmd}\n{tail}"
     return proc.returncode, (proc.stdout + proc.stderr)[-4000:]
 
 
@@ -129,6 +157,7 @@ def evaluate_all_gates(pr: PRContext, app_config: AppConfig) -> dict[str, GateRe
         flow_verified,
         format_clean,
         lint_clean,
+        smoke_green,
         tests_green,
         tests_meaningful,
         tests_red_first_confirmed,
@@ -147,6 +176,7 @@ def evaluate_all_gates(pr: PRContext, app_config: AppConfig) -> dict[str, GateRe
         types_clean,
         docs_current,
         canonical_paths_only,
+        smoke_green,
     ):
         result = mod.evaluate(pr, app_config)
         out[result.label] = result

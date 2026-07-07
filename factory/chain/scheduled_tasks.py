@@ -243,6 +243,58 @@ def _slugify_title(title: str) -> str:
     return (s[:40] or "ralph-finding").strip("-") or "ralph-finding"
 
 
+# Statuses that mean a direction is finished/abandoned — a new duplicate for
+# the same issue is fine once the prior one is closed out.
+_TERMINAL_DIRECTION_STATUSES = frozenset(
+    {"done", "complete", "completed", "merged", "abandoned", "superseded", "cancelled"}
+)
+
+
+def _normalize_title(title: str) -> str:
+    return " ".join(title.lower().split())
+
+
+def _has_open_duplicate_direction(
+    app: str, title: str, software_factory_root: Path
+) -> bool:
+    """True if a non-terminal direction with the same normalized title exists.
+
+    Scans ``apps/<app>/directions/*/`` reading each direction.md title and
+    state.yaml status directly (cheap, no full parse). Errors on any single
+    directory are ignored so a malformed sibling never blocks filing.
+    """
+    import frontmatter as _frontmatter
+    import yaml as _yaml
+
+    target = _normalize_title(title)
+    directions_dir = Path(software_factory_root) / "apps" / app / "directions"
+    if not directions_dir.is_dir():
+        return False
+    for d in directions_dir.iterdir():
+        md = d / "direction.md"
+        if not md.is_file():
+            continue
+        try:
+            existing_title = str(
+                (_frontmatter.load(str(md)).metadata or {}).get("title") or ""
+            )
+            if _normalize_title(existing_title) != target:
+                continue
+            state_path = d / "state.yaml"
+            status = "created"
+            if state_path.is_file():
+                status = str(
+                    (_yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}).get(
+                        "status", "created"
+                    )
+                )
+            if status not in _TERMINAL_DIRECTION_STATUSES:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _file_finding_as_direction(
     *,
     persona: str,
@@ -272,6 +324,15 @@ def _file_finding_as_direction(
     acceptance = [str(a) for a in acceptance_raw if str(a).strip()]
     if not title or not why:
         return None
+
+    # Dedup guard. Scheduled personas re-run on a schedule and re-surface the
+    # same finding until it's fixed; without this an unresolved issue spawns a
+    # new near-identical direction every run (observed 2026-07-06: ~38 duplicate
+    # "resolve conflicted navigation context" directions). If a non-terminal
+    # direction with the same normalized title already exists for this app,
+    # skip filing another. (Real runs only — dry-run writes to a scratch tree.)
+    if not dry_run and _has_open_duplicate_direction(app, title, software_factory_root):
+        return None
     target_root = software_factory_root
     if dry_run:
         # Route every write under state/dry_run_scratch/ so apps/<app>/
@@ -292,7 +353,16 @@ def _file_finding_as_direction(
         has_api=False,
         api_spec_lines=None,
         acceptance=acceptance,
-        explore=False,
+        # Scheduled personas (bug_hunter/ralph/ux_auditor/security) file
+        # findings the factory itself should investigate and fix. They have no
+        # user_flow/api_spec — a bug report isn't a feature spec — so with
+        # explore=False they ALWAYS failed the backpressure gate and produced
+        # zero stories (observed 2026-07-06: every scheduled-* direction stuck
+        # at needs-direction, nothing ever built). explore=True is the correct
+        # channel: "here's a problem, investigate and fix it", which the PM can
+        # decompose without a spec. This is what makes idle bug-hunting actually
+        # ship fixes instead of accumulating dead directions.
+        explore=True,
         attach_files=None,
         software_factory_root=target_root,
         source=f"scheduled-{persona}{'-dry' if dry_run else ''}",

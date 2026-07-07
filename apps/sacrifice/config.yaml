@@ -48,15 +48,15 @@ gates:
   # sacrifice-specific runtime deps and pytest exits with a
   # ModuleNotFoundError collection error (exit code 4), routing every
   # backend story to BLOCKED_TESTS_NEED_CLARIFICATION.
-  # ``--ignore`` excludes a baseline of test files that are broken on
-  # sacrifice's main and cannot be made green by the chain — they are
-  # genuine sacrifice-side defects waiting on a separate direction to
-  # fix. Without this exclusion, EVERY dev run sees those failures and
-  # exhausts retries with "tests not green after run", blocking the
-  # entire queue. Sacrifice's main needs a "fix the broken baseline
-  # tests" direction; until then, the chain works on the rest of the
-  # suite. List sorted by file path; update when the baseline shifts.
-  test_command: "cd backend && uv run --extra dev pytest -q tests/ --ignore=tests/test_api_endpoint_verification.py --ignore=tests/test_auth.py --ignore=tests/test_charge_on_failure.py --ignore=tests/test_dashboard.py --ignore=tests/test_docker_sandbox.py --ignore=tests/test_email_auth.py --ignore=tests/test_github_repo.py --ignore=tests/test_notifications.py --ignore=tests/test_recurring_goals.py --ignore=tests/test_youtube_verification.py --deselect=tests/test_goal_type_smoke.py::TestRegistrySmokeDiscovery::test_smoke_package_has_correct_metadata"
+  # The full unit-test tree runs green (2026-07-06: the auth/proof/charge/
+  # dashboard/notification baseline that used to be --ignore'd was fixed —
+  # those failures were real product defects, e.g. the proof-validation
+  # bypass, the self-verification pledge escape, and never-capturing charges).
+  # Keep this at ``tests/`` with NO exclusions: a re-introduced exclusion here
+  # hides exactly the class of bug that shipped the broken app. ``e2e_test.py``
+  # stays out because it needs a live stack (postgres+backend+celery) and is
+  # the operator's smoke gate, not the dev-loop gate.
+  test_command: "cd backend && uv run --extra dev pytest -q tests/"
   coverage_command: "pytest --cov=backend --cov-report=json --cov-fail-under=70"
   e2e_command: "npx playwright test"
   # No runnable Playwright/browser harness exists in this repo yet (the only
@@ -66,4 +66,21 @@ gates:
   # true once a real Playwright harness + runnable stack exist.
   e2e_harness_ready: false
   mutation_testing: false
+  # D002 Karpathy Layer-2 runtime verifier. `make smoke` boots/reuses the
+  # backend and drives register→login→create→activate→submit-proof — the exact
+  # path that shipped broken while every gate was green (and whose unit tests,
+  # test_auth.py / test_email_auth.py / test_api_endpoint_verification.py, are
+  # in the --ignore baseline above, so NOTHING was verifying them). The journey
+  # is offline + deterministic (api_endpoint goal points at the backend's own
+  # /api/health; no Celery/LLM/network). Validated green in reuse mode.
+  smoke_command: "make smoke"
+  # Left FALSE deliberately: when true, `smoke-green` becomes a REQUIRED merge
+  # gate (factory/chain/gates/evaluator.py::required_gate_labels). The gate is
+  # only trustworthy once it boots the PR's OWN code in the per-story worktree
+  # on an isolated port — today `make smoke` reuses whatever backend is bound to
+  # :8000 (the operator's running checkout), which would green-light a PR
+  # against code it didn't change (false green). Flipping this to true is the
+  # P0.2 follow-up: worktree-local backend boot (needs a backend Dockerfile or a
+  # venv-bootstrap + per-worktree port), tracked in D002.
+  smoke_harness_ready: false
 models: {}  # use default routing

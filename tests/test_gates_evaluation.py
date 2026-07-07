@@ -20,6 +20,7 @@ from factory.chain.gates import (
     flow_verified,
     format_clean,
     lint_clean,
+    smoke_green,
     tests_green,
     tests_meaningful,
     tests_red_first_confirmed,
@@ -27,9 +28,11 @@ from factory.chain.gates import (
 )
 from factory.chain.gates.evaluator import (
     ALL_GATE_LABELS,
+    LOOP4_REQUIRED_GATE_LABELS,
     PRContext,
     evaluate_all_gates,
     gate_label_for,
+    required_gate_labels,
 )
 from factory.chain.state_machine import StoryRecord, StoryState
 
@@ -63,6 +66,7 @@ def _story(
     format_passed: bool | None = None,
     types_passed: bool | None = None,
     coverage_passed: bool | None = None,
+    smoke_passed: bool | None = None,
 ) -> StoryRecord:
     return StoryRecord(
         direction_id="002",
@@ -78,6 +82,7 @@ def _story(
         format_passed=format_passed,
         types_passed=types_passed,
         coverage_passed=coverage_passed,
+        smoke_passed=smoke_passed,
     )
 
 
@@ -89,8 +94,8 @@ def test_gate_label_for_replaces_underscores() -> None:
 
 
 def test_all_gate_labels_complete() -> None:
-    """The canonical set of 10 labels matches the project spec."""
-    assert len(ALL_GATE_LABELS) == 10
+    """The canonical set of labels matches the project spec."""
+    assert len(ALL_GATE_LABELS) == 11
     for expected in [
         "tests-red-first-confirmed",
         "tests-green",
@@ -102,6 +107,7 @@ def test_all_gate_labels_complete() -> None:
         "types-clean",
         "docs-current",
         "canonical-paths-only",
+        "smoke-green",
     ]:
         assert expected in ALL_GATE_LABELS
 
@@ -441,7 +447,7 @@ def test_canonical_paths_only_fails_on_forbidden_diff(app_cfg_empty: AppConfig) 
 def test_evaluate_all_gates_returns_every_label(
     tmp_path: Path, app_cfg_with_commands: AppConfig
 ) -> None:
-    """The aggregator runs all 10 gates and returns one result per label."""
+    """The aggregator runs every gate and returns one result per label."""
     story = _story(
         test_plan={"test_plan": [{"name": "test_a", "key_steps": ["x"]}]},
         test_impl={"exit_code": 1, "slop_detected": False},
@@ -475,3 +481,95 @@ def test_evaluate_all_gates_returns_every_label(
     # All gates pass for this happy-path fixture under dry-run.
     failed = [(k, v.reason) for k, v in results.items() if not v.passed]
     assert not failed, f"unexpected gate failures: {failed!r}"
+
+
+# --- smoke_green (D002 runtime verifier) --------------------------------- #
+
+
+def _smoke_cfg(*, ready: bool, command: str | None) -> AppConfig:
+    return AppConfig(
+        name="x",
+        repo="o/r",
+        gates=AppGatesConfig(smoke_harness_ready=ready, smoke_command=command),
+    )
+
+
+def test_smoke_skips_when_no_harness(app_cfg_empty: AppConfig) -> None:
+    """Apps without a declared harness pass (skip) — never a new merge block."""
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", story=_story())
+    r = smoke_green.evaluate(pr, app_cfg_empty)
+    assert r.passed and r.label == "smoke-green"
+    assert "skipped" in r.reason
+
+
+def test_smoke_skips_when_ready_but_no_command() -> None:
+    """ready=True but no command is still a skip, not a hard fail."""
+    cfg = _smoke_cfg(ready=True, command=None)
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", story=_story())
+    r = smoke_green.evaluate(pr, cfg)
+    assert r.passed and "skipped" in r.reason
+
+
+def test_smoke_dry_run_passes_on_recorded_flag() -> None:
+    cfg = _smoke_cfg(ready=True, command="docker compose up -d && ./smoke.sh")
+    story = _story(smoke_passed=True)
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", story=story, dry_run=True)
+    r = smoke_green.evaluate(pr, cfg)
+    assert r.passed and "smoke_passed" in r.reason
+
+
+def test_smoke_dry_run_fails_without_recorded_flag() -> None:
+    cfg = _smoke_cfg(ready=True, command="docker compose up -d && ./smoke.sh")
+    story = _story(smoke_passed=None)
+    pr = PRContext(pr_number=1, head_sha="a", base_branch="main", story=story, dry_run=True)
+    r = smoke_green.evaluate(pr, cfg)
+    assert not r.passed and "no green smoke run" in r.reason
+
+
+def test_smoke_real_run_reflects_command_exit(tmp_path: Path) -> None:
+    cfg = _smoke_cfg(ready=True, command="true")
+    pr = PRContext(
+        pr_number=1,
+        head_sha="a",
+        base_branch="main",
+        story=_story(),
+        repo_root=tmp_path,
+        dry_run=False,
+    )
+    r = smoke_green.evaluate(pr, cfg)
+    assert r.passed and r.details["exit_code"] == 0
+
+    cfg_fail = _smoke_cfg(ready=True, command="false")
+    pr_fail = PRContext(
+        pr_number=1,
+        head_sha="a",
+        base_branch="main",
+        story=_story(),
+        repo_root=tmp_path,
+        dry_run=False,
+    )
+    r_fail = smoke_green.evaluate(pr_fail, cfg_fail)
+    assert not r_fail.passed and r_fail.details["exit_code"] != 0
+
+
+# --- required_gate_labels (per-app opt-in) ------------------------------- #
+
+
+def test_required_gates_unchanged_without_harness(app_cfg_empty: AppConfig) -> None:
+    """An app with no smoke harness keeps exactly the base Loop-4 set."""
+    assert required_gate_labels(app_cfg_empty) == LOOP4_REQUIRED_GATE_LABELS
+    assert "smoke-green" not in required_gate_labels(app_cfg_empty)
+
+
+def test_required_gates_add_smoke_when_opted_in() -> None:
+    cfg = _smoke_cfg(ready=True, command="docker compose up -d && ./smoke.sh")
+    labels = required_gate_labels(cfg)
+    assert "smoke-green" in labels
+    # Base set is preserved, smoke is additive.
+    for base in LOOP4_REQUIRED_GATE_LABELS:
+        assert base in labels
+
+
+def test_required_gates_no_smoke_when_ready_but_no_command() -> None:
+    cfg = _smoke_cfg(ready=True, command=None)
+    assert "smoke-green" not in required_gate_labels(cfg)

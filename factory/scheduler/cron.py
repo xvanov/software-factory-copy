@@ -218,21 +218,33 @@ def runs_in_window(
     window_start: datetime,
     db_path: Path,
 ) -> int:
-    """Count successful scheduled runs of ``persona`` since ``window_start``.
+    """Count executed scheduled runs of ``persona`` since ``window_start``.
 
     Reads ``state/factory.db.scheduled_runs`` (defined in
     ``factory.chain.scheduled_tasks``). Imported lazily to avoid the
     scheduler package depending on chain at import time.
+
+    Refusal audit rows (``rate_limited``, ``rejected``) are excluded: they
+    record a fire that was REFUSED, not a run that consumed budget. Counting
+    them made the cap self-reinforcing — every refused fire wrote a
+    rate_limited row, which pushed the count further over the cap, which
+    refused the next fire. ralph (hourly, so due on every 5-min tick while
+    never advancing ``last_run``) locked itself out permanently within a day
+    (observed 2026-06-14 → 2026-07-06: 6,328 rate_limited rows vs 91 real
+    runs). Unknown future statuses still count, keeping the cap fail-safe
+    for spend.
     """
     from factory.chain.scheduled_tasks import ScheduledRunRecord
 
     eng = _engine(db_path)
     cutoff = window_start.isoformat()
+    _refusal_statuses = ("rate_limited", "rejected")
     with Session(eng) as session:
         rows = session.exec(
             select(ScheduledRunRecord).where(
                 ScheduledRunRecord.persona == persona,
                 ScheduledRunRecord.ts >= cutoff,
+                ScheduledRunRecord.status.not_in(_refusal_statuses),  # type: ignore[attr-defined]
             )
         ).all()
     return len(rows)

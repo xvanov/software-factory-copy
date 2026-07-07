@@ -67,6 +67,10 @@ _RUNS_NEW_COLUMNS: list[tuple[str, str]] = [
 _STORIES_NEW_COLUMNS: list[tuple[str, str]] = [
     ("points", "INTEGER"),
     ("estimated_seconds", "REAL"),
+    # D002 Karpathy Layer-2 runtime verifier — dev records the smoke journey
+    # result here; the smoke-green gate reads it in dry-run. Added via ALTER so
+    # existing live DBs (state/factory.db) gain the column without a rebuild.
+    ("smoke_passed", "BOOLEAN"),
 ]
 
 

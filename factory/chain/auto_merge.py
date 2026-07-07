@@ -1,4 +1,4 @@
-"""Auto-merge worker — merges PRs that pass all 10 gates.
+"""Auto-merge worker — merges PRs that pass all required gates.
 
 Polls every open PR for an app, evaluates the gate set, and squash-merges
 when:
@@ -35,6 +35,7 @@ from factory.chain.gates.evaluator import (  # noqa: F401 - ALL_GATE_LABELS re-e
     LOOP4_REQUIRED_GATE_LABELS,
     PRContext,
     evaluate_all_gates,
+    required_gate_labels,
 )
 from factory.chain.state_machine import StoryRecord, StoryState
 
@@ -204,7 +205,9 @@ def _evaluate_one_pr(
         # evidence than a label applied on some earlier tick anyway.
         present_labels = set(fixture.labels) | set(gates_passed)
         missing_labels = [
-            label for label in LOOP4_REQUIRED_GATE_LABELS if label not in present_labels
+            label
+            for label in required_gate_labels(app_config)
+            if label not in present_labels
         ]
 
     blocking_present = sorted(set(fixture.labels) & BLOCKING_LABELS)
@@ -263,7 +266,7 @@ def _evaluate_one_pr(
     reason = (
         "docs chain enforcer passed; no blocking labels"
         if docs_chain
-        else "all 10 gates passed; no blocking labels"
+        else "all required gates passed; no blocking labels"
     )
     return MergeAction(
         app=app,

@@ -87,7 +87,7 @@ def test_all_gates_pass_yields_merge(factory_root: Path) -> None:
     actions = auto_merge_tick(factory_root, "sacrifice", dry_run=True, fixture_prs=[pr])
     assert len(actions) == 1
     assert actions[0].merged, actions[0].reason
-    assert "all 10 gates" in actions[0].reason
+    assert "all required gates" in actions[0].reason
     assert set(actions[0].gates_passed) == set(ALL_GATE_LABELS)
 
 

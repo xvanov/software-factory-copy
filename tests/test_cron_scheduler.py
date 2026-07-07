@@ -125,3 +125,77 @@ def test_next_fire_returns_future_time() -> None:
     now = datetime(2026, 6, 1, 10, 5, tzinfo=UTC)
     nxt = next_fire(s, now=now)
     assert nxt == datetime(2026, 6, 1, 11, 0, tzinfo=UTC)
+
+
+def test_rate_limited_audit_rows_do_not_count_toward_cap(tmp_path: Path) -> None:
+    """Regression: refusal audit rows must not feed the cap they audit.
+
+    Observed 2026-06-14 → 2026-07-06: every refused fire wrote a
+    ``rate_limited`` row, ``runs_in_window`` counted it, so the count could
+    only grow — ralph locked itself out permanently after one day at the cap
+    (6,328 rate_limited rows vs 91 real runs). With only refusal rows in the
+    window and zero executions, the schedule must fire.
+    """
+    from sqlmodel import Session
+
+    from factory.scheduler.cron import _engine
+
+    root = _write_root(tmp_path)
+    db = root / "state" / "factory.db"
+    eng = _engine(db)
+    now = datetime(2026, 6, 1, 10, 5, tzinfo=UTC)
+    with Session(eng) as session:
+        # A wall of refusal audit rows (the self-reinforcing lockout state)
+        # plus a handful of mode-rejected rows — none of these executed.
+        for i in range(300):
+            session.add(
+                ScheduledRunRecord(
+                    ts=(now - timedelta(minutes=5 * i)).isoformat(),
+                    persona="ralph",
+                    app="sacrifice",
+                    status="rate_limited",
+                )
+            )
+        for i in range(3):
+            session.add(
+                ScheduledRunRecord(
+                    ts=(now - timedelta(hours=i)).isoformat(),
+                    persona="ralph",
+                    app="sacrifice",
+                    status="rejected",
+                )
+            )
+        session.commit()
+    due = due_schedules(root, now=now, db_path=db)
+    ralph = [d for d in due if d.schedule.name == "ralph"]
+    assert len(ralph) == 1
+    assert ralph[0].rate_limit_hit is False, (
+        "refusal audit rows counted toward the cap — self-reinforcing lockout"
+    )
+
+
+def test_executed_runs_still_count_toward_cap(tmp_path: Path) -> None:
+    """The cap still binds on REAL executions (ok/errored/dry_run all count)."""
+    from sqlmodel import Session
+
+    from factory.scheduler.cron import _engine
+
+    root = _write_root(tmp_path)
+    db = root / "state" / "factory.db"
+    eng = _engine(db)
+    now = datetime(2026, 6, 1, 10, 5, tzinfo=UTC)
+    with Session(eng) as session:
+        for i, status in enumerate(["ok"] * 22 + ["errored", "dry_run"]):
+            session.add(
+                ScheduledRunRecord(
+                    ts=(now - timedelta(hours=i % 23)).isoformat(),
+                    persona="ralph",
+                    app="sacrifice",
+                    status=status,
+                )
+            )
+        session.commit()
+    due = due_schedules(root, now=now, db_path=db)
+    ralph = [d for d in due if d.schedule.name == "ralph"]
+    assert len(ralph) == 1
+    assert ralph[0].rate_limit_hit is True

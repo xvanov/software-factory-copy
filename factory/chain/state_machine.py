@@ -136,6 +136,10 @@ class StoryRecord(SQLModel, table=True):
     format_passed: bool | None = None
     types_passed: bool | None = None
     coverage_passed: bool | None = None
+    # D002 Karpathy Layer-2 runtime verifier. Set True after the dev's sandbox
+    # boots the product and the scripted smoke journey passes. Read by the
+    # ``smoke-green`` gate in dry-run; None means "not run yet".
+    smoke_passed: bool | None = None
     # Item 4 — harness precheck. Set True after a one-shot pytest
     # collect+exit pass succeeds against the per-story worktree (with
     # ONLY the test files committed, before dev writes production
