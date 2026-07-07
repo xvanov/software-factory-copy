@@ -611,12 +611,42 @@ def _isolated_test_env() -> dict[str, str]:
       * ``PYTHONDONTWRITEBYTECODE`` → stop leaving ``__pycache__`` behind, so a
         reused worktree can't collect a sibling story's stale ``.pyc`` and run
         a test that isn't on this branch (observed: story 20).
+      * ``PATH`` includes ``~/.local/bin`` → the daemon runs under systemd,
+        whose PATH is ``/usr/local/bin:/usr/bin:...`` and does NOT include the
+        user-local bin dir where ``uv`` (and other pipx/user tools) live. The
+        factory process itself starts via an absolute uv path, but when it
+        shells out an app's test_command (e.g. ``uv run --extra dev pytest``)
+        via /bin/sh with the inherited env, ``uv`` isn't found and EVERY
+        code-story test gate dies with ``uv: not found`` before running a test
+        (observed 2026-07-07, story 49). Prepend the user-local bin so the
+        test command finds the tools it declares, regardless of launch env.
     """
+    import shutil
     import tempfile
 
     env = dict(os.environ)
     env["MEDIA_DIR"] = tempfile.mkdtemp(prefix="factory-test-media-")
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    extra_paths: list[str] = []
+    local_bin = os.path.expanduser("~/.local/bin")
+    if os.path.isdir(local_bin):
+        extra_paths.append(local_bin)
+    # Also cover the directory of the resolved ``uv`` binary if it lives
+    # somewhere non-standard (e.g. a custom install), so the test command's
+    # ``uv`` always resolves to the same one the factory itself uses.
+    uv_path = shutil.which("uv") or (
+        f"{local_bin}/uv" if os.path.exists(f"{local_bin}/uv") else None
+    )
+    if uv_path:
+        uv_dir = os.path.dirname(uv_path)
+        if uv_dir and uv_dir not in extra_paths:
+            extra_paths.append(uv_dir)
+    if extra_paths:
+        current = env.get("PATH", "")
+        prefix = os.pathsep.join(p for p in extra_paths if p not in current.split(os.pathsep))
+        if prefix:
+            env["PATH"] = prefix + (os.pathsep + current if current else "")
     return env
 
 
