@@ -851,6 +851,24 @@ def tick(
         # PR_OPEN on a previous tick (and are therefore terminal here) get
         # a fresh merge attempt.
         for story in stories:
+            # Poisoned-row guard: a state value outside the StoryState enum
+            # (e.g. a bad manual/manager write) must quarantine THAT story,
+            # not abort the whole tick — one invalid row halted the factory
+            # for days on 2026-07-07. Skip it, surface it, keep ticking.
+            try:
+                StoryState(story.state)
+            except ValueError:
+                summary.errors.append(
+                    (story.slug, f"invalid state {story.state!r}; story skipped (non-fatal)")
+                )
+                log_story_event(
+                    story.id,
+                    "invalid_state_skipped",
+                    {"state": story.state},
+                    software_factory_root=root,
+                    slug_hint=story.slug,
+                )
+                continue
             # Advance up to ``max_advances_per_story`` steps for this story.
             for _ in range(max_advances_per_story):
                 handler_name = _dispatch_for_story(story)
