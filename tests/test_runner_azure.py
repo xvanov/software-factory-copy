@@ -245,43 +245,48 @@ def test_routes_yaml_default_provider_is_azure() -> None:
 def test_route_returns_azure_model_under_default_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With ``default_provider: azure`` every persona resolves to an
-    ``azure/...`` model id (Azure-OpenAI surface)."""
+    """With ``default_provider: azure`` structured-text personas resolve to an
+    ``azure/...`` model id; code-judgment personas (reviewer/security) route to
+    the frontier-open tier via OpenRouter (2026-07-15 reroute)."""
     monkeypatch.delenv("FACTORY_PROVIDER", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     for persona in (
         "pm",
         "analyst",
         "architect",
         "sm",
-        "test_designer",
-        "reviewer",
         "tech_writer",
         "onboarder",
-        "security",
     ):
         model_id = model_router.route(persona)
         assert model_id.startswith("azure/"), f"{persona} routed to {model_id!r}"
+    for persona in ("reviewer", "security"):
+        model_id = model_router.route(persona)
+        assert model_id == "openrouter/z-ai/glm-5.2", f"{persona} routed to {model_id!r}"
 
 
 def test_route_dev_uses_deepseek_v4_pro(monkeypatch: pytest.MonkeyPatch) -> None:
     """Dev standard tier routes to deepseek-v4-pro (heavy impl); the hard
     tier deliberately routes to a DIFFERENT model family so tier escalation
     is a real escape hatch for per-model failure modes (e.g. Azure
-    content-filter blocks on deepseek completions, 2026-06-11)."""
+    content-filter blocks on deepseek completions, 2026-06-11) — and, since
+    the 2026-07-15 reroute, also a genuine capability jump (Kimi K2.7-code)."""
     monkeypatch.delenv("FACTORY_PROVIDER", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     assert model_router.route("dev", "standard") == "azure/deepseek-v4-pro"
-    assert model_router.route("dev", "hard") == "azure/gpt-5.4"
+    assert model_router.route("dev", "hard") == "openrouter/moonshotai/kimi-k2.7-code"
     assert model_router.route("test_implementer") == "azure/deepseek-v4-pro"
 
 
 def test_route_text_personas_use_gpt_5_4(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Structured-text + code-judgment personas route to gpt-5.4.
+    """Structured-text personas route to gpt-5.4.
 
-    Code-judgment personas (reviewer / test_designer / security) were intended
-    for ``gpt-5.3-codex`` but that deployment is Responses-API-only and the
-    runner is Chat-Completions-only today. Falling back to gpt-5.4 keeps the
-    reviewer ≠ dev invariant because dev / test_implementer run on
-    deepseek-v4-pro.
+    Code-judgment personas (reviewer / security) moved to the frontier-open
+    tier (GLM-5.2 via OpenRouter, 2026-07-15) — covered by
+    ``test_route_returns_azure_model_under_default_provider``. The
+    reviewer ≠ dev invariant holds because dev / test_implementer run on
+    deepseek-v4-pro. ``test_designer`` has no route (Loop-4 persona removal)
+    and falls back to ``azure_fallback``.
     """
     monkeypatch.delenv("FACTORY_PROVIDER", raising=False)
     for persona in (
@@ -294,9 +299,7 @@ def test_route_text_personas_use_gpt_5_4(monkeypatch: pytest.MonkeyPatch) -> Non
         "ralph",
         "bug_hunter",
         "release_manager",
-        "reviewer",
-        "test_designer",
-        "security",
+        "test_designer",  # unrouted → azure_fallback
     ):
         assert model_router.route(persona) == "azure/gpt-5.4", persona
 

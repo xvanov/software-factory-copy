@@ -21,6 +21,7 @@ YAML; humans flip the YAML and commit it.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, cast
@@ -28,6 +29,56 @@ from typing import Any, cast
 import yaml
 
 _DEFAULT_ROUTES_PATH = Path(__file__).parent / "routes.yaml"
+
+_log = logging.getLogger(__name__)
+
+# Model-id prefix → env var holding that provider's API key. Single source of
+# truth — ``factory.runner._provider_env_key`` delegates here.
+_PROVIDER_ENV_KEYS: tuple[tuple[str, str], ...] = (
+    ("openrouter/", "OPENROUTER_API_KEY"),
+    ("deepseek/", "DEEPSEEK_API_KEY"),
+    ("anthropic/", "ANTHROPIC_API_KEY"),
+    ("openai/", "OPENAI_API_KEY"),
+    ("azure_ai/", "AZURE_AI_API_KEY"),
+    ("azure/", "AZURE_API_KEY"),
+)
+
+
+def provider_env_key(model: str) -> str | None:
+    """Return the env-var name that holds the API key for ``model``."""
+    for prefix, env_name in _PROVIDER_ENV_KEYS:
+        if model.startswith(prefix):
+            return env_name
+    if model.startswith("claude"):
+        return "ANTHROPIC_API_KEY"
+    if model.startswith("gpt"):
+        return "OPENAI_API_KEY"
+    return None
+
+
+def _provider_key_available(model: str) -> bool:
+    """True when the provider key for ``model`` is present and non-empty.
+
+    Unknown prefixes return True — the runner owns final key resolution and
+    error reporting; the router only degrades *known-missing* providers.
+    """
+    env_name = provider_env_key(model)
+    if env_name is None:
+        return True
+    if os.environ.get(env_name):
+        return True
+    # The runner accepts AZURE_FOUNDRY_API_KEY as a fallback for both Azure
+    # surfaces (see factory/runner.py::_resolve_api_key) — mirror that here.
+    if env_name in ("AZURE_AI_API_KEY", "AZURE_API_KEY") and os.environ.get(
+        "AZURE_FOUNDRY_API_KEY"
+    ):
+        return True
+    return False
+
+
+# Warn once per (persona, model) so a 60s-cadence caller (L1 watcher) doesn't
+# spam the log with an identical degradation notice every tick.
+_KEY_FALLBACK_WARNED: set[tuple[str, str]] = set()
 
 
 def _load_routes(path: Path | None = None) -> dict[str, Any]:
@@ -70,23 +121,52 @@ def route(persona: str, difficulty: str = "standard", *, routes_path: Path | Non
       2. ``<active_routes>.<persona>`` is a string → return it (difficulty ignored).
       3. Otherwise → ``defaults.fallback`` (or ``defaults.azure_fallback`` for azure).
 
+    Key-aware degradation: if the resolved model's provider API key is absent
+    from the environment but the fallback model's key IS available, the
+    fallback is returned instead (warned once per persona+model). This keeps a
+    freshly-rerouted routes.yaml safe to ship before every provider key is
+    provisioned — the intended route activates automatically once its key
+    lands in ``.env``.
+
     Raises ``KeyError`` if no route AND no fallback is configured.
     """
     data = _load_routes(routes_path)
     provider = _active_provider(data)
     routes_section, fallback = _routes_section_for(provider, data)
 
+    resolved: str | None = None
     entry = routes_section.get(persona)
     if isinstance(entry, str):
-        return entry
-    if isinstance(entry, dict):
+        resolved = entry
+    elif isinstance(entry, dict):
         diff_val = entry.get(difficulty)
         if isinstance(diff_val, str):
-            return diff_val
-        std_val = entry.get("standard")
-        if isinstance(std_val, str):
-            return std_val
-        # mapping exists but neither difficulty nor standard present — fall through
+            resolved = diff_val
+        else:
+            std_val = entry.get("standard")
+            if isinstance(std_val, str):
+                resolved = std_val
+            # mapping exists but neither difficulty nor standard present — fall through
+
+    if resolved is not None:
+        if (
+            isinstance(fallback, str)
+            and fallback != resolved
+            and not _provider_key_available(resolved)
+            and _provider_key_available(fallback)
+        ):
+            if (persona, resolved) not in _KEY_FALLBACK_WARNED:
+                _KEY_FALLBACK_WARNED.add((persona, resolved))
+                _log.warning(
+                    "route(%s): provider key %s for %r is not set — "
+                    "degrading to fallback %r until the key is provisioned",
+                    persona,
+                    provider_env_key(resolved),
+                    resolved,
+                    fallback,
+                )
+            return fallback
+        return resolved
     if isinstance(fallback, str):
         return fallback
     raise KeyError(

@@ -67,14 +67,14 @@ _L3_PATCH = (
     "diff --git a/factory/routes.yaml b/factory/routes.yaml\n"
     "--- a/factory/routes.yaml\n"
     "+++ b/factory/routes.yaml\n"
-    "@@ -28,6 +28,7 @@ routes:\n"
+    "@@ -36,6 +36,7 @@ routes:\n"
     "   # 2026-05-29). Use gpt-5.4 (JSON-reliable) here too so SM is consistent\n"
     "   # regardless of active provider; the azure_routes block already uses it.\n"
     "   sm: azure/gpt-5.4\n"
     "+  max_tokens: 32000\n"
     "   dev:\n"
     "     standard: deepseek/deepseek-coder\n"
-    "     hard: anthropic/claude-sonnet-4-6\n"
+    "     # Hard tier: different family + genuinely stronger code-specialist tier.\n"
 )
 
 # ---------------------------------------------------------------------------

@@ -327,24 +327,18 @@ def _read_persona_prompt(persona: str) -> str:
 def _provider_env_key(model: str) -> str | None:
     """Return the env-var name that holds the API key for ``model``.
 
-    Two Azure prefixes are kept distinct:
+    Delegates to ``factory.model_router.provider_env_key`` — the single
+    source of truth for the prefix→env mapping (the router also uses it for
+    key-aware route degradation). Two Azure prefixes are kept distinct:
 
     * ``azure_ai/...``  → Azure AI Foundry          → ``AZURE_AI_API_KEY``
     * ``azure/...``     → Azure OpenAI / Cognitive  → ``AZURE_API_KEY``
 
     The two surfaces share neither URL shape nor key scope.
     """
-    if model.startswith("deepseek/"):
-        return "DEEPSEEK_API_KEY"
-    if model.startswith("anthropic/") or model.startswith("claude"):
-        return "ANTHROPIC_API_KEY"
-    if model.startswith("openai/") or model.startswith("gpt"):
-        return "OPENAI_API_KEY"
-    if model.startswith("azure_ai/"):
-        return "AZURE_AI_API_KEY"
-    if model.startswith("azure/"):
-        return "AZURE_API_KEY"
-    return None
+    from factory.model_router import provider_env_key
+
+    return provider_env_key(model)
 
 
 def _resolve_api_key(cfg: LLMConfig) -> str | None:
