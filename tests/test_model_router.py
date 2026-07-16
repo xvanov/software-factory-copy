@@ -29,12 +29,12 @@ def _force_direct_provider(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_static_persona_returns_string() -> None:
     assert route("pm") == "deepseek/deepseek-chat"
-    assert route("reviewer") == "openrouter/z-ai/glm-5.2"
+    assert route("reviewer") == "azure/gpt-5.3-codex"
 
 
 def test_dev_difficulty_branches() -> None:
     assert route("dev", "standard") == "deepseek/deepseek-coder"
-    assert route("dev", "hard") == "openrouter/moonshotai/kimi-k2.7-code"
+    assert route("dev", "hard") == "azure/gpt-5.3-codex"
 
 
 def test_unknown_persona_falls_back() -> None:
@@ -81,31 +81,54 @@ def test_active_provider_reflects_env_override(monkeypatch: pytest.MonkeyPatch) 
     assert active_provider() == "direct"
 
 
+_DEGRADATION_ROUTES = (
+    "default_provider: azure\n"
+    "azure_routes:\n"
+    "  reviewer: openrouter/some-vendor/some-model\n"
+    "  dev:\n"
+    "    standard: azure/deepseek-v4-pro\n"
+    "    hard: openrouter/some-vendor/some-model\n"
+    "routes:\n"
+    "  reviewer: openrouter/some-vendor/some-model\n"
+    "defaults:\n"
+    "  fallback: deepseek/deepseek-chat\n"
+    "  azure_fallback: azure/gpt-5.4\n"
+)
+
+
 class TestKeyAwareDegradation:
     """Missing provider keys degrade a route to the block fallback (and only
-    when the fallback's own key IS available) — see route() docstring."""
+    when the fallback's own key IS available) — see route() docstring.
+
+    Uses a self-contained routes fixture so the tests don't depend on which
+    providers the PRODUCTION routes.yaml happens to reference."""
+
+    @pytest.fixture
+    def routes(self, tmp_path: Path) -> Path:
+        p = tmp_path / "routes.yaml"
+        p.write_text(_DEGRADATION_ROUTES, encoding="utf-8")
+        return p
 
     def test_degrades_to_fallback_when_route_key_missing(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, routes: Path
     ) -> None:
         monkeypatch.setenv("FACTORY_PROVIDER", "azure")
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.setenv("AZURE_API_KEY", "test-key")
-        assert route("reviewer") == "azure/gpt-5.4"
-        assert route("dev", "hard") == "azure/gpt-5.4"
+        assert route("reviewer", routes_path=routes) == "azure/gpt-5.4"
+        assert route("dev", "hard", routes_path=routes) == "azure/gpt-5.4"
 
     def test_intended_route_activates_once_key_lands(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, routes: Path
     ) -> None:
         monkeypatch.setenv("FACTORY_PROVIDER", "azure")
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
         monkeypatch.setenv("AZURE_API_KEY", "test-key")
-        assert route("reviewer") == "openrouter/z-ai/glm-5.2"
-        assert route("manager_watcher") == "openrouter/deepseek/deepseek-v4-flash"
-        assert route("dev", "hard") == "openrouter/moonshotai/kimi-k2.7-code"
+        assert route("reviewer", routes_path=routes) == "openrouter/some-vendor/some-model"
+        assert route("dev", "hard", routes_path=routes) == "openrouter/some-vendor/some-model"
 
     def test_keeps_route_when_fallback_key_also_missing(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, routes: Path
     ) -> None:
         # direct block: fallback is deepseek/deepseek-chat — with BOTH keys
         # missing the original route is returned (the runner reports the
@@ -113,13 +136,30 @@ class TestKeyAwareDegradation:
         monkeypatch.setenv("FACTORY_PROVIDER", "direct")
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-        assert route("reviewer") == "openrouter/z-ai/glm-5.2"
+        assert route("reviewer", routes_path=routes) == "openrouter/some-vendor/some-model"
 
     def test_azure_foundry_key_counts_for_azure_models(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, routes: Path
     ) -> None:
         monkeypatch.setenv("FACTORY_PROVIDER", "azure")
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("AZURE_API_KEY", raising=False)
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "test-key")
-        assert route("reviewer") == "azure/gpt-5.4"
+        assert route("reviewer", routes_path=routes) == "azure/gpt-5.4"
+
+    def test_production_routes_are_all_azure_credentialed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Guard: with only AZURE_API_KEY set (the real .env state), every
+        # production azure-block route resolves WITHOUT degradation — i.e.
+        # the ladder never silently collapses under the shipped config.
+        monkeypatch.setenv("FACTORY_PROVIDER", "azure")
+        monkeypatch.setenv("AZURE_API_KEY", "test-key")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        assert route("manager_watcher") == "azure/deepseek-v4-pro"
+        assert route("manager_diagnostician") == "azure/gpt-5.3-codex"
+        assert route("reviewer") == "azure/gpt-5.3-codex"
+        assert route("security") == "azure/gpt-5.3-codex"
+        assert route("dev", "hard") == "azure/gpt-5.3-codex"
+        assert route("dev", "standard") == "azure/deepseek-v4-pro"

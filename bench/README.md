@@ -32,7 +32,8 @@ rubric (judge never sees which arm made the diff).
 
 ## Preconditions
 
-- `OPENROUTER_API_KEY` set (factory arm's reviewer/L-tier models).
+- Azure credentials in `.env` (the factory arm runs entirely on the
+  mv-coding-agent-foundry deployments: gpt-5.4 / gpt-5.3-codex / deepseek-v4-pro).
 - `sacrifice-db` container startable (`make -C ../sacrifice up-db`) — the
   smoke gate boots isolated backends against it.
 - Claude subscription authed on this machine (`claude -p` works).

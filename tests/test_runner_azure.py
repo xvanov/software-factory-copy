@@ -247,9 +247,8 @@ def test_route_returns_azure_model_under_default_provider(
 ) -> None:
     """With ``default_provider: azure`` structured-text personas resolve to an
     ``azure/...`` model id; code-judgment personas (reviewer/security) route to
-    the frontier-open tier via OpenRouter (2026-07-15 reroute)."""
+    gpt-5.3-codex (2026-07-16 Azure-only ladder — codex verified reachable)."""
     monkeypatch.delenv("FACTORY_PROVIDER", raising=False)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     for persona in (
         "pm",
         "analyst",
@@ -262,7 +261,7 @@ def test_route_returns_azure_model_under_default_provider(
         assert model_id.startswith("azure/"), f"{persona} routed to {model_id!r}"
     for persona in ("reviewer", "security"):
         model_id = model_router.route(persona)
-        assert model_id == "openrouter/z-ai/glm-5.2", f"{persona} routed to {model_id!r}"
+        assert model_id == "azure/gpt-5.3-codex", f"{persona} routed to {model_id!r}"
 
 
 def test_route_dev_uses_deepseek_v4_pro(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -270,11 +269,10 @@ def test_route_dev_uses_deepseek_v4_pro(monkeypatch: pytest.MonkeyPatch) -> None
     tier deliberately routes to a DIFFERENT model family so tier escalation
     is a real escape hatch for per-model failure modes (e.g. Azure
     content-filter blocks on deepseek completions, 2026-06-11) — and, since
-    the 2026-07-15 reroute, also a genuine capability jump (Kimi K2.7-code)."""
+    2026-07-16, also a genuine capability jump (gpt-5.3-codex)."""
     monkeypatch.delenv("FACTORY_PROVIDER", raising=False)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     assert model_router.route("dev", "standard") == "azure/deepseek-v4-pro"
-    assert model_router.route("dev", "hard") == "openrouter/moonshotai/kimi-k2.7-code"
+    assert model_router.route("dev", "hard") == "azure/gpt-5.3-codex"
     assert model_router.route("test_implementer") == "azure/deepseek-v4-pro"
 
 

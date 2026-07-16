@@ -24,13 +24,13 @@ def test_difficulty_mapped_persona_entry() -> None:
     std = llm_params_for("dev", "azure/deepseek-v4-pro", difficulty="standard")
     assert std["reasoning_effort"] == "none"
     assert std["max_output_tokens"] == 8192
-    hard = llm_params_for("dev", "openrouter/moonshotai/kimi-k2.7-code", difficulty="hard")
+    hard = llm_params_for("dev", "azure/gpt-5.3-codex", difficulty="hard")
     assert hard["reasoning_effort"] == "high"
-    assert hard["max_output_tokens"] == 32768
+    assert hard["max_output_tokens"] == 16384
 
 
 def test_flat_persona_entry() -> None:
-    params = llm_params_for("reviewer", "openrouter/z-ai/glm-5.2")
+    params = llm_params_for("reviewer", "azure/gpt-5.3-codex")
     assert params["reasoning_effort"] == "high"
 
 

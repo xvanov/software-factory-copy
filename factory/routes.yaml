@@ -10,12 +10,13 @@
 #   defaults.fallback: <model_id>             # used when persona missing from active routes
 #   defaults.azure_fallback: <model_id>       # used when persona missing under azure_routes
 #
-# NOTE: the two blocks are named after their *default* provider, but any entry
-# may point at any provider — API-key resolution is per-model-id prefix
-# (see ``factory/runner.py::_provider_env_key``):
+# API-key resolution is per-model-id prefix (factory/runner.py::_provider_env_key):
 #   azure/…       → AZURE_API_KEY        (Azure OpenAI, base_url from AZURE_ENDPOINT)
-#   openrouter/…  → OPENROUTER_API_KEY   (OpenRouter, LiteLLM-native endpoint)
 #   deepseek/…    → DEEPSEEK_API_KEY     (DeepSeek direct)
+#   openrouter/…  → OPENROUTER_API_KEY   (supported by the plumbing; no routes today —
+#                                         operator decision 2026-07-16: Azure-only)
+# The router degrades any route whose provider key is missing to the block
+# fallback (warn-once) — see model_router.route().
 #
 # Anthropic/Claude models are deliberately ABSENT: hard operator constraint
 # (2026-07-15) — the factory must be independent of Anthropic models/limits;
@@ -31,7 +32,7 @@ default_provider: azure
 routes:
   pm: deepseek/deepseek-chat
   analyst: deepseek/deepseek-chat
-  architect: openrouter/z-ai/glm-5.2
+  architect: azure/gpt-5.4
   # SM emits a structured JSON plan; deepseek-chat intermittently returns a
   # tiny malformed body falsely flagged finish_reason=length (operator-approved
   # 2026-05-29). Use gpt-5.4 (JSON-reliable) here too so SM is consistent
@@ -39,33 +40,42 @@ routes:
   sm: azure/gpt-5.4
   dev:
     standard: deepseek/deepseek-coder
-    # Hard tier: different family + genuinely stronger code-specialist tier.
-    hard: openrouter/moonshotai/kimi-k2.7-code
+    # Hard tier: different family + code-specialist tier (see azure_routes).
+    hard: azure/gpt-5.3-codex
   test_implementer: deepseek/deepseek-coder
-  reviewer: openrouter/z-ai/glm-5.2
+  reviewer: azure/gpt-5.3-codex
   tech_writer: deepseek/deepseek-chat
   release_manager: deepseek/deepseek-chat
-  onboarder: openrouter/z-ai/glm-5.2
-  ux_designer: openrouter/z-ai/glm-5.2
-  ux_auditor: openrouter/z-ai/glm-5.2
+  onboarder: azure/gpt-5.4
+  ux_designer: azure/gpt-5.4
+  ux_auditor: azure/gpt-5.4
   ralph: deepseek/deepseek-chat
   bug_hunter: deepseek/deepseek-chat
-  security: openrouter/z-ai/glm-5.2
+  security: azure/gpt-5.3-codex
   factory_improver: deepseek/deepseek-chat
-  # FMS ladder (direct block): cheap → mid → frontier-open.
-  # L1 Watcher: fires every 60s; structured JSON triage only.
-  manager_watcher: openrouter/deepseek/deepseek-v4-flash
-  # L2 Summarizer: runs every ~3 min or on L1 escalation; mid-tier analysis.
-  manager_summarizer: openrouter/z-ai/glm-4.7
-  # L3 Diagnostician: rare, escalation-only; frontier-open reasoning for
-  # root-cause analysis + unified-diff proposal generation.
-  manager_diagnostician: openrouter/z-ai/glm-5.2
+  # FMS ladder (direct block mirrors the azure ladder — azure/ ids resolve by
+  # prefix regardless of the active block).
+  manager_watcher: azure/deepseek-v4-pro
+  manager_summarizer: azure/gpt-5.4
+  manager_diagnostician: azure/gpt-5.3-codex
 
-# Azure OpenAI / Cognitive Services deployments at mv-coding-agent-foundry:
+# Azure OpenAI / Cognitive Services deployments at mv-coding-agent-foundry
+# (deployment list verified live 2026-07-16 — exactly these three exist):
 #   - gpt-5.4           (general-purpose, structured output, 500K TPM)
-#   - deepseek-v4-pro   (heavy implementation, 500K TPM)
-#   - gpt-5.3-codex     (UNROUTED: Responses-API-only; superseded — code-judgment
-#                        personas now route to openrouter/z-ai/glm-5.2 instead.)
+#   - gpt-5.3-codex     (code specialist — REACHABLE since AZURE_API_VERSION=
+#                        2025-03-01-preview: verified live 2026-07-16 that
+#                        litellm.completion bridges it, so BOTH text_run and
+#                        sandbox_run can route to it; the old "Responses-API-
+#                        only, unroutable" note is obsolete)
+#   - deepseek-v4-pro   (heavy implementation; ~4x cheaper per blended token
+#                        than gpt-5.4 in our own runs ledger: $0.51 vs $1.97
+#                        per Mtok, measured 2026-07-16)
+#
+# Cost note: the L1 watcher fires every 60s and produced ~88% of all run rows
+# (~$1,000 of $1,556 total at gpt-5.4 rates) — it sits on deepseek-v4-pro for
+# the ~4x cut. If a genuinely cheap deployment (gpt-5.4-mini / DeepSeek V4
+# Flash class) is ever added to the Foundry resource, point manager_watcher
+# at it and the saving compounds.
 azure_routes:
   # Structured-text personas → gpt-5.4 (general purpose, JSON-friendly)
   pm: azure/gpt-5.4
@@ -81,23 +91,23 @@ azure_routes:
   release_manager: azure/gpt-5.4
   factory_improver: azure/gpt-5.4
 
-  # FMS ladder (live block): cheap → mid → frontier-open. This is a REAL cost
-  # ladder again (it had collapsed to gpt-5.4 across all three tiers).
-  # L1 Watcher: ~88% of all persona runs by count — cheapest credible JSON
-  # triage tier. Watch for malformed-JSON regressions (deepseek precedent,
-  # see sm comment above); fallback is azure/gpt-5.4.
-  manager_watcher: openrouter/deepseek/deepseek-v4-flash
+  # FMS ladder: cheap → mid → code-specialist. A REAL cost ladder again (it
+  # had collapsed to gpt-5.4 across all three tiers).
+  # L1 Watcher: 60s cadence, structured JSON triage — the cheapest deployed
+  # model. JSON mode verified live on this deployment (2026-07-16); if the
+  # deepseek malformed-JSON behavior (see sm comment) ever reappears here,
+  # revert this one line to azure/gpt-5.4.
+  manager_watcher: azure/deepseek-v4-pro
   # L2 Summarizer: mid-tier structured analysis.
   manager_summarizer: azure/gpt-5.4
-  # L3 Diagnostician: escalation-only root-cause + patch proposals →
-  # frontier-open tier (GLM-5.2: top open model on long-horizon benchmarks).
-  manager_diagnostician: openrouter/z-ai/glm-5.2
+  # L3 Diagnostician: escalation-only root-cause + unified-diff proposals —
+  # the code specialist.
+  manager_diagnostician: azure/gpt-5.3-codex
 
-  # Code-judgment work → GLM-5.2 (replaces the unreachable gpt-5.3-codex
-  # intent). reviewer ≠ dev still holds: dev/test_implementer run on
-  # deepseek-v4-pro, reviewer/security judge on a different family.
-  reviewer: openrouter/z-ai/glm-5.2
-  security: openrouter/z-ai/glm-5.2
+  # Code-judgment work → gpt-5.3-codex, the ORIGINAL intent, now reachable.
+  # reviewer ≠ dev holds: dev/test_implementer run on deepseek-v4-pro.
+  reviewer: azure/gpt-5.3-codex
+  security: azure/gpt-5.3-codex
 
   # Heavy implementation → deepseek-v4-pro
   test_implementer: azure/deepseek-v4-pro
@@ -105,9 +115,9 @@ azure_routes:
     standard: azure/deepseek-v4-pro
     # Hard tier deliberately a DIFFERENT model family: tier escalation is the
     # escape hatch for per-model failure modes (Azure content-filter blocks on
-    # deepseek completions, observed 2026-06-11) — and now also a genuine
-    # capability jump (Kimi K2.7-code: code-specialist frontier-open tier).
-    hard: openrouter/moonshotai/kimi-k2.7-code
+    # deepseek completions, observed 2026-06-11) — and a genuine capability
+    # jump (code-specialist reasoning tier).
+    hard: azure/gpt-5.3-codex
 
 defaults:
   fallback: deepseek/deepseek-chat
@@ -126,7 +136,7 @@ llm_params:
   personas:
     dev:
       standard: { reasoning_effort: "none" } # deepseek-v4-pro: no reasoning surface
-      hard: { reasoning_effort: high } # kimi-k2.7-code: reasoning tier
+      hard: { reasoning_effort: high } # gpt-5.3-codex: reasoning tier
     test_implementer: { reasoning_effort: "none" }
     reviewer: { reasoning_effort: high } # applies only to repo-mode sandbox reviews
 
@@ -156,15 +166,8 @@ model_limits:
   azure/gpt-5.4: { max_output_tokens: 16384 }
   # azure/deepseek-v4-pro — same 8k native ceiling as direct DeepSeek.
   azure/deepseek-v4-pro: { max_output_tokens: 8192 }
-  # gpt-5.3-codex (Responses-API-only — unrouted, kept for reference).
+  # gpt-5.3-codex — same 16k class as gpt-5.4.
   azure/gpt-5.3-codex: { max_output_tokens: 16384 }
-
-  # OpenRouter (caps verified against the live catalog 2026-07-15;
-  # v4-flash publishes no max_completion_tokens — conservative 8k).
-  openrouter/deepseek/deepseek-v4-flash: { max_output_tokens: 8192 }
-  openrouter/z-ai/glm-5.2: { max_output_tokens: 32768 }
-  openrouter/z-ai/glm-4.7: { max_output_tokens: 32768 }
-  openrouter/moonshotai/kimi-k2.7-code: { max_output_tokens: 32768 }
 
 # Conservative default if a model isn't in the table above.
 # Set under ``defaults`` so existing readers keep working.
