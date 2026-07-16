@@ -367,6 +367,46 @@ def _resolve_api_key(cfg: LLMConfig) -> str | None:
     return None
 
 
+def _persona_llm_overrides(persona: str, model_id: str, difficulty: str) -> dict[str, Any]:
+    """Per-persona LLM constructor overrides from routes.yaml's ``llm_params``.
+
+    Best-effort by design: a malformed ``llm_params`` block must degrade to
+    "no overrides" (SDK defaults), never kill a sandbox run.
+    """
+    try:
+        from factory.model_router import llm_params_for
+
+        return llm_params_for(persona, model_id, difficulty=difficulty)
+    except Exception as exc:
+        print(f"[runner] llm_params lookup failed for {persona}/{model_id}: {exc}")
+        return {}
+
+
+def _build_agent_for_persona(persona: str, llm: Any, get_default_agent: Any) -> Any:
+    """Construct the OpenHands agent, honoring an optional preset override
+    from routes.yaml's ``presets`` block (e.g. ``dev: planning``).
+
+    Unknown preset names and preset import failures degrade to the default
+    agent — presets are an experiment surface, not a hard dependency.
+    """
+    try:
+        from factory.model_router import preset_for
+
+        preset = preset_for(persona)
+    except Exception:
+        preset = None
+    if preset == "planning":
+        try:
+            from openhands.tools.preset.planning import get_planning_agent
+
+            return get_planning_agent(llm=llm)
+        except Exception as exc:
+            print(f"[runner] planning preset unavailable for {persona}: {exc}")
+    elif preset:
+        print(f"[runner] unknown preset {preset!r} for {persona}; using default agent")
+    return get_default_agent(llm=llm, cli_mode=True)
+
+
 def _scan_repo_for_changed_files(repo_path: Path) -> list[str]:
     """Best-effort: ask git for the working-tree change set."""
     import subprocess
@@ -528,7 +568,7 @@ def _stringify_message_content(ev: Any) -> str:
                 return joined
     # Fallback: model_dump() and pull a "content" field.
     try:
-        data = ev.model_dump()  # type: ignore[attr-defined]
+        data = ev.model_dump()
     except Exception:
         return ""
     for path in (("llm_message", "content"), ("message", "content"), ("content",)):
@@ -556,7 +596,7 @@ def _stringify_action_args(ev: Any) -> str:
         except Exception:
             return str(val)
     try:
-        data = ev.model_dump()  # type: ignore[attr-defined]
+        data = ev.model_dump()
         return json.dumps(data, default=str)
     except Exception:
         return ""
@@ -575,7 +615,7 @@ def _stringify_observation(ev: Any) -> str:
         except Exception:
             return str(val)
     try:
-        data = ev.model_dump()  # type: ignore[attr-defined]
+        data = ev.model_dump()
         return json.dumps(data, default=str)
     except Exception:
         return ""
@@ -1143,8 +1183,9 @@ async def sandbox_run(
     }
     if api_version is not None:
         llm_kwargs["api_version"] = api_version
+    llm_kwargs.update(_persona_llm_overrides(persona, llm_config.model, difficulty))
     llm = LLM(**llm_kwargs)
-    agent = get_default_agent(llm=llm, cli_mode=True)
+    agent = _build_agent_for_persona(persona, llm, get_default_agent)
     workspace = LocalWorkspace(working_dir=str(Path(repo_path).resolve()))
 
     # Give the dev/test_impl sandbox a writable MEDIA_DIR so the agent's OWN
@@ -1621,4 +1662,4 @@ def text_run(
 
     if schema is not None:
         return cast(dict[str, Any], parsed)
-    return cast(str, text)
+    return text

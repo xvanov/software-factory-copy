@@ -198,6 +198,74 @@ def active_provider(*, routes_path: Path | None = None) -> str:
     return _active_provider(_load_routes(routes_path))
 
 
+# Params that may flow from routes.yaml's ``llm_params`` block into the
+# OpenHands SDK ``LLM(...)`` constructor. Anything else in the YAML is
+# silently dropped — a config typo must not be able to crash LLM construction.
+_ALLOWED_LLM_PARAMS = frozenset(
+    {
+        "reasoning_effort",
+        "caching_prompt",
+        "max_output_tokens",
+        "temperature",
+        "litellm_extra_body",
+    }
+)
+
+_KNOWN_DIFFICULTIES = ("standard", "hard")
+
+
+def llm_params_for(
+    persona: str,
+    model_id: str,
+    *,
+    difficulty: str = "standard",
+    routes_path: Path | None = None,
+) -> dict[str, Any]:
+    """Per-persona LLM constructor overrides from routes.yaml's ``llm_params``.
+
+    Merge order (later wins):
+      1. ``{"max_output_tokens": max_output_tokens_for(model_id)}``
+      2. ``llm_params.defaults``
+      3. ``llm_params.personas.<persona>`` — either a flat param mapping or a
+         difficulty-keyed mapping of param mappings (same shape convention as
+         ``routes.<persona>``).
+
+    Output is allowlisted to ``_ALLOWED_LLM_PARAMS``; unknown keys are dropped.
+    """
+    data = _load_routes(routes_path)
+    merged: dict[str, Any] = {
+        "max_output_tokens": max_output_tokens_for(model_id, routes_path=routes_path)
+    }
+
+    block = data.get("llm_params", {}) or {}
+    defaults = block.get("defaults", {}) or {}
+    if isinstance(defaults, dict):
+        merged.update(defaults)
+
+    personas = block.get("personas", {}) or {}
+    entry = personas.get(persona) if isinstance(personas, dict) else None
+    if isinstance(entry, dict):
+        # Difficulty-keyed iff its keys are difficulty names mapping to dicts
+        # (param names like ``reasoning_effort`` can never collide with those).
+        if any(k in entry for k in _KNOWN_DIFFICULTIES):
+            diff_entry = entry.get(difficulty) or entry.get("standard") or {}
+            if isinstance(diff_entry, dict):
+                merged.update(diff_entry)
+        else:
+            merged.update(entry)
+
+    return {k: v for k, v in merged.items() if k in _ALLOWED_LLM_PARAMS}
+
+
+def preset_for(persona: str, *, routes_path: Path | None = None) -> str | None:
+    """Agent-preset override for ``persona`` from routes.yaml's ``presets``
+    block (e.g. ``dev: planning``). ``None`` means the default agent preset."""
+    data = _load_routes(routes_path)
+    presets = data.get("presets", {}) or {}
+    value = presets.get(persona) if isinstance(presets, dict) else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
 # Built-in fallback if neither ``model_limits`` nor
 # ``defaults_extra.max_output_tokens_default`` are defined in routes.yaml.
 # Picked to cover the smallest current-fleet cap (DeepSeek-V4 native 8k).

@@ -113,6 +113,29 @@ defaults:
   fallback: deepseek/deepseek-chat
   azure_fallback: azure/gpt-5.4
 
+# Per-persona LLM constructor overrides for sandbox runs (OpenHands SDK
+# ``LLM(...)``), resolved by ``model_router.llm_params_for``. Allowlisted
+# keys: reasoning_effort, caching_prompt, max_output_tokens, temperature,
+# litellm_extra_body — anything else is dropped (config typos must not crash
+# LLM construction). ``max_output_tokens`` is injected automatically from
+# ``model_limits`` below; entries here override it. NOTE: ``reasoning_effort``
+# "none" must be QUOTED — bare ``none`` is YAML null and gets dropped.
+llm_params:
+  defaults:
+    caching_prompt: true # explicit — pins the SDK default
+  personas:
+    dev:
+      standard: { reasoning_effort: "none" } # deepseek-v4-pro: no reasoning surface
+      hard: { reasoning_effort: high } # kimi-k2.7-code: reasoning tier
+    test_implementer: { reasoning_effort: "none" }
+    reviewer: { reasoning_effort: high } # applies only to repo-mode sandbox reviews
+
+# Agent-preset overrides for sandbox personas, resolved by
+# ``model_router.preset_for``. Known values: ``planning`` (OpenHands
+# plan-first agent with PLAN.md artifacts). Absent/unknown → default agent.
+# Experiment surface — keep empty until A/B'd on real stories.
+presets: {}
+
 # Per-model output-token caps. Looked up by the LiteLLM model id ``route()``
 # returns. The cap is the ``max_tokens`` (== max completion / output) value
 # the provider will honor in one call — distinct from the context window
