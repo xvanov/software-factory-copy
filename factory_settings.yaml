@@ -91,3 +91,17 @@ schedules:
   # Output is still persisted to ``state/improvements/<ts>.json`` and
   # surfaced on the pinned ``factory-improvements`` GH issue; the L2
   # apply pass opens PRs on ``xvanov/software-factory`` per proposal.
+
+# In-tick run-until-green dev convergence (see DevConvergenceConfig).
+# Ships DISABLED; flip ``enabled: true`` as its own one-line commit after
+# 1-2 days of green ticks. The loop compresses the 5-minute tick gaps
+# between dev retries into one handler invocation — it does NOT grant
+# extra attempts (_MAX_DEV_RETRIES stays authoritative) and stops early
+# on: inner-attempt cap, <1 retry of headroom under the chain cap,
+# per-story wall-clock/budget, or the global hourly/daily caps.
+dev_convergence:
+  enabled: false
+  max_inner_attempts: 3
+  per_story_wall_clock_s: 2700
+  per_story_budget_usd: 8.0
+  dev_sandbox_timeout_s: 1800

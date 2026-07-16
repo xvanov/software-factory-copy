@@ -894,9 +894,169 @@ def handle_dev(
 ) -> HandlerResult:
     """Run the Dev persona; check tests; retry/escalate on failure.
 
+    With ``dev_convergence.enabled`` (factory_settings.yaml), a red run
+    retries IMMEDIATELY in this same invocation — fresh sandbox, prior-
+    attempts memory carried forward by ``_handle_dev_once``'s normal red
+    bookkeeping — instead of waiting for the next tick. The loop grants no
+    extra attempts (``_MAX_DEV_RETRIES`` stays authoritative); it only
+    removes the tick-cadence dead time between the same retries. Guards:
+    inner-attempt cap, one retry of headroom under the chain cap, per-story
+    wall-clock + budget, and a live re-check of the global hourly/daily
+    spend caps. Infra failures and content-filter escalations always exit
+    the loop into their existing across-ticks paths.
+
     ``force_red`` is for testing the retry path: when True, the dry-run
     branch returns tests_green=False so the handler exercises the retry +
     escalation logic.
+    """
+    import time as _time
+
+    from factory.settings.loader import load_settings
+
+    result = _handle_dev_once(
+        story,
+        app_config,
+        software_factory_root,
+        dry_run=dry_run,
+        db_path=db_path,
+        force_red=force_red,
+    )
+    conv = load_settings(software_factory_root).dev_convergence
+    if dry_run or not conv.enabled:
+        return result
+
+    db = db_path or (software_factory_root / "state" / "factory.db")
+    loop_started_mono = _time.monotonic()
+    loop_started_ts = datetime.now(UTC).isoformat()
+    inner_attempts = 1
+
+    while True:
+        stop_reason = _dev_inner_loop_stop_reason(
+            story=story,
+            result=result,
+            conv=conv,
+            inner_attempts=inner_attempts,
+            elapsed_s=_time.monotonic() - loop_started_mono,
+            since_ts=loop_started_ts,
+            software_factory_root=software_factory_root,
+            db_path=db,
+        )
+        if stop_reason == "continue":
+            inner_attempts += 1
+            log_story_event(
+                story.id,
+                "dev_inner_attempt",
+                {"inner_attempt": inner_attempts, "dev_retries": story.dev_retries},
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
+            )
+            result = _handle_dev_once(
+                story,
+                app_config,
+                software_factory_root,
+                dry_run=dry_run,
+                db_path=db_path,
+                force_red=force_red,
+            )
+            continue
+        if stop_reason != "terminal":
+            # Stopped while the story is still retryable — record why so the
+            # FMS can distinguish "loop budget ran out" from "story done".
+            log_story_event(
+                story.id,
+                "dev_inner_loop_stopped",
+                {
+                    "reason": stop_reason,
+                    "inner_attempts": inner_attempts,
+                    "dev_retries": story.dev_retries,
+                },
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
+            )
+        return result
+
+
+def _dev_inner_loop_stop_reason(
+    *,
+    story: StoryRecord,
+    result: HandlerResult,
+    conv: Any,
+    inner_attempts: int,
+    elapsed_s: float,
+    since_ts: str,
+    software_factory_root: Path,
+    db_path: Path,
+) -> str:
+    """Decide whether the dev convergence loop re-attempts now.
+
+    Returns ``"continue"`` to re-dispatch immediately, ``"terminal"`` when
+    the story left the retryable state (green, exhausted, blocked), or a
+    stop-reason label when the story IS retryable but a loop guard says to
+    fall back to the normal across-ticks path.
+    """
+    if StoryState(story.state) is not StoryState.DEV_RETRY:
+        return "terminal"
+    payload = result.payload or {}
+    if payload.get("sandbox_infra_error"):
+        return "infra_failure"
+    if payload.get("content_filter_tier_escalation"):
+        return "content_filter"
+    if inner_attempts >= conv.max_inner_attempts:
+        return "attempts_cap"
+    # Leave the LAST chain retry to the normal tick path so exhaustion
+    # bookkeeping (WIP commit/push, factory_needs_redesign) never runs
+    # inside a tight loop iteration.
+    if story.dev_retries + 1 >= _MAX_DEV_RETRIES:
+        return "retry_headroom"
+    if elapsed_s >= conv.per_story_wall_clock_s:
+        return "wall_clock"
+    story_cost = _story_spend_since(db_path, story.id, since_ts)
+    if story_cost >= conv.per_story_budget_usd:
+        return "budget"
+    # Live re-check of the global caps: the settings enforcer only gates
+    # dispatch, so a tight loop must re-verify mid-flight.
+    from factory.settings.loader import load_settings
+    from factory.settings.spend import hour_spend_usd, today_spend_usd
+
+    caps = load_settings(software_factory_root).caps
+    if hour_spend_usd(software_factory_root, db_path=db_path) >= caps.hourly_spend_usd:
+        return "hourly_cap"
+    if today_spend_usd(software_factory_root, db_path=db_path) >= caps.daily_spend_usd:
+        return "daily_cap"
+    return "continue"
+
+
+def _story_spend_since(db_path: Path, story_id: int | None, since_ts: str) -> float:
+    """Sum ``runs.cost_usd`` for ``story_id`` with ``ts >= since_ts`` (best-effort)."""
+    if story_id is None:
+        return 0.0
+    try:
+        from factory.runner import Run, _engine
+
+        total = 0.0
+        with Session(_engine(db_path)) as session:
+            rows = session.exec(select(Run).where(Run.story_id == story_id)).all()
+            for r in rows:
+                if (r.ts or "") >= since_ts:
+                    total += float(r.cost_usd or 0.0)
+        return total
+    except Exception:
+        # A broken ledger must not stop the loop-guard decision; treat as
+        # budget-exhausted so the loop stops rather than spending blind.
+        return float("inf")
+
+
+def _handle_dev_once(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+    *,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+    force_red: bool = False,
+) -> HandlerResult:
+    """Single dev attempt: dispatch sandbox, check tests, do retry/escalation
+    bookkeeping. See ``handle_dev`` for the convergence-loop wrapper.
     """
     db = db_path or (software_factory_root / "state" / "factory.db")
     story.state = advance(story, EVENT_DEV_STARTED).value
@@ -961,6 +1121,10 @@ def handle_dev(
             except (json.JSONDecodeError, TypeError):
                 reviewer_findings = None
 
+        from factory.settings.loader import load_settings as _load_settings
+
+        _dev_timeout_s = _load_settings(software_factory_root).dev_convergence.dev_sandbox_timeout_s
+
         run_res = asyncio.run(
             sandbox_run(
                 persona="dev",
@@ -977,6 +1141,7 @@ def handle_dev(
                 story_id=story.id,
                 app=story.app,
                 direction_id=story.direction_id,
+                wall_clock_timeout_s=_dev_timeout_s,
             )
         )
 

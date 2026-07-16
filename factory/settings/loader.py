@@ -87,6 +87,33 @@ class AutoMergeConfig(BaseModel):
     wait_for_ci: bool = True
 
 
+class DevConvergenceConfig(BaseModel):
+    """In-tick run-until-green convergence loop for the dev persona.
+
+    When ``enabled``, a red dev run retries IMMEDIATELY inside the same
+    ``handle_dev`` invocation (fresh sandbox, prior-attempts memory carried
+    forward) instead of waiting for the next 5-minute tick — compressing
+    N tick-gaps out of a story's convergence time. The loop never grants
+    extra attempts: ``_MAX_DEV_RETRIES`` remains the single authoritative
+    retry cap; this only changes WHEN the same retries happen.
+
+    Guards (any failing guard stops the loop and falls back to the normal
+    across-ticks path): ``max_inner_attempts`` per invocation, one retry of
+    headroom under the chain cap, ``per_story_wall_clock_s`` elapsed,
+    ``per_story_budget_usd`` spent by this story since the loop started,
+    and a live re-check of the global hourly/daily spend caps (the settings
+    enforcer only gates dispatch, so a tight loop must re-check mid-flight).
+    """
+
+    enabled: bool = False
+    max_inner_attempts: int = 3
+    per_story_wall_clock_s: int = 2700
+    per_story_budget_usd: float = 8.0
+    # Per-sandbox wall-clock passed to ``sandbox_run`` for dev; the module
+    # default (1800s) stays in force when this matches it.
+    dev_sandbox_timeout_s: int = 1800
+
+
 class AutoPMSyncConfig(BaseModel):
     """Controls automatic PM triage of pending directions on every tick.
 
@@ -111,6 +138,7 @@ class FactorySettings(BaseModel):
     direction_defaults: DirectionDefaults = Field(default_factory=DirectionDefaults)
     auto_merge: AutoMergeConfig = Field(default_factory=AutoMergeConfig)
     auto_pm_sync: AutoPMSyncConfig = Field(default_factory=AutoPMSyncConfig)
+    dev_convergence: DevConvergenceConfig = Field(default_factory=DevConvergenceConfig)
 
 
 _CACHED: dict[Path, FactorySettings] = {}

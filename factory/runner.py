@@ -992,8 +992,14 @@ async def sandbox_run(
     story_id: int | None = None,
     app: str | None = None,
     direction_id: str | None = None,
+    wall_clock_timeout_s: int | None = None,
 ) -> RunResult:
     """Run a persona inside an OpenHands SDK sandbox against ``repo_path``.
+
+    ``wall_clock_timeout_s`` overrides the module-level
+    ``_SANDBOX_WALL_CLOCK_TIMEOUT_S`` (env ``FACTORY_SANDBOX_TIMEOUT_S``,
+    default 1800s) for this run only — used by the dev convergence loop to
+    give dev a per-persona budget without touching other personas.
 
     Reads the persona prompt + story file, composes the context prelude via
     ``factory.context.loader.compose_context_prelude``, hands the combined
@@ -1249,6 +1255,7 @@ async def sandbox_run(
     # of success/failure; reaped on stale-pid scan if the process crashes.
     from factory.observability.heartbeat import live_handler
 
+    effective_wall_clock_timeout_s = wall_clock_timeout_s or _SANDBOX_WALL_CLOCK_TIMEOUT_S
     _hb_db = db_path or _DEFAULT_DB_PATH
     try:
         with live_handler(
@@ -1273,11 +1280,11 @@ async def sandbox_run(
                 # exits. The TimeoutError is handled distinctly below.
             ) = await asyncio.wait_for(
                 loop.run_in_executor(None, _do_run),
-                timeout=_SANDBOX_WALL_CLOCK_TIMEOUT_S,
+                timeout=effective_wall_clock_timeout_s,
             )
     except TimeoutError:
         err = (
-            f"sandbox run timed out after {_SANDBOX_WALL_CLOCK_TIMEOUT_S}s "
+            f"sandbox run timed out after {effective_wall_clock_timeout_s}s "
             "(likely a stalled LLM call); treating as retryable infrastructure "
             "failure"
         )
