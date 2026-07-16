@@ -196,7 +196,6 @@ def test_crashed_tick_dangling_start_still_alarms(
     must still alarm. (The process check is monkeypatched: a real factory
     tick may be running on the host during the test.)"""
     import json as _json
-
     import sys
 
     # detectors/__init__ re-exports the function under the submodule's name,

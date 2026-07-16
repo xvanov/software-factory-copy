@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 
@@ -39,7 +40,6 @@ from factory.chain.factory_improver_apply import (
     open_pr_for_proposal,
     run_apply_pass,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixture helpers

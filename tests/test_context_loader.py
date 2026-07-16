@@ -118,7 +118,7 @@ def _seed_direction(
 
 def test_chain_prelude_includes_parent_body(tmp_path: Path) -> None:
     _seed_repo(tmp_path)
-    parent = _seed_direction(
+    _seed_direction(
         tmp_path, "011-parent", title="Parent direction", body="Parent acceptance content."
     )
     child = _seed_direction(

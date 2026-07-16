@@ -14,9 +14,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
-import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.chain.handlers import _MAX_DEV_RETRIES, persist_story

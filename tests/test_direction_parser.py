@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
 from factory.directions.parser import (
+    Direction,
     DirectionChainCycleError,
     MissingDirection,
-    Direction,
     next_direction_id,
     parse_direction_dir,
     resolve_direction_chain,

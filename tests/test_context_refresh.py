@@ -18,7 +18,6 @@ Tests use real git repos (per project policy — no subprocess mocks for
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
 
@@ -432,7 +431,6 @@ def test_refresh_pr_open_attempted_via_pygithub(
     client = _FakeClient()
 
     # Stub ``gh`` so we always fall through to pygithub.
-    from factory.chain import context_refresh as cr_mod
 
     real_run = subprocess.run
 
