@@ -41,9 +41,10 @@ import json
 import re
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 Classification = Literal["safe", "risky", "invalid"]
 ApplyStatus = Literal[

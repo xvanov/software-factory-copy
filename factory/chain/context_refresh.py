@@ -48,7 +48,6 @@ Public entry points
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import threading
@@ -59,7 +58,6 @@ from typing import Any
 
 from factory.app_config import AppConfig, load_app_config, resolve_app_repo_path
 from factory.chain.event_log import log_story_event
-
 
 # Canonical context paths the refresh is allowed to touch. Anything outside
 # this set means the run is misconfigured — we refuse to open a PR so the

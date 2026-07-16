@@ -72,7 +72,6 @@ from pathlib import Path
 
 from factory.chain.branch import (
     _has_remote,
-    _is_clean_working_tree,
     _run_git,
     feature_branch_name,
 )
