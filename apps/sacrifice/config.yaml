@@ -74,13 +74,13 @@ gates:
   # is offline + deterministic (api_endpoint goal points at the backend's own
   # /api/health; no Celery/LLM/network). Validated green in reuse mode.
   smoke_command: "make smoke"
-  # Left FALSE deliberately: when true, `smoke-green` becomes a REQUIRED merge
-  # gate (factory/chain/gates/evaluator.py::required_gate_labels). The gate is
-  # only trustworthy once it boots the PR's OWN code in the per-story worktree
-  # on an isolated port — today `make smoke` reuses whatever backend is bound to
-  # :8000 (the operator's running checkout), which would green-light a PR
-  # against code it didn't change (false green). Flipping this to true is the
-  # P0.2 follow-up: worktree-local backend boot (needs a backend Dockerfile or a
-  # venv-bootstrap + per-worktree port), tracked in D002.
-  smoke_harness_ready: false
+  # TRUE since 2026-07-15 (D002 P0.2 closed): `smoke-green` is a REQUIRED merge
+  # gate (factory/chain/gates/evaluator.py::required_gate_labels). Trustworthy
+  # because sacrifice@8becb91 made isolated boot the DEFAULT: `make smoke` now
+  # boots the checkout's OWN backend (worktree-safe via `uv run uvicorn`, no
+  # .venv needed) on a free ephemeral port and kills exactly that pid — reuse
+  # of a running backend requires an explicitly set SMOKE_BASE_URL. Verified:
+  # fresh worktree green with a decoy occupying :8000. Requires the
+  # sacrifice-db container to be startable (`make up-db`).
+  smoke_harness_ready: true
 models: {}  # use default routing
