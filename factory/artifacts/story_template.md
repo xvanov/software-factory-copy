@@ -14,6 +14,14 @@ so that {{benefit}}.
 
 1. [Add acceptance criteria from epics/PRD]
 
+### Testable Claims (EARS)
+
+<!-- One atomic, testable claim per line, derived from the verbatim ACs above.
+     Form: WHEN <trigger>, [GIVEN <precondition>,] THE <system> SHALL <observable response>.
+     Number as AC<n>.<m> so every claim traces to its parent AC. -->
+
+- AC1.1: WHEN [trigger], THE [system] SHALL [observable response]
+
 ## Tasks / Subtasks
 
 - [ ] Task 1 (AC: #)

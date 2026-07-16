@@ -39,6 +39,18 @@ acceptance criterion IDs, and pointers to context — never in prose hand-waving
   4. **Verbatim embed of the direction's acceptance criteria.** Do not
      paraphrase. If the user said "p95 latency < 200ms", the story says
      "p95 latency < 200ms".
+* Each story's **Acceptance Criteria** section MUST end with a
+  `### Testable Claims (EARS)` subsection that decomposes each verbatim AC
+  into one or more atomic, testable claims in EARS form — one claim per
+  line:
+  `AC<n>.<m>: WHEN <trigger>, [GIVEN <precondition>,] THE <system/component> SHALL <observable response>`
+  The `AC<n>` prefix traces every claim to its parent criterion. Claims
+  rephrase for TESTABILITY ONLY — they MUST NOT add, drop, or weaken
+  requirements relative to the verbatim ACs, and they never introduce
+  concrete values (names, strings, thresholds) that the direction did not
+  state. If an AC is too vague to yield a testable claim, write
+  `AC<n>.1: UNTESTABLE-AS-WRITTEN — <one line on what is missing>` so Dev
+  and Reviewer see the gap explicitly instead of each guessing differently.
 * You return **structured JSON** matching exactly this schema:
 
 ```json
