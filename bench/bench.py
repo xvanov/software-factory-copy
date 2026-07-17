@@ -317,6 +317,12 @@ def run_factory(task_id: str, run: int, *, max_steps: int, timeout_s: int) -> No
         runs = s.exec(select(Run).where(Run.story_id == story_id)).all()
         cost = sum(float(r.cost_usd or 0.0) for r in runs)
 
+    # The chain does its work in its OWN per-story worktree under the bench
+    # root — that tree (not the seed worktree) holds the diff to grade. The
+    # worktree dir is named from the GitHub issue number, not the db id.
+    candidates = sorted((root / "state" / "worktrees").glob("sacrifice-*"))
+    graded_wt = candidates[0] if candidates else wt
+
     result = {
         "arm": "factory",
         "task": task_id,
@@ -331,7 +337,8 @@ def run_factory(task_id: str, run: int, *, max_steps: int, timeout_s: int) -> No
         "persona_calls": len(runs),
         "transitions": transitions[-12:],
         "error": error,
-        **_diff_stats(wt),
+        "worktree_path": str(graded_wt),
+        **_diff_stats(graded_wt),
     }
     out = _write_result(task_id, "factory", run, result)
     print(f"factory arm done: {out}")
@@ -342,10 +349,24 @@ def run_factory(task_id: str, run: int, *, max_steps: int, timeout_s: int) -> No
 # --------------------------------------------------------------------------- #
 
 
+def _graded_worktree(task_id: str, arm: str, run: int) -> Path:
+    """The tree holding the arm's diff: the factory arm records its per-story
+    chain worktree in result.json; the claude arm uses the seed worktree."""
+    result_file = _run_dir(task_id, arm, run) / "result.json"
+    if result_file.exists():
+        try:
+            recorded = json.loads(result_file.read_text(encoding="utf-8")).get("worktree_path")
+            if recorded and Path(recorded).exists():
+                return Path(recorded)
+        except json.JSONDecodeError:
+            pass
+    return _run_dir(task_id, arm, run) / "worktree"
+
+
 def gate(task_id: str, arm: str, run: int) -> None:
     data = _load_tasks()
     task = _task(data, task_id)
-    wt = _run_dir(task_id, arm, run) / "worktree"
+    wt = _graded_worktree(task_id, arm, run)
     if not wt.exists():
         raise SystemExit(f"no worktree at {wt} — run the arm first")
 
@@ -397,7 +418,9 @@ DIFF (may be truncated):
 def rubric(task_id: str, arm: str, run: int) -> None:
     data = _load_tasks()
     task = _task(data, task_id)
-    wt = _run_dir(task_id, arm, run) / "worktree"
+    wt = _graded_worktree(task_id, arm, run)
+    # Uncommitted (claude arm) → staged → committed-vs-base (factory arm
+    # commits its work in the chain worktree).
     diff = subprocess.run(
         ["git", "-C", str(wt), "diff", "--cached"], capture_output=True, text=True
     ).stdout
@@ -405,9 +428,16 @@ def rubric(task_id: str, arm: str, run: int) -> None:
         diff = subprocess.run(
             ["git", "-C", str(wt), "diff"], capture_output=True, text=True
         ).stdout
+    if not diff.strip():
+        base = json.loads(
+            ((_run_dir(task_id, arm, run) / "result.json").read_text(encoding="utf-8"))
+        ).get("base_sha", "origin/main")
+        diff = subprocess.run(
+            ["git", "-C", str(wt), "diff", f"{base}...HEAD"], capture_output=True, text=True
+        ).stdout
 
     sys.path.insert(0, str(FACTORY_ROOT))
-    from factory.runner import LLMConfig, text_run
+    from factory.runner import text_run
 
     prompt = RUBRIC_PROMPT.format(prompt=_prompt_text(task), diff=diff[:60000])
     schema = {
@@ -418,7 +448,7 @@ def rubric(task_id: str, arm: str, run: int) -> None:
     res = text_run(
         persona="bench_rubric_judge",
         prompt=prompt,
-        llm_config=LLMConfig(model="azure/gpt-5.4"),
+        model_id="azure/gpt-5.4",
         schema=schema,
         db_path=_run_dir(task_id, arm, run) / "rubric.db",
     )
@@ -460,6 +490,12 @@ def report() -> None:
 
 
 def main() -> None:
+    # The factory CLI loads .env at every entry point; the bench driver calls
+    # runner/handler internals directly, so it must do the same.
+    from dotenv import load_dotenv
+
+    load_dotenv(FACTORY_ROOT / ".env", override=False)
+
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
