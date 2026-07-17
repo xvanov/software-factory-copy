@@ -658,6 +658,7 @@ def handle_sm(
             story_id=story.id,
             app=story.app,
             direction_id=story.direction_id,
+            db_path=db,
         )
         if not isinstance(result_any, dict):
             return HandlerResult(
@@ -1142,6 +1143,7 @@ def _handle_dev_once(
                 app=story.app,
                 direction_id=story.direction_id,
                 wall_clock_timeout_s=_dev_timeout_s,
+                db_path=db,
             )
         )
 
@@ -1953,6 +1955,7 @@ def handle_review(
             story_id=story.id,
             app=story.app,
             direction_id=story.direction_id,
+            db_path=db,
         )
         try:
             result = json.loads(result_any) if isinstance(result_any, str) else result_any
@@ -2172,6 +2175,7 @@ def handle_tech_writer(
             story_id=story.id,
             app=story.app,
             direction_id=story.direction_id,
+            db_path=db,
         )
         try:
             result = json.loads(result_any) if isinstance(result_any, str) else result_any
