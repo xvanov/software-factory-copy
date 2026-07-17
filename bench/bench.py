@@ -430,7 +430,7 @@ def rubric(task_id: str, arm: str, run: int) -> None:
         ).stdout
     if not diff.strip():
         base = json.loads(
-            ((_run_dir(task_id, arm, run) / "result.json").read_text(encoding="utf-8"))
+            (_run_dir(task_id, arm, run) / "result.json").read_text(encoding="utf-8")
         ).get("base_sha", "origin/main")
         diff = subprocess.run(
             ["git", "-C", str(wt), "diff", f"{base}...HEAD"], capture_output=True, text=True
@@ -454,6 +454,50 @@ def rubric(task_id: str, arm: str, run: int) -> None:
     )
     _write_result(task_id, arm, run, {"rubric": res})
     print(json.dumps(res, indent=2))
+
+
+def clean() -> None:
+    """Remove all bench worktrees, bench/* branches, and bench/runs.
+
+    Keeps everything committed (results summaries, campaign reports). Safe to
+    run repeatedly; every step is best-effort.
+    """
+    listing = subprocess.run(
+        ["git", "-C", str(SACRIFICE_REPO), "worktree", "list", "--porcelain"],
+        capture_output=True, text=True,
+    ).stdout
+    removed = 0
+    for line in listing.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        path = line.split(" ", 1)[1].strip()
+        if "/bench/runs/" in path:
+            subprocess.run(
+                ["git", "-C", str(SACRIFICE_REPO), "worktree", "remove", "--force", path],
+                capture_output=True, text=True,
+            )
+            removed += 1
+    subprocess.run(["git", "-C", str(SACRIFICE_REPO), "worktree", "prune"], capture_output=True)
+
+    branches = subprocess.run(
+        ["git", "-C", str(SACRIFICE_REPO), "branch", "--list",
+         "bench/*", "factory/story-9*-bench-*"],
+        capture_output=True, text=True,
+    ).stdout.split()
+    deleted = 0
+    for b in branches:
+        b = b.strip("* ").strip()
+        if not b:
+            continue
+        proc = subprocess.run(
+            ["git", "-C", str(SACRIFICE_REPO), "branch", "-D", b],
+            capture_output=True, text=True,
+        )
+        deleted += 1 if proc.returncode == 0 else 0
+
+    if RUNS_DIR.exists():
+        shutil.rmtree(RUNS_DIR, ignore_errors=True)
+    print(f"removed {removed} worktrees, {deleted} branches, cleared {RUNS_DIR}")
 
 
 def report() -> None:
@@ -518,6 +562,7 @@ def main() -> None:
         p.add_argument("--run", type=int, default=1)
 
     sub.add_parser("report")
+    sub.add_parser("clean")
 
     args = ap.parse_args()
     if args.cmd == "run-claude":
@@ -530,6 +575,8 @@ def main() -> None:
         rubric(args.task, args.arm, args.run)
     elif args.cmd == "report":
         report()
+    elif args.cmd == "clean":
+        clean()
 
 
 if __name__ == "__main__":
