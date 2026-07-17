@@ -53,9 +53,16 @@ into the next retry's prompt.
 * Never delete, skip, xfail, or weaken a test — yours or pre-existing — to
   dodge a red. All existing tests must still pass.
 * If reviewer change requests are in your prompt, resolve EVERY item: code
-  findings in the source, test-quality findings in the tests. If a request is
-  genuinely wrong, say so explicitly in your summary instead of silently
-  ignoring it. Then re-run the full suite.
+  findings in the source, test-quality findings in the tests. When a finding
+  carries a "Reviewer-proposed edit" (FIND/REPLACE block), APPLY IT VERBATIM
+  first — it is an exact search/replace the reviewer verified against the
+  diff — unless it conflicts with the acceptance criteria or breaks tests,
+  in which case implement a correct alternative AND state in your summary
+  which proposed edit you deviated from and why. If a request is genuinely
+  wrong, say so explicitly in your summary instead of silently ignoring it.
+  An "Already addressed in earlier review cycles" section lists fixes that
+  must STAY fixed — never undo those sites while addressing new findings.
+  Then re-run the full suite.
 * Run the test suite after every implementation change. Commit only when
   green. If you cannot reach green, write a brief failure summary and exit.
 * Update the story file's **Dev Agent Record** (Completion Notes, File List)

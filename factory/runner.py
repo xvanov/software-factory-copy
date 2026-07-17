@@ -836,6 +836,22 @@ def _build_initial_message(
                         parts.append(f"   - Problem: {what[:500]}")
                     if fix:
                         parts.append(f"   - Suggested fix: {fix[:500]}")
+                    # Concrete reviewer-proposed edit: render verbatim (much
+                    # higher cap than the one-liner — the whole point is that
+                    # dev can apply it as an exact search/replace and end the
+                    # finding's loop in one cycle).
+                    edit = f.get("suggested_edit")
+                    if isinstance(edit, dict) and edit.get("file") and edit.get("find"):
+                        find_s = str(edit.get("find", ""))[:2000]
+                        repl_s = str(edit.get("replace", ""))[:2000]
+                        parts.append(f"   - Reviewer-proposed edit in `{edit['file']}`:")
+                        parts.append(
+                            "     Apply this exact replacement (unless it "
+                            "conflicts with the acceptance criteria or breaks "
+                            "tests — then explain why in your summary):"
+                        )
+                        parts.append(f"     FIND:\n```\n{find_s}\n```")
+                        parts.append(f"     REPLACE WITH:\n```\n{repl_s}\n```")
                 # Test-quality findings: dev OWNS the tests now, so fix them
                 # directly — make each test exercise the real behavior and assert
                 # the correct contract value the reviewer flagged.
@@ -856,6 +872,27 @@ def _build_initial_message(
                             parts.append(f"   - Issue: {issue[:400]}")
                         if fix:
                             parts.append(f"   - Suggested fix: {fix[:400]}")
+                # Earlier review cycles: what was already fixed must STAY
+                # fixed. Without this digest, dev only ever sees the latest
+                # cycle and can silently regress cycle-1 fixes while
+                # addressing cycle-3 findings — one of the drivers of the
+                # 6-cycle non-convergence pattern.
+                prior_cycles = reviewer_findings.get("prior_cycles") or []
+                if prior_cycles:
+                    parts.append(
+                        "\n## Already addressed in earlier review cycles — do NOT regress"
+                    )
+                    parts.append(
+                        "Findings from previous cycles, presumed fixed. Keep "
+                        "them fixed while addressing the items above; the "
+                        "reviewer re-checks these sites."
+                    )
+                    for entry in prior_cycles:
+                        cyc = entry.get("cycle")
+                        for f in entry.get("findings") or []:
+                            loc = f.get("location", "")
+                            what = (f.get("what") or "")[:200]
+                            parts.append(f"- (cycle {cyc}) {loc}: {what}")
     if prior_attempts:
         # The chain feeds prior failed attempts forward so the LLM sees what
         # was already tried and which assertions are still red. Without this,

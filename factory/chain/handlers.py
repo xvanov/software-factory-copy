@@ -132,6 +132,9 @@ _MIGRATION_COLUMNS: dict[str, str] = {
     # Hard convergence guard counter. INTEGER default 0; pre-existing stories
     # gain it on next visit and start counting from their next reviewer pass.
     "reviewer_cycles": "INTEGER NOT NULL DEFAULT 0",
+    # Review-cycle history (last 4 cycles) — reviewer finality memory + dev's
+    # "already addressed" digest. See StoryRecord.reviewer_history_json.
+    "reviewer_history_json": "TEXT",
 }
 
 
@@ -772,21 +775,114 @@ def _read_persona_prompt(persona: str) -> str:
 
 
 
+def _finding_location_file(f: dict[str, Any]) -> str:
+    """Normalize a finding's location to its file path (drop :line, lowercase).
+
+    Line numbers shift as dev edits; the FILE is the stable identity of where
+    a defect lives. Findings without a location normalize to "" (excluded
+    from location-set comparisons).
+    """
+    loc = str(f.get("location") or f.get("file") or "").strip().lower()
+    return loc.split(":", 1)[0].strip()
+
+
 def _findings_signature(result: dict[str, Any]) -> str:
     """Stable hash of a review's actionable findings (order-independent).
 
-    Two review cycles with the same set of finding ``what`` texts produce the
-    same signature — the signal that the dev<->reviewer loop is stuck rather
-    than progressing.
+    Keys on normalized location FILE + ``what``/``issue`` text: two cycles
+    flagging the same site count as "same" even when the reviewer rewords the
+    complaint (rewording defeated the text-only signature — benchmark t3,
+    2026-07-17, six cycles with consecutive_same=1 throughout).
     """
     import hashlib
 
     parts = []
     for f in (result.get("findings") or []) + (result.get("test_quality_findings") or []):
         if isinstance(f, dict):
-            parts.append(((f.get("what") or f.get("issue") or "")).strip().lower()[:160])
+            loc = _finding_location_file(f)
+            what = (f.get("what") or f.get("issue") or "").strip().lower()[:160]
+            parts.append(f"{loc}|{what}" if loc else what)
     digest = hashlib.sha256(" ".join(sorted(parts)).encode("utf-8", "replace"))
     return digest.hexdigest()[:16]
+
+
+_REVIEWER_HISTORY_MAX_CYCLES = 4
+
+
+def _append_reviewer_history(story: StoryRecord, result: dict[str, Any]) -> None:
+    """Append this cycle's review to ``story.reviewer_history_json`` (capped).
+
+    Stores a digest, not the full result: enough for the reviewer to honor
+    finality (location + what + severity + regression flag) and for dev's
+    do-not-regress section, without unbounded prompt growth.
+    """
+    def _digest(findings: Any, *, is_test: bool = False) -> list[dict[str, Any]]:
+        out = []
+        for f in findings or []:
+            if not isinstance(f, dict):
+                continue
+            out.append(
+                {
+                    "severity": f.get("severity", "medium" if not is_test else "low"),
+                    "location": str(f.get("location") or f.get("test_name") or "")[:160],
+                    "what": str(f.get("what") or f.get("issue") or "")[:200],
+                    "regression": bool(f.get("regression")),
+                }
+            )
+        return out
+
+    entry = {
+        "cycle": story.reviewer_cycles,
+        "verdict": result.get("verdict", "request_changes"),
+        "score": result.get("test_quality_score"),
+        "findings": _digest(result.get("findings")),
+        "test_quality_findings": _digest(result.get("test_quality_findings"), is_test=True),
+    }
+    try:
+        history = json.loads(story.reviewer_history_json or "[]")
+        if not isinstance(history, list):
+            history = []
+    except (json.JSONDecodeError, TypeError):
+        history = []
+    history.append(entry)
+    story.reviewer_history_json = json.dumps(history[-_REVIEWER_HISTORY_MAX_CYCLES:])
+
+
+def _render_reviewer_history_section(story: StoryRecord) -> str:
+    """The "Your previous findings" prompt section for re-reviews.
+
+    Empty string on the first review. This is what makes the persona's
+    finality rule ENFORCEABLE — without it the reviewer has no memory of its
+    own prior verdicts and re-derives fresh objections every cycle.
+    """
+    try:
+        history = json.loads(story.reviewer_history_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        history = []
+    if not history:
+        return ""
+    lines = [
+        "## Your previous findings (this is a RE-REVIEW — read before judging)",
+        "",
+        "You have reviewed this story before. Per the Review-finality rule, a",
+        "new `medium`/`high` finding is legitimate ONLY as (a) a regression",
+        "since your last review (mark `\"regression\": true`) or (b) one of",
+        "the findings below not actually addressed. Anything else is `low` /",
+        "`comments_to_post`. At cycle 3+ the chain clamps non-compliant",
+        "blocking findings to non-blocking.",
+        "",
+    ]
+    for entry in history:
+        lines.append(
+            f"### Cycle {entry.get('cycle')} — verdict: {entry.get('verdict')}"
+        )
+        for f in (entry.get("findings") or []) + (entry.get("test_quality_findings") or []):
+            reg = " (regression)" if f.get("regression") else ""
+            lines.append(
+                f"- [{f.get('severity')}] {f.get('location')}: {f.get('what')}{reg}"
+            )
+        lines.append("")
+    return "\n".join(lines)
 
 
 # Pre-model sandbox infrastructure-error cap. A dev sandbox that fails BEFORE
@@ -1109,8 +1205,9 @@ def _handle_dev_once(
         # When dev is re-dispatched after the reviewer requested changes, hand
         # it the reviewer's actual findings. Tests are already green on this
         # path, so without the findings the dev LLM has no signal about what to
-        # fix and the dev<->reviewer loop cannot converge. Only the most recent
-        # reviewer verdict is relevant.
+        # fix and the dev<->reviewer loop cannot converge. The most recent
+        # verdict carries the actionable items; earlier cycles ride along as a
+        # ``prior_cycles`` digest so already-fixed sites don't regress.
         reviewer_findings: dict[str, Any] | None = None
         if story.reviewer_result_json:
             try:
@@ -1121,6 +1218,16 @@ def _handle_dev_once(
                     reviewer_findings = parsed
             except (json.JSONDecodeError, TypeError):
                 reviewer_findings = None
+        if reviewer_findings is not None and story.reviewer_history_json:
+            try:
+                history = json.loads(story.reviewer_history_json)
+                # The final history entry is the latest review — already fully
+                # rendered as the actionable findings; only OLDER cycles go in
+                # the do-not-regress digest.
+                if isinstance(history, list) and len(history) > 1:
+                    reviewer_findings["prior_cycles"] = history[:-1]
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         from factory.settings.loader import load_settings as _load_settings
 
@@ -1928,13 +2035,15 @@ def handle_review(
             "Playwright config/spec or 'playwright not wired' as NON-blocking "
             "(`low`), never `medium`/`high`.\n\n"
         )
+        history_section = _render_reviewer_history_section(story)
         full_prompt = (
             f"{persona_prompt.rstrip()}\n\n"
             "---\n\n"
             "## Context\n\n"
             f"{prelude.rstrip()}\n\n"
             f"{rcaps}"
-            "## Story\n\n"
+            + (f"{history_section}\n\n" if history_section else "")
+            + "## Story\n\n"
             f"{story_content}\n\n"
             "## Test plan\n\n"
             f"{story.test_plan_json or '{}'}\n\n"
@@ -1999,6 +2108,66 @@ def handle_review(
             result["test_quality_findings"].extend(slop_findings)
             result["slop_detector_findings"] = slop_findings
             story.reviewer_result_json = json.dumps(result)
+
+    # Finality drift clamp. At cycle 3+, blocking findings that share NO file
+    # location with the previous cycle's findings AND are not marked
+    # ``regression: true`` violate the persona's finality rule (new objections
+    # to code that was already in front of the reviewer). Rotating fresh
+    # objections each cycle is exactly how benchmark t3/t8 burned 6 cycles
+    # without shipping. Clamp such findings to ``low`` (non-blocking); if
+    # nothing blocking remains and the score clears the bar, the verdict
+    # flips to approve. Slop-detector findings are never clamped (they are
+    # deterministic, not reviewer drift).
+    if verdict != "approve" and story.reviewer_cycles >= 2:
+        try:
+            history = json.loads(story.reviewer_history_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            history = []
+        prev = history[-1] if history else None
+        if prev:
+            prev_locs = {
+                _finding_location_file(f)
+                for f in (prev.get("findings") or [])
+                + (prev.get("test_quality_findings") or [])
+            } - {""}
+            slop_ids = {
+                id(f) for f in (result.get("slop_detector_findings") or [])
+            }
+            clamped: list[dict[str, Any]] = []
+            for f in result.get("findings") or []:
+                if not isinstance(f, dict) or id(f) in slop_ids:
+                    continue
+                blocking = f.get("severity") in ("medium", "high")
+                is_regression = bool(f.get("regression"))
+                known_site = _finding_location_file(f) in prev_locs
+                if blocking and not is_regression and not known_site:
+                    f["severity"] = "low"
+                    f["finality_clamped"] = True
+                    clamped.append(f)
+            if clamped:
+                still_blocking = any(
+                    isinstance(f, dict) and f.get("severity") in ("medium", "high")
+                    for f in result.get("findings") or []
+                ) or bool(result.get("slop_detector_findings"))
+                log_story_event(
+                    story.id,
+                    "reviewer_finality_clamped",
+                    {
+                        "cycle": story.reviewer_cycles + 1,
+                        "clamped": [
+                            {"location": f.get("location"), "what": (f.get("what") or "")[:160]}
+                            for f in clamped
+                        ],
+                        "approved_after_clamp": not still_blocking and score >= 0.7,
+                    },
+                    software_factory_root=software_factory_root,
+                    slug_hint=story.slug,
+                )
+                if not still_blocking and score >= 0.7:
+                    verdict = "approve"
+                    result["verdict"] = "approve"
+                    result["finality_clamp_applied"] = True
+                story.reviewer_result_json = json.dumps(result)
 
     if verdict == "approve" and score >= 0.7:
         story.state = advance(story, EVENT_REVIEWER_APPROVE).value
@@ -2085,6 +2254,9 @@ def handle_review(
                 except Exception:  # pragma: no cover - real-run path
                     pass
 
+    # Record this cycle in the review history (post-clamp, so the next
+    # cycle's reviewer prompt and drift clamp see what was ACTUALLY ruled).
+    _append_reviewer_history(story, result)
     persist_story(story, db)
     return HandlerResult(next_state=StoryState(story.state), payload=result)
 

@@ -108,6 +108,13 @@ class StoryRecord(SQLModel, table=True):
     test_plan_json: str | None = None  # JSON-serialized Test-Designer output
     test_implementer_result_json: str | None = None
     reviewer_result_json: str | None = None
+    # JSON-serialised list of prior review cycles (capped to the last 4):
+    # ``[{cycle, verdict, score, findings: [{severity, location, what,
+    #    regression}], test_quality_findings: [...]}]``. Rendered into the
+    # REVIEWER's re-review prompt (making the finality rule enforceable — the
+    # reviewer otherwise has no memory of what it previously said) and into
+    # DEV's prompt as an "already addressed, do not regress" digest.
+    reviewer_history_json: str | None = None
     tech_writer_result_json: str | None = None
     dev_retries: int = 0
     # JSON-serialised list of prior dev attempts on this story. Each entry:
