@@ -2718,6 +2718,30 @@ def handle_docs_enforcer(
     violations = scan_pr_diff(files)
     payload: dict[str, Any] = {"violations": [v._asdict() for v in violations], "files": files}
 
+    # Vacuous-diff guard. A deliverable whose entire diff is story files —
+    # nothing under context/, no prd.md, no code — delivered nothing: the
+    # story file is the WORK ORDER, not the work. scan_pr_diff can't catch
+    # this (stories/*.md is a canonical path, so a story-file-only diff scans
+    # clean — exactly how benchmark t7 "passed" 2026-07-17 with a diff that
+    # only added the seeded story file).
+    substantive = [
+        f for f in files
+        if f and not str(f).startswith("stories/")
+    ]
+    if files and not substantive:
+        story.state = advance(story, EVENT_DOCS_ENFORCER_FAIL).value
+        story.error = "vacuous diff: only story files changed — no deliverable content"
+        payload["vacuous_diff"] = True
+        persist_story(story, db)
+        log_story_event(
+            story.id,
+            "vacuous_diff",
+            {"files": files[:20]},
+            software_factory_root=software_factory_root,
+            slug_hint=story.slug,
+        )
+        return HandlerResult(next_state=StoryState(story.state), payload=payload, error=story.error)
+
     if violations:
         # Real-run: post the comment + label the PR.
         if not dry_run and github_client is not None and story.github_pr_number is not None:

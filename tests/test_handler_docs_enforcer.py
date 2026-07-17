@@ -97,3 +97,31 @@ def test_default_pr_files_derived_from_tech_writer_json(
     assert result.next_state == StoryState.PR_OPEN
     # The derived files list should include the tech-writer-claimed path.
     assert "context/modules/auth.md" in result.payload["files"]
+
+
+def test_story_file_only_diff_is_vacuous(temp_root: Path, app_config: AppConfig) -> None:
+    """A diff containing ONLY story files delivered nothing — the story file
+    is the work order, not the work (benchmark t7, 2026-07-17: a story-file-
+    only diff scanned clean because stories/*.md is canonical)."""
+    s = _story_at_tech_writer_done(temp_root)
+    db = temp_root / "state" / "factory.db"
+    result = handle_docs_enforcer(
+        s, app_config, temp_root, dry_run=True, db_path=db,
+        pr_files=["stories/84-rewrite-docs.md"],
+    )
+    assert result.next_state == StoryState.REVIEWER_REQUESTED_CHANGES
+    assert result.payload["vacuous_diff"] is True
+    assert "vacuous" in (result.error or "")
+
+
+def test_story_file_plus_context_change_is_not_vacuous(
+    temp_root: Path, app_config: AppConfig
+) -> None:
+    s = _story_at_tech_writer_done(temp_root)
+    db = temp_root / "state" / "factory.db"
+    result = handle_docs_enforcer(
+        s, app_config, temp_root, dry_run=True, db_path=db,
+        pr_files=["stories/84-rewrite-docs.md", "context/modules/pipeline.md"],
+    )
+    assert result.next_state == StoryState.PR_OPEN
+    assert "vacuous_diff" not in result.payload
