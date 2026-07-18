@@ -451,6 +451,23 @@ def auto_merge_tick(
     cfg = load_app_config(app, root)
 
     fixtures: list[FixturePR] = list(fixture_prs or [])
+    def _story_worktree(root: Path, app: str, db_story: StoryRecord | None) -> Path | None:
+        """The story's chain worktree, if it still exists — command gates
+        (smoke-green boots the PR's OWN code) need a local tree to run in.
+        Worktrees are keyed by GITHUB ISSUE NUMBER, not the db row id (see
+        handlers._writing_worktree). Without this, repo_root=None made the
+        required smoke gate unevaluable and every PR sat unmergeable on
+        'missing smoke-green' (observed 2026-07-18)."""
+        if db_story is None:
+            return None
+        try:
+            from factory.chain.worktree import worktree_path
+
+            cand = worktree_path(root, app, db_story.github_issue_number, db_story.slug)
+            return cand if cand.exists() else None
+        except Exception:
+            return None
+
     if not fixtures and github_client is None:
         # No explicit fixtures and no GH client. Synthesize fixtures from
         # local StoryRecords that landed in a mergeable state — this is
@@ -471,6 +488,11 @@ def auto_merge_tick(
                 # PR number; synthesize a placeholder so the worker still
                 # records a decision row the operator can audit.
                 pr_no = -(db_story.id or 0)
+            # Point command gates (smoke-green boots the PR's OWN code) at
+            # the story's chain worktree when it still exists. Without this,
+            # repo_root=None made the required smoke gate unevaluable and
+            # every synthesized PR sat unmergeable on 'missing smoke-green'
+            # (observed 2026-07-18).
             fixtures.append(
                 FixturePR(
                     pr_number=int(pr_no),
@@ -480,7 +502,7 @@ def auto_merge_tick(
                     files_changed=[],
                     ci_state="success",
                     story=db_story,
-                    repo_root=None,
+                    repo_root=_story_worktree(root, app, db_story),
                 )
             )
     if not fixtures and not dry_run and github_client is not None:  # pragma: no cover - real GH
@@ -504,7 +526,7 @@ def auto_merge_tick(
                     files_changed=[f.filename for f in pr.get_files()],
                     ci_state=None,
                     story=story_row,
-                    repo_root=None,
+                    repo_root=_story_worktree(root, app, story_row),
                 )
             )
 

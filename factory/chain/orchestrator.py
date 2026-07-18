@@ -846,6 +846,27 @@ def tick(
             except Exception as exc:
                 summary.errors.append((app, f"worktree prune failed (non-fatal): {exc!r}"))
 
+        # START-of-tick auto-merge pass. With in-tick dev convergence, a tick
+        # can run for hours; PRs that reached PR_OPEN on a PREVIOUS tick must
+        # not wait for this tick's story loop to finish before merging
+        # (observed 2026-07-18: two mergeable PRs sat >2h behind a long tick).
+        # The end-of-tick hook below still runs for PRs that open THIS tick.
+        if settings.auto_merge.enabled:
+            _pre_mode = get_mode(root, db_path=db)
+            if _pre_mode not in {"paused", "drain-reviews"}:
+                try:
+                    summary.merges = auto_merge_tick(
+                        root,
+                        app,
+                        dry_run=dry_run,
+                        db_path=db,
+                        merge_method=settings.auto_merge.merge_method,
+                        wait_for_ci=settings.auto_merge.wait_for_ci,
+                        delete_branch_after_merge=settings.auto_merge.delete_branch_after_merge,
+                    )
+                except Exception as exc:
+                    summary.errors.append(("auto-merge-pre", repr(exc)))
+
         # Even when no in-flight stories exist, we still want the
         # end-of-tick auto-merge hook to fire so PRs that landed in
         # PR_OPEN on a previous tick (and are therefore terminal here) get
