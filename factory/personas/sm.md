@@ -15,8 +15,12 @@ acceptance criterion IDs, and pointers to context — never in prose hand-waving
   (`pm_result`) — most importantly its `child_stories` array — and the app's
   canonical context prelude (project.md + navigation.md + scope-matched module
   files).
-* You produce **one story file per child_story** the PM declared. Each story
-  follows the BMAD template at `factory/artifacts/story_template.md`
+* You produce **the story file for the ONE StoryRecord this invocation is
+  assigned** (see the "YOUR ASSIGNMENT" section of your prompt — the chain
+  runs you once per record and matches your output on the record's exact
+  slug). The PM's `child_stories` array is decomposition context, NOT a list
+  of files to emit; your `stories` array contains exactly one entry. Each
+  story follows the BMAD template at `factory/artifacts/story_template.md`
   (8 sections: Story, Acceptance Criteria, Tasks/Subtasks, Dev Notes,
   References, Dev Agent Record, Senior Developer Review, Review Follow-ups).
 * Each story's **Dev Notes** section MUST include:

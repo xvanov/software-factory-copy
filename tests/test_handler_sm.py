@@ -364,3 +364,8 @@ def test_no_matching_sm_entry_errors_instead_of_first_fallback(
     if original_path:
         p = temp_root / "apps" / "sacrifice" / original_path
         assert not p.exists() or "WRONG sibling" not in p.read_text()
+    # And the story must NOT advance: SM_DONE without a written file poisons
+    # dispatch forever (dev dies on FileNotFoundError every tick — 2026-07-17,
+    # dual-draft records vs per-child SM output). It resets to STORY_CREATED
+    # so SM re-runs next tick.
+    assert StoryState(s.state) is StoryState.STORY_CREATED

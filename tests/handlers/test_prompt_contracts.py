@@ -190,8 +190,17 @@ def test_handle_sm_prompt_contract(
 
     prompt = cap.last_prompt
     _assert_no_broken_markers(prompt)
-    for header in ("## Context", "## PM result", "## Direction", "## Story metadata"):
+    for header in (
+        "## Context",
+        "## PM result",
+        "## Direction",
+        "## YOUR ASSIGNMENT — exactly ONE story file",
+    ):
         assert header in prompt, f"missing section header {header!r}"
+    # The single-story contract must pin the record's exact slug (the chain
+    # matches on it and refuses to write on mismatch).
+    assert "- slug: fix-sm-contract" in prompt
+    assert "EXACTLY ONE entry" in prompt
 
 
 def test_handle_review_prompt_contract(

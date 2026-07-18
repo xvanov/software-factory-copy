@@ -644,7 +644,16 @@ def handle_sm(
             f"{direction_body.rstrip()}\n\n"
             f"### flow.md\n\n{flow_text.rstrip() if flow_text else '(none)'}\n\n"
             f"### api_spec.md\n\n{api_text.rstrip() if api_text else '(none)'}\n\n"
-            "## Story metadata\n\n"
+            "## YOUR ASSIGNMENT — exactly ONE story file\n\n"
+            "This invocation prepares the story file for exactly ONE StoryRecord\n"
+            "(the chain runs you once per record). The PM result's child_stories\n"
+            "above are decomposition CONTEXT — scope boundaries and sequencing —\n"
+            "NOT a list of files to emit. Your `stories` array MUST contain\n"
+            "EXACTLY ONE entry, with `slug` set EXACTLY to the value below\n"
+            "(verbatim — the chain matches on it and refuses to write on\n"
+            "mismatch). If this record is one interpretation of a dual-draft\n"
+            "pair (title suffixed 'narrow read'/'broad read'), scope the story\n"
+            "content to THAT interpretation.\n\n"
             f"- title: {story.title}\n"
             f"- slug: {story.slug}\n"
             f"- scope: {story.scope}\n"
@@ -691,13 +700,30 @@ def handle_sm(
             break
 
     if matched is None:
+        # Slug mismatch: do NOT advance. Advancing to SM_DONE without a
+        # written file poisons dispatch forever (dev dies on
+        # FileNotFoundError every tick — observed 2026-07-17 when dual-draft
+        # records met an SM that emitted per-child_story files). Reset to
+        # STORY_CREATED so the next tick re-runs SM against the (now
+        # single-story-explicit) prompt; the mismatch is loud in the story
+        # event log either way.
         story.error = (
             f"sm output has no story matching slug {story.slug!r} "
             f"(got: {[str(s.get('slug'))[:40] for s in stories_out[:6]]!r}); "
             "refusing to write a sibling's contract into this story's file"
         )
-        story.state = advance(story, EVENT_SM_DONE).value
+        story.state = StoryState.STORY_CREATED.value
         story.sm_result_json = json.dumps(result)
+        log_story_event(
+            story.id,
+            "sm_slug_mismatch",
+            {
+                "expected_slug": story.slug,
+                "got_slugs": [str(s.get("slug"))[:60] for s in stories_out[:12]],
+            },
+            software_factory_root=software_factory_root,
+            slug_hint=story.slug,
+        )
         persist_story(story, db)
         return HandlerResult(
             next_state=StoryState(story.state),
