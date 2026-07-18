@@ -2943,6 +2943,20 @@ def _open_pr_for_story(
         except (subprocess.TimeoutExpired, OSError):
             pass
 
+        # Refresh + PRUNE remote-tracking refs before the lease push. If the
+        # feature branch was deleted on origin since this worktree last
+        # fetched (e.g. an operator closed a conflicted PR with
+        # --delete-branch), the stale local tracking ref makes
+        # --force-with-lease reject with "stale info" and PR creation
+        # silently fails (story 56, 2026-07-18). A plain single-branch fetch
+        # does NOT remove the stale ref — only --prune does.
+        subprocess.run(
+            ["git", "fetch", "--prune", "origin"],
+            cwd=str(target_repo),
+            check=False,
+            capture_output=True,
+            timeout=120,
+        )
         # Push the branch; gh pr create needs an upstream ref.
         # --force-with-lease: story branches are factory-owned and single-
         # writer, and origin may hold STALE commits from abandoned earlier
