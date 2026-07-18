@@ -1,0 +1,275 @@
+status: pm-validated
+source: operator
+created_at: '2026-07-18T00:00:00+00:00'
+audit:
+- ts: '2026-07-18T00:00:00+00:00'
+  by: operator
+  event: created
+  details:
+    source: operator
+    note: 'Operator epic: run the existing Expo/RN app natively, verified on Android
+      emulator + Maestro, served to iPhone via Expo Go over a Cloudflare tunnel. Host
+      prerequisites (Android SDK/emulator, Maestro, cloudflared) are provisioned by
+      the operator outside story scope.'
+- ts: '2026-07-17T23:59:12.285086+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.92
+pm_result:
+  type: feature
+  priority: p1
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D086 mobile parity verification and Expo Go deployment
+  tracker_body: '## Summary
+
+    D086 targets native mobile parity for Sacrifice without breaking web: unify API/config
+    handling around `EXPO_PUBLIC_API_URL`, add an automated guard against unguarded
+    web-only APIs, land native proof capture/upload, add a Maestro-backed Android
+    emulator harness, provide Expo Go tunnel serving for iPhone use, add an in-app
+    diagnostics screen, and document the operator runbook.
+
+
+    ## Why / backpressure check
+
+    - WHY now: recent product work was only exercised through `expo start --web`;
+    native runtime divergence is likely.
+
+    - WHY sufficient to spawn: `flow.md` exists and `explore: true` is set.
+
+    - WHY this shape: the direction already gives sequencing guidance and explicit
+    acceptance criteria. The fastest path is to split by smallest end-to-end slices
+    that unblock later verification.
+
+
+    ## Constraints that must govern every story
+
+    - Linux host only; no Xcode, no iOS simulator, no EAS requirement.
+
+    - Native verification is Android emulator + Maestro; iPhone truth is via Expo
+    Go over tunnel.
+
+    - Backend must be reached through configurable `EXPO_PUBLIC_API_URL`; no hardcoded
+    localhost in app code.
+
+    - Web target must remain green; divergence belongs behind platform guards or file
+    splits.
+
+    - Host tools (`adb`, emulator, Maestro, `cloudflared`) are operator-provisioned
+    and out of scope.
+
+    - Reuse `scripts/smoke_journey.py` semantics for backend boot in mobile E2E.
+
+
+    ## Acceptance criteria mapping
+
+    - AC1: parity audit tooling + native-compatible implementations in core shared
+    paths.
+
+    - AC2: single API client/config path + native/web token storage parity.
+
+    - AC3: `make mobile-e2e` + Maestro flows under `e2e/mobile/`.
+
+    - AC4: native camera/media proof capture + upload + Maestro coverage.
+
+    - AC5: `make mobile-serve` + status + persisted tunnel connection info.
+
+    - AC6: dev-only diagnostics screen.
+
+    - AC7: operator runbook in `context/mobile-runbook.md`.
+
+    - AC8: emulator full journey against public tunnel URL.
+
+
+    ## PM decomposition notes
+
+    - WHY split config from audit: both unblock everything else, but each is independently
+    landable and reviewable.
+
+    - WHY split proof UI from upload transport: native camera affordance and multipart/upload
+    plumbing are separable risk buckets.
+
+    - WHY split Maestro plumbing from journey expansion: direction explicitly says
+    land one flow first, then extend.
+
+    - WHY keep docs separate: docs-only output belongs on the docs chain.
+
+    - WHY keep tunnel verification separate from harness creation: proving localhost
+    works is not the same as proving public tunnel path works.
+
+
+    ## Risks / watchouts
+
+    - Native proof capture likely forces multipart/form-data support and may touch
+    both frontend and backend assumptions about JSON-only proof submission.
+
+    - Expo Go service automation may be sensitive to local CLI behavior; stories should
+    focus on deterministic wrapper/service behavior, not ad hoc shell usage.
+
+    - The parity audit must be precise enough to catch real regressions without flagging
+    valid guarded code endlessly.
+
+
+    ## Spawn order intent
+
+    1. API URL/config client unification.
+
+    2. Secure token storage native/web split.
+
+    3. Parity audit guardrail.
+
+    4. Native-compatible goal creation path using registry metadata where needed.
+
+    5. Proof upload transport for native media.
+
+    6. Native camera/library proof UI.
+
+    7. Maestro harness plumbing with one smoke flow.
+
+    8. Extend Maestro to core journey including proof.
+
+    9. Expo Go serve/status service.
+
+    10. Dev diagnostics screen.
+
+    11. Runbook docs.
+
+    12. Tunnel-targeted full journey verification.
+
+    '
+  child_stories:
+  - title: D086 unify frontend API base URL via EXPO_PUBLIC_API_URL
+    scope: frontend
+    chain_kind: tdd
+    rationale: 'WHY first: every native and tunnel test depends on the app resolving
+      backend URLs correctly. This should centralize fetch/auth call sites behind
+      one client module and preserve sane localhost default for web dev without hardcoding
+      localhost elsewhere.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 140
+    points: 5
+  - title: D086 add native/web token storage adapter with SecureStore
+    scope: frontend
+    chain_kind: tdd
+    rationale: 'WHY separate from API URL: storage parity is a distinct runtime risk
+      and should land as its own slice. This enables login persistence on native while
+      keeping web fallback clean.'
+    estimated_new_files: 2
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 130
+    points: 3
+  - title: D086 add parity audit script and test for web-only API usage
+    scope: test
+    chain_kind: tdd
+    rationale: 'WHY now: guardrails before more native work prevents digging the hole
+      deeper. This lands the automated inventory/check for `document`, `window`, `localStorage`,
+      and DOM event usage in shared code paths and fails on new unguarded usage.'
+    estimated_new_files: 2
+    estimated_modified_files: 1
+    estimated_sandbox_iterations: 160
+    points: 5
+  - title: D086 make chat-first goal creation consume backend goal metadata
+    scope: frontend
+    chain_kind: tdd
+    rationale: 'WHY this slice: AC1 calls out native-compatible core flows and existing
+      context says mobile goal creation still uses hardcoded local constants. This
+      lands one vertical fix for goal creation parity using backend registry metadata
+      without bundling unrelated native work.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 180
+    points: 5
+  - title: D086 add proof media upload transport for native clients
+    scope: backend
+    chain_kind: tdd
+    rationale: 'WHY before camera UI: native capture is useless if backend/frontend
+      transport still assumes JSON-only proof submission. This slice should add the
+      minimum server/client contract needed for media-backed proof uploads, preserving
+      current JSON behavior where possible.'
+    estimated_new_files: 2
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 190
+    points: 8
+  - title: D086 add native camera and library proof capture UI
+    scope: frontend
+    chain_kind: tdd
+    rationale: 'WHY separate from transport: camera permission handling, picker fallback,
+      and platform UI are distinct from upload plumbing. This slice lands native-compatible
+      proof capture behind platform-aware code without breaking web file-input behavior.'
+    estimated_new_files: 3
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 190
+    points: 8
+  - title: D086 add make mobile-e2e and Maestro smoke plumbing
+    scope: infra
+    chain_kind: tdd
+    rationale: 'WHY small first harness: direction explicitly says the Maestro harness
+      should land plumbing with one flow first. This should reuse `scripts/smoke_journey.py`
+      backend-boot semantics, launch Android emulator target app flow, and exit non-zero
+      on failure.'
+    estimated_new_files: 3
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 180
+    points: 5
+  - title: D086 extend Maestro flow to full core native journey
+    scope: test
+    chain_kind: tdd
+    rationale: 'WHY after plumbing and native fixes: once config, creation, and proof
+      paths exist, expand the checked-in Maestro flow from smoke to register/login/create/activate/submit-proof.
+      This preserves the direction''s requested sequencing.'
+    estimated_new_files: 2
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 190
+    points: 8
+  - title: D086 add make mobile-serve and mobile-serve-status wrappers
+    scope: infra
+    chain_kind: tdd
+    rationale: 'WHY separate from docs/diagnostics: serving Expo Go over tunnel is
+      operational plumbing. This slice should start `expo start --tunnel` non-interactively,
+      persist connection details to `logs/expo-go-connection.txt`, and report health/status.'
+    estimated_new_files: 2
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 170
+    points: 5
+  - title: D086 add dev-only mobile diagnostics screen
+    scope: frontend
+    chain_kind: tdd
+    rationale: 'WHY its own slice: diagnostics is an operator-facing end-to-end validation
+      aid, not just polish. It should display resolved API URL, `/api/health` status,
+      platform/OS, and app version in dev builds only.'
+    estimated_new_files: 2
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 150
+    points: 3
+  - title: D086 document iPhone Expo Go operator runbook
+    scope: docs
+    chain_kind: docs
+    rationale: 'WHY docs-only: AC7 is pure documentation under `context/`. Keep the
+      runbook separate so the chain can route it through the docs pipeline and avoid
+      mixing it with code changes.'
+    estimated_new_files: 1
+    estimated_modified_files: 0
+    estimated_sandbox_iterations: 80
+    points: 2
+  - title: D086 verify full mobile journey against public tunnel URL
+    scope: test
+    chain_kind: tdd
+    rationale: 'WHY final proof slice: localhost success does not prove iPhone-path
+      success. This story should pin the harness to the public tunnel URL and make
+      the emulator pass the full journey through the same external path Expo Go on
+      iPhone will use.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 170
+    points: 5
+  labels:
+  - feature
+  - priority/p1
+  - mobile
+  - expo
+  - native-parity
+  - maestro
+  confidence: 0.92
+tracker_issue: 208

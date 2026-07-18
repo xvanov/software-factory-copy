@@ -106,6 +106,33 @@ audit:
     - api_spec
     - explore_tag_or_artifacts
     - acceptance_criteria
+- ts: '2026-06-11T15:18:58.101358+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+    - acceptance_criteria
+- ts: '2026-07-07T04:52:27.964520+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+    - acceptance_criteria
+- ts: '2026-07-17T23:57:04.657632+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+    - acceptance_criteria
 pm_result:
   type: feature
   priority: p2

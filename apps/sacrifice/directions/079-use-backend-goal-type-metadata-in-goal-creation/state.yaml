@@ -1,0 +1,88 @@
+status: pm-validated
+source: scheduled-ux_auditor
+created_at: '2026-07-17T23:12:10.827183+00:00'
+audit:
+- ts: '2026-07-17T23:12:10.827187+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-ux_auditor
+- ts: '2026-07-17T23:12:33.469069+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.94
+pm_result:
+  type: ux
+  priority: p2
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D079 use backend goal-type metadata in goal creation
+  tracker_body: '## Summary
+
+    D079 asks to remove the frontend dead-end caused by hardcoded goal-type options
+    and instead drive goal creation from backend metadata exposed at `/api/goal-types`.
+
+
+    ## Why / PM triage
+
+    - WHY does this matter? Because the backend already knows the canonical set of
+    supported goal types, but the mobile creation flow ignores that source of truth.
+
+    - WHY is that harmful? Because a backend-registered type can be valid yet remain
+    impossible for a user to select.
+
+    - WHY now? Because the registry seam already exists in the backend; the user-facing
+    gap is specifically the creation picker.
+
+
+    ## Acceptance criteria from direction
+
+    - Goal creation fetches and renders options from `/api/goal-types` instead of
+    local constants.
+
+    - A backend-registered goal type appears in the picker without changing frontend
+    source lists.
+
+
+    ## Notes for implementation
+
+    - Current context says `/api/goal-types` already exists and returns `name`, `description`,
+    `sample_prompts`, and `criteria_schema`.
+
+    - This direction is frontend-facing UX work, but the change should preserve existing
+    goal creation behavior for the four built-in types while switching the picker
+    to backend-provided metadata.
+
+    - Keep slices small: first add API consumption and rendering, then prove dynamic
+    behavior through a focused test slice if needed.
+
+    '
+  child_stories:
+  - title: D079 fetch /api/goal-types for GoalCreateScreen picker
+    scope: frontend
+    chain_kind: tdd
+    rationale: 'First vertical slice: replace hardcoded picker source with data loaded
+      from the existing backend endpoint so users can see backend-supported goal types
+      in the create flow. WHY first? Because without live metadata wiring, nothing
+      else matters.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 140
+    points: 3
+  - title: D079 prove dynamic goal-type picker updates from backend metadata
+    scope: test
+    chain_kind: tdd
+    rationale: 'Second slice: add or extend focused frontend test coverage showing
+      the picker renders a backend-returned goal type that is not present in local
+      source constants. WHY separate? Because executable proof of the contract is
+      the user-value lock and stays within size limits as its own PR.'
+    estimated_new_files: 1
+    estimated_modified_files: 1
+    estimated_sandbox_iterations: 110
+    points: 2
+  labels:
+  - ux
+  - priority/p2
+  confidence: 0.94
+tracker_issue: 186

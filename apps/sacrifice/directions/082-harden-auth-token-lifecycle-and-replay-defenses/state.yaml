@@ -1,0 +1,118 @@
+status: pm-validated
+source: scheduled-security
+created_at: '2026-07-17T23:12:26.661625+00:00'
+audit:
+- ts: '2026-07-17T23:12:26.661628+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-security
+- ts: '2026-07-17T23:13:12.513084+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.88
+pm_result:
+  type: security
+  priority: p2
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D082 harden auth token lifecycle and replay defenses
+  tracker_body: '## Summary
+
+    Harden bearer-token handling so compromised auth material is less useful for account
+    impersonation and pledge abuse.
+
+
+    ## WHY this matters
+
+    - WHY now: bearer compromise directly enables account takeover on protected goal
+    and pledge flows.
+
+    - WHY this direction is actionable: `explore: true` provides enough backpressure
+    even though no `flow.md` or `api_spec.md` was attached.
+
+    - WHY this should split: token policy, claim enforcement, and refresh replay defense
+    are separable slices that can land independently and reduce risk incrementally.
+
+
+    ## Acceptance criteria from direction
+
+    - [ ] Access and refresh token policy documented and enforced in backend auth
+    middleware
+
+    - [ ] Refresh token rotation with revocation implemented and tested for replay
+    attempts
+
+    - [ ] Protected endpoints reject tokens with invalid issuer/audience/expiry
+
+
+    ## PM triage notes
+
+    - Type: security
+
+    - Priority: p2
+
+    - Backpressure: sufficient via `explore: true`
+
+    - Key product question answered by this work: how do we make stolen tokens expire
+    quickly, fail claim checks, and become unusable after refresh replay?
+
+    - Likely implementation center of gravity is backend auth issuance/validation
+    plus tests; no frontend dependency is required to realize user value.
+
+
+    ## Proposed execution shape
+
+    Sequence the work as: policy/documentation baseline first, then claim enforcement
+    on protected routes, then refresh rotation + revocation/replay tests. That ordering
+    gives downstream devs a stable contract before touching refresh-state behavior.'
+  child_stories:
+  - title: D082 document access/refresh token policy in canonical auth docs
+    scope: docs
+    chain_kind: docs
+    rationale: 'WHY first: the direction explicitly requires policy to be documented,
+      and dev needs a crisp contract for token lifetime, intended claims, and refresh
+      behavior before code hardening lands. Keep this docs-only so the contract can
+      be reviewed independently.'
+    estimated_new_files: 0
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 70
+    points: 2
+  - title: D082 enforce issuer audience and expiry in auth middleware
+    scope: backend
+    chain_kind: tdd
+    rationale: 'WHY separate: protected-endpoint rejection for invalid issuer/audience/expiry
+      is an end-to-end security slice on its own and should land before refresh rotation
+      complexity. This should modify auth validation and add focused tests for claim
+      failures.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 150
+    points: 5
+  - title: D082 add refresh token rotation on successful refresh
+    scope: backend
+    chain_kind: tdd
+    rationale: 'WHY not bundle with replay detection: rotation mechanics are one slice;
+      replay/revocation rules are another. First make refresh issue a new token and
+      invalidate the old one through the chosen persistence path, with happy-path
+      coverage.'
+    estimated_new_files: 2
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 180
+    points: 5
+  - title: D082 reject replayed or revoked refresh tokens with tests
+    scope: backend
+    chain_kind: tdd
+    rationale: 'WHY this is its own PR: replay defense is the real abuse case and
+      needs explicit adversarial tests after rotation exists. This slice should prove
+      that reusing an old refresh token fails and does not mint fresh bearer material.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 170
+    points: 5
+  labels:
+  - security
+  - priority/p2
+  confidence: 0.88
+tracker_issue: 195

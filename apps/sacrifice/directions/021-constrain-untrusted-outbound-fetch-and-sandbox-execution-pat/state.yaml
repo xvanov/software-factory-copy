@@ -1,4 +1,4 @@
-status: created
+status: needs-direction
 source: scheduled-security
 created_at: '2026-06-01T01:07:53.861094+00:00'
 audit:
@@ -7,3 +7,50 @@ audit:
   event: created
   details:
     source: scheduled-security
+- ts: '2026-06-11T15:19:34.608116+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+- ts: '2026-07-07T04:53:02.166027+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+- ts: '2026-07-17T23:57:39.755573+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+tracker_issue: 101
+pm_result:
+  type: security
+  priority: p2
+  has_sufficient_backpressure: false
+  missing:
+  - user_flow
+  - api_spec
+  - explore_tag_or_artifacts
+  tracker_title: '[DIRECTION] Constrain untrusted outbound fetch and sandbox executi...'
+  tracker_body: '**Constrain untrusted outbound fetch and sandbox execution paths**
+
+
+    _(needs more backpressure: user_flow, api_spec, explore_tag_or_artifacts)_
+
+    '
+  child_stories: []
+  labels:
+  - security
+  - priority/p2
+  - needs-direction
+  confidence: 0.4
+validation_issues: []

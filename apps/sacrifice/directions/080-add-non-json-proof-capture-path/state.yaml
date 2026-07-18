@@ -1,0 +1,108 @@
+status: pm-validated
+source: scheduled-ux_auditor
+created_at: '2026-07-17T23:12:10.830468+00:00'
+audit:
+- ts: '2026-07-17T23:12:10.830471+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-ux_auditor
+- ts: '2026-07-17T23:12:45.575161+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.87
+pm_result:
+  type: ux
+  priority: p2
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D080 add-non-json-proof-capture-path
+  tracker_body: '## Summary
+
+    Add at least one non-JSON proof submission path so users can submit evidence in
+    a format that matches real-world proof capture instead of hand-authoring JSON.
+
+
+    ## Why
+
+    - Current proof submission is JSON-only.
+
+    - Users commonly have evidence as photos or files, not structured text payloads.
+
+    - The direction explicitly asks for one non-JSON input method accepted end-to-end
+    by client and backend.
+
+
+    ## What matters
+
+    - WHY this exists: reduce friction in proof submission for evidence formats users
+    already have.
+
+    - WHY this should be small first: acceptance criteria only require at least one
+    non-JSON method, not every possible media workflow.
+
+    - WHY camera may be riskier than picker: current Expo config has no camera/upload
+    path enabled; file/image selection is likely the smallest viable slice.
+
+
+    ## Acceptance criteria from direction
+
+    - The proof flow offers at least one non-JSON evidence input method such as camera
+    capture or file upload.
+
+    - Submitted non-JSON proof is accepted end-to-end by the client and backend.
+
+
+    ## PM decomposition notes
+
+    - Start with backend multipart/file acceptance so the system can actually receive
+    non-JSON proof.
+
+    - Then expose one client capture path that uses that backend contract.
+
+    - Keep docs separate.
+
+    - Do not bundle multiple acquisition methods in one story; one working non-JSON
+    path satisfies the direction.
+
+    '
+  child_stories:
+  - title: D080 accept multipart proof upload on submit-proof endpoint
+    scope: backend
+    chain_kind: tdd
+    rationale: WHY first? Without backend acceptance, every client proof capture path
+      is dead on arrival. This slice should add one server-side non-JSON ingestion
+      path, ideally multipart with an uploaded file plus any minimal metadata, while
+      preserving existing JSON proof behavior.
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 170
+    points: 5
+  - title: D080 add mobile proof picker flow for non-JSON submission
+    scope: frontend
+    chain_kind: tdd
+    rationale: WHY this slice? The user-visible value is the ability to choose or
+      capture non-JSON evidence in the proof flow. Keep it to one acquisition method
+      that is smallest viable for Expo managed config, likely file/image picking rather
+      than full camera integration. Depends on backend multipart acceptance landing
+      first.
+    estimated_new_files: 2
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 180
+    points: 5
+  - title: D080 document non-JSON proof submission path in context
+    scope: docs
+    chain_kind: docs
+    rationale: WHY docs separately? The repo's canonical context should reflect the
+      new proof modality and any constraints around supported evidence types. This
+      should land after the implementation shape is real.
+    estimated_new_files: 0
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 60
+    points: 2
+  labels:
+  - ux
+  - priority/p2
+  confidence: 0.87
+tracker_issue: 189

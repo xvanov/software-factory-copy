@@ -1,0 +1,145 @@
+status: pm-validated
+source: scheduled-security
+created_at: '2026-07-17T23:12:26.671247+00:00'
+audit:
+- ts: '2026-07-17T23:12:26.671250+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-security
+- ts: '2026-07-17T23:13:51.478331+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.84
+pm_result:
+  type: security
+  priority: p2
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D085 strengthen secret governance and log redaction
+  tracker_body: '## Summary
+
+    D085 strengthens integration secret handling and log safety across Sacrifice.
+
+
+    ## Why
+
+    Leaked integration credentials can enable payment abuse and compromise external
+    provider accounts.
+
+
+    ## What the direction actually asks for
+
+    - Remove or block unapproved secret-loading paths, especially defaults or hardcoded
+    fallbacks.
+
+    - Ensure application logs redact tokens/keys, with executable tests proving redaction.
+
+    - Add documented credential rotation and scope policy for Stripe, OAuth, and provider
+    integrations.
+
+
+    ## WHY / product-risk framing
+
+    - WHY now: the app integrates with Stripe, OAuth providers, YouTube, GitHub, Redis,
+    Postgres, and Azure Foundry; weak secret governance multiplies blast radius.
+
+    - WHY this decomposition: secret source enforcement, log redaction, and operator
+    policy are separable deliverables that can land safely in sequence.
+
+    - WHY not one big security story: config hardening + logging behavior + docs would
+    exceed a single dev-sized pass and stall the chain.
+
+
+    ## Notes from current state
+
+    - Backend settings live in `backend/app/config.py`.
+
+    - Existing integrations include Google OAuth, GitHub OAuth, YouTube, Stripe, Redis,
+    PostgreSQL, and Azure Foundry.
+
+    - Acceptance criteria are testable enough to spawn small slices because the direction
+    is marked `explore: true` and includes explicit outcomes.
+
+
+    ## Acceptance criteria from direction
+
+    - Secrets are loaded from approved secure sources only, not defaults/hardcoded
+    fallbacks.
+
+    - Application logs redact tokens/keys and tests assert redaction behavior.
+
+    - Documented rotation and scope policy exists for Stripe/OAuth/provider credentials.
+
+
+    ## Proposed execution order
+
+    1. Establish approved-secret-source guardrails in backend config.
+
+    2. Add log redaction behavior and tests.
+
+    3. Document rotation and least-scope policy for credentials.
+
+
+    ## Risk / open questions to validate during implementation
+
+    - Which current config fields still have insecure defaults or fallbacks in `backend/app/config.py`?
+
+    - Which logger paths can emit headers, bearer tokens, API keys, or DSNs today?
+
+    - Which canonical doc path should hold the operator-facing credential governance
+    policy?'
+  child_stories:
+  - title: D085 enforce approved secret sources in backend settings
+    scope: backend
+    chain_kind: tdd
+    rationale: 'Vertical slice for the first acceptance criterion. WHY first: until
+      config loading rejects hardcoded/default secret fallbacks, the app can still
+      boot insecurely. Keep this to backend settings and one focused test file so
+      it lands as a small security hardening PR before any logging changes.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 170
+    points: 5
+  - title: D085 add token and key redaction to application logging
+    scope: backend
+    chain_kind: tdd
+    rationale: 'Vertical slice for runtime log safety. WHY separate: redaction logic
+      and logger wiring are independently shippable and should not be bundled with
+      config governance. This story should implement redaction at the logging boundary
+      and preserve application behavior while preventing sensitive values from appearing
+      in logs.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 180
+    points: 5
+  - title: D085 add tests asserting secret redaction behavior
+    scope: test
+    chain_kind: tdd
+    rationale: 'The direction explicitly requires tests to assert redaction behavior.
+      WHY isolate this: logging tests often need targeted fixtures/capture setup and
+      are easier to review when not mixed with implementation churn. Sequence after
+      the redaction hook lands so the tests validate observable masked output and
+      regression cases.'
+    estimated_new_files: 1
+    estimated_modified_files: 1
+    estimated_sandbox_iterations: 130
+    points: 3
+  - title: D085 document credential rotation and scope policy
+    scope: docs
+    chain_kind: docs
+    rationale: 'Vertical docs-only slice for the final acceptance criterion. WHY separate:
+      policy content belongs in canonical documentation, not bundled with code changes.
+      The document should cover rotation expectations and minimum scope guidance for
+      Stripe, OAuth, and other provider credentials without requiring executable code
+      changes.'
+    estimated_new_files: 1
+    estimated_modified_files: 1
+    estimated_sandbox_iterations: 90
+    points: 2
+  labels:
+  - security
+  - priority/p2
+  confidence: 0.84
+tracker_issue: 204

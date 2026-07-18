@@ -1,0 +1,107 @@
+status: pm-validated
+source: scheduled-security
+created_at: '2026-07-17T23:12:26.664955+00:00'
+audit:
+- ts: '2026-07-17T23:12:26.664957+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-security
+- ts: '2026-07-17T23:13:24.569750+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.9
+pm_result:
+  type: security
+  priority: p2
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D083 enforce strict proof schema/state validation
+  tracker_body: '## Summary
+
+    Direction D083 aims to close an abuse path in proof submission by enforcing strict
+    goal-type proof validation and rejecting illegal proof/status transitions before
+    they can affect pledge outcomes.
+
+
+    ## Why
+
+    Weak proof validation can be abused to avoid legitimate pledge charging and undermines
+    platform trust.
+
+
+    ## Acceptance Criteria
+
+    - [ ] Server validates proof payload against goal-type-specific schema before
+    persistence
+
+    - [ ] Illegal proof/status transitions are rejected with test coverage
+
+    - [ ] Audit events capture rejected and accepted proof validation outcomes
+
+
+    ## PM triage
+
+    - WHY now: proof submission is currently JSON-only and the backend accepts a flat
+    proof model while goal types already expose metadata; that is a trust boundary
+    and therefore a security surface.
+
+    - WHY backend-first: every listed acceptance criterion is server-side and observable
+    via API behavior or audit persistence.
+
+    - WHY split: schema enforcement, transition guards, and audit logging are separable
+    vertical slices; bundling them would likely touch too many files and increase
+    retry risk.
+
+    - WHY no frontend story: the direction does not ask for client UX changes, and
+    server-side enforcement should land independently.
+
+
+    ## Notes for downstream
+
+    - Reuse existing goal-type registry/discovery where possible rather than introducing
+    a parallel proof-validation mechanism.
+
+    - Keep transitions explicit and testable; avoid vibes-based "invalid state" handling.
+
+    - Audit logging must cover both accept and reject outcomes, not only failures.'
+  child_stories:
+  - title: D083 add goal-type proof schema validation on submission
+    scope: backend
+    chain_kind: tdd
+    rationale: 'First vertical slice for AC1. WHY first: if proof payload is not validated
+      before persistence, every later state/audit rule operates on bad data. Implement
+      backend submission-path validation using the existing goal-type metadata/registry
+      seam and add focused tests for valid vs invalid payloads.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 170
+    points: 5
+  - title: D083 reject illegal proof/status transitions in goal lifecycle
+    scope: backend
+    chain_kind: tdd
+    rationale: 'Second slice for AC2. WHY separate: transition legality is a distinct
+      policy layer from payload shape. Add explicit guardrails for illegal proof/status
+      changes with API-level test coverage so downstream charging logic cannot be
+      bypassed through invalid state progression.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 180
+    points: 5
+  - title: D083 audit accepted and rejected proof validation outcomes
+    scope: backend
+    chain_kind: tdd
+    rationale: 'Final slice for AC3. WHY after validation/transition rules: audit
+      events are only meaningful once accept/reject branches are deterministic. Add
+      audit event emission/persistence for both successful validation and rejected
+      attempts, with tests proving both paths are recorded.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 160
+    points: 3
+  labels:
+  - security
+  - priority/p2
+  confidence: 0.9
+tracker_issue: 198

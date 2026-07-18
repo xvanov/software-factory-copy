@@ -1,0 +1,56 @@
+status: needs-direction
+source: scheduled-security
+created_at: '2026-07-06T09:02:04.093797+00:00'
+audit:
+- ts: '2026-07-06T09:02:04.093800+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-security
+- ts: '2026-07-07T04:23:09.190647+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+- ts: '2026-07-07T04:53:55.234028+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+- ts: '2026-07-17T23:58:32.802292+00:00'
+  by: factory.chain.pm_sync
+  event: status -> needs-direction
+  details:
+    missing:
+    - user_flow
+    - api_spec
+    - explore_tag_or_artifacts
+tracker_issue: 179
+pm_result:
+  type: security
+  priority: p2
+  has_sufficient_backpressure: false
+  missing:
+  - user_flow
+  - api_spec
+  - explore_tag_or_artifacts
+  tracker_title: '[DIRECTION] Add abuse controls around proof and verification endpo...'
+  tracker_body: '**Add abuse controls around proof and verification endpoints**
+
+
+    _(needs more backpressure: user_flow, api_spec, explore_tag_or_artifacts)_
+
+    '
+  child_stories: []
+  labels:
+  - security
+  - priority/p2
+  - needs-direction
+  confidence: 0.4
+validation_issues: []

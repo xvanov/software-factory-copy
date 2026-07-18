@@ -1,0 +1,111 @@
+status: pm-validated
+source: scheduled-security
+created_at: '2026-07-17T23:12:26.668089+00:00'
+audit:
+- ts: '2026-07-17T23:12:26.668092+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-security
+- ts: '2026-07-17T23:13:37.089651+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.87
+pm_result:
+  type: security
+  priority: p2
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D084 lock down goal-type module discovery and loading
+  tracker_body: '## Summary
+
+    Lock down backend goal-type discovery so the registry only loads allowlisted modules
+    from trusted paths, startup hard-fails on integrity or interface validation failures,
+    and security logging captures both module load decisions and verifier exceptions.
+
+
+    ## Why / PM backpressure check
+
+    - WHY now: current project context says goal-type discovery already auto-discovers
+    packages from the filesystem. That is the attack surface this direction is targeting.
+
+    - WHY this scope: the acceptance criteria are backend-runtime security controls,
+    not frontend UX.
+
+    - WHY split: registry hardening, startup fail-fast behavior, and logging/verifier
+    observability are related but distinct vertical slices. Bundling them risks one
+    oversized backend story.
+
+
+    ## Acceptance Criteria from direction
+
+    - [ ] Goal-type registry only loads allowlisted modules from trusted paths
+
+    - [ ] Startup fails if module integrity checks or interface validation fail
+
+    - [ ] Security logging records module load decisions and verifier exceptions
+
+
+    ## Notes for implementation sequencing
+
+    1. Land trusted discovery policy first so there is a clear contract for what is
+    eligible to load.
+
+    2. Then add fail-fast startup validation so bad modules block boot rather than
+    failing later during request handling.
+
+    3. Then add security logging around both discovery decisions and verifier exception
+    paths for operational visibility.
+
+
+    ## Risks / open questions
+
+    - The direction does not specify the exact allowlist source of truth or integrity
+    mechanism. Dev should implement the smallest repo-local policy that satisfies
+    the criteria without inventing broader product behavior.
+
+    - Logging should be security-relevant and structured enough for operators, but
+    must avoid leaking sensitive proof payloads.
+
+    '
+  child_stories:
+  - title: D084 trusted-path and allowlist gating for goal-type discovery
+    scope: backend
+    chain_kind: tdd
+    rationale: 'WHY first: this is the core trust boundary. Add a minimal registry
+      policy that loads only approved goal-type modules from trusted filesystem locations,
+      with tests proving disallowed modules are skipped or rejected. This establishes
+      the security contract subsequent startup validation can enforce.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 150
+    points: 5
+  - title: D084 fail startup on goal-type integrity or interface errors
+    scope: backend
+    chain_kind: tdd
+    rationale: 'WHY separate: fail-fast boot behavior is a distinct runtime outcome
+      from discovery policy. Wire application startup so integrity-check failures
+      or invalid goal-type interfaces stop startup deterministically, with focused
+      tests. Depends on the trusted discovery contract landing first.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 160
+    points: 5
+  - title: D084 security logging for module load decisions and verifier errors
+    scope: backend
+    chain_kind: tdd
+    rationale: 'WHY separate: observability is independently shippable once discovery
+      and validation paths exist. Add structured security logging for allow/deny load
+      decisions and verifier exception handling, with tests asserting the log events
+      are emitted without exposing unsafe payload detail. Best landed after the registry
+      paths are stabilized.'
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 140
+    points: 3
+  labels:
+  - security
+  - priority/p2
+  confidence: 0.87
+tracker_issue: 201

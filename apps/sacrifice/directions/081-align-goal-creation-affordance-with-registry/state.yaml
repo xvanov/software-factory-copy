@@ -1,0 +1,122 @@
+status: pm-validated
+source: scheduled-ux_auditor
+created_at: '2026-07-17T23:12:10.833549+00:00'
+audit:
+- ts: '2026-07-17T23:12:10.833552+00:00'
+  by: factory.directions.creator
+  event: created
+  details:
+    source: scheduled-ux_auditor
+- ts: '2026-07-17T23:12:58.860954+00:00'
+  by: factory.chain.pm_sync
+  event: status -> pm-validated
+  details:
+    confidence: 0.88
+pm_result:
+  type: ux
+  priority: p2
+  has_sufficient_backpressure: true
+  missing: []
+  tracker_title: D081 align goal creation affordance with registry
+  tracker_body: '## Summary
+
+    Align the goal creation UX with the backend''s registry-backed goal types so the
+    app stops advertising a stale, hardcoded subset.
+
+
+    ## Why
+
+    The current product affordance lies to the user: the backend already exposes registry-backed
+    goal-type metadata at `/api/goal-types`, but the creation UI still uses hardcoded
+    local constants and fixed unions. WHY does this matter? Because users judge capability
+    from what they can select. If the UI excludes valid registered types, we suppress
+    available actions. If the client/backend schemas still reject those types, creation
+    fails after the user has already committed effort.
+
+
+    ## What the direction requires
+
+    - The selectable goal types shown in the UI must match the registry-backed set
+    accepted by the API.
+
+    - Creating a registered goal type must not fail because the client or backend
+    still carries stale fixed unions.
+
+
+    ## Current-state evidence
+
+    - Backend already exposes `/api/goal-types` metadata.
+
+    - Frontend `GoalCreateScreen` still builds options from hardcoded constants.
+
+    - Goal creation remains fixed to four built-in types in frontend unions, backend
+    schema validation, and DB enums.
+
+
+    ## PM WHY / scope cut
+
+    WHY split this into slices? Because there are two distinct failure modes:
+
+    1. Discovery/affordance mismatch in the UI.
+
+    2. Submission/validation mismatch from stale unions and schema constraints.
+
+
+    A single broad "update frontend and backend" story would be too horizontal and
+    risks stalling. The smallest valuable path is: first consume the registry in the
+    creation surface, then remove stale create-time validation blockers so a registered
+    type can actually be submitted.
+
+
+    ## Acceptance criteria from direction
+
+    - [ ] The set of selectable goal types in the UI matches the registry-backed set
+    accepted by the API.
+
+    - [ ] Attempting to create a registered goal type does not fail because of stale
+    client or schema unions.
+
+    '
+  child_stories:
+  - title: D081 load GoalCreate options from /api/goal-types registry
+    scope: frontend
+    chain_kind: tdd
+    rationale: Vertical slice 1. WHY first? Because the user-visible bug is the stale
+      affordance. This story should replace hardcoded goal-type options in the goal
+      creation screen with data fetched from the existing registry-backed endpoint,
+      preserving a working selection flow for currently supported types. It should
+      not try to solve every submission-path validator in the same PR.
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 150
+    points: 3
+  - title: D081 remove stale frontend create-goal type unions
+    scope: frontend
+    chain_kind: tdd
+    rationale: Vertical slice 2. WHY separate from option loading? Because showing
+      registry data is not enough if the app still blocks submission through fixed
+      TypeScript/form unions. This slice updates the client-side goal creation payload
+      typing and form handling so any registry-returned type can be submitted instead
+      of being rejected by stale hardcoded unions.
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 170
+    points: 5
+  - title: D081 relax backend create-goal schema beyond fixed goal enums
+    scope: backend
+    chain_kind: tdd
+    rationale: Vertical slice 3. WHY needed after frontend work? Because the direction
+      explicitly says creation must not fail due to stale schema unions. Current-state
+      context says backend schema validation and model constraints are still fixed
+      around four built-in goal types. This slice should make create-goal request
+      validation accept the registry-backed set rather than a stale fixed union, without
+      bundling unrelated proof or registry refactors.
+    estimated_new_files: 1
+    estimated_modified_files: 2
+    estimated_sandbox_iterations: 190
+    points: 5
+  labels:
+  - ux
+  - priority/p2
+  confidence: 0.88
+tracker_issue: 192
