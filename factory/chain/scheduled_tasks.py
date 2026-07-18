@@ -254,19 +254,87 @@ def _normalize_title(title: str) -> str:
     return " ".join(title.lower().split())
 
 
-def _has_open_duplicate_direction(
-    app: str, title: str, software_factory_root: Path
-) -> bool:
-    """True if a non-terminal direction with the same normalized title exists.
+# Stopgap semantic dedup (audit 2026-07-18, leak 3 of 4): scheduler personas
+# invent a fresh title every run for the SAME underlying finding ("Add CSRF
+# protections to cookie-auth API routes" vs "...API flows"), so the
+# exact-title check in ``_has_open_duplicate_direction`` lets duplicates
+# through (CSRF filed as 2 directions, SSRF as 2, OAuth as 4, observed
+# live). Rather than touch the persona prompt or add a schema field, extract
+# a small, precise set of stable keywords from the normalized title+body and
+# treat a new finding as a duplicate of an EXISTING NON-TERMINAL direction
+# for the same app + same ``source`` + same ``type`` if they share a
+# keyword. Deliberately narrow — only named, specific terms trigger a
+# match, never generic words — so unrelated findings (e.g. csrf vs a11y)
+# never collapse into each other.
+_DEDUP_KEYWORD_GROUPS: dict[str, tuple[str, ...]] = {
+    "csrf": ("csrf",),
+    "ssrf": ("ssrf",),
+    "oauth": ("oauth",),
+    "xss": ("xss", "cross-site scripting"),
+    "authz": (
+        "authz",
+        "authorization",
+        "object-level authorization",
+        "access control",
+        "object level authorization",
+    ),
+    "rate-limit": ("rate limit", "rate-limit", "rate limiting", "abuse"),
+    "webhook": ("webhook",),
+    "replay": ("replay",),
+    "redaction": ("redact", "secret leak", "secret exposure", "secret sprawl"),
+    "a11y": ("accessib", "a11y"),
+    "proof-schema": ("proof schema", "proof-schema"),
+}
 
-    Scans ``apps/<app>/directions/*/`` reading each direction.md title and
-    state.yaml status directly (cheap, no full parse). Errors on any single
-    directory are ignored so a malformed sibling never blocks filing.
+
+def _extract_dedup_keywords(text: str) -> set[str]:
+    """Extract the small set of stable dedup keywords present in ``text``.
+
+    Case-insensitive substring match against ``_DEDUP_KEYWORD_GROUPS``.
+    Returns the set of canonical keyword ids (e.g. ``{"csrf"}``) whose any
+    trigger phrase appears in ``text``. Empty text or no matches -> empty
+    set, which never dedups anything (precise-by-default).
+    """
+    normalized = text.lower()
+    return {
+        keyword
+        for keyword, triggers in _DEDUP_KEYWORD_GROUPS.items()
+        if any(trigger in normalized for trigger in triggers)
+    }
+
+
+def _has_open_duplicate_direction(
+    app: str,
+    title: str,
+    software_factory_root: Path,
+    *,
+    source: str | None = None,
+    type_tag: str | None = None,
+    body: str = "",
+) -> bool:
+    """True if an existing non-terminal direction is a duplicate of this finding.
+
+    Two independent checks, either of which is sufficient:
+
+      1. Exact match: a non-terminal direction with the same normalized
+         title exists (original guard, app-wide — unchanged behavior when
+         ``source``/``type_tag`` are omitted).
+      2. Semantic (stopgap): when ``source`` and ``type_tag`` are both
+         given, a non-terminal direction for the same app + same
+         ``source`` + same ``type`` whose title+body shares a dominant
+         dedup keyword (see ``_DEDUP_KEYWORD_GROUPS``) with this finding's
+         title+body.
+
+    Scans ``apps/<app>/directions/*/`` reading each direction.md
+    title/body and state.yaml status/source directly (cheap, no full
+    parse). Errors on any single directory are ignored so a malformed
+    sibling never blocks filing.
     """
     import frontmatter as _frontmatter
     import yaml as _yaml
 
     target = _normalize_title(title)
+    target_keywords = _extract_dedup_keywords(f"{title}\n{body}")
     directions_dir = Path(software_factory_root) / "apps" / app / "directions"
     if not directions_dir.is_dir():
         return False
@@ -275,21 +343,34 @@ def _has_open_duplicate_direction(
         if not md.is_file():
             continue
         try:
-            existing_title = str(
-                (_frontmatter.load(str(md)).metadata or {}).get("title") or ""
-            )
-            if _normalize_title(existing_title) != target:
-                continue
+            post = _frontmatter.load(str(md))
+            metadata = post.metadata or {}
+            existing_title = str(metadata.get("title") or "")
+
             state_path = d / "state.yaml"
             status = "created"
+            existing_source: Any = None
             if state_path.is_file():
-                status = str(
-                    (_yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}).get(
-                        "status", "created"
-                    )
-                )
-            if status not in _TERMINAL_DIRECTION_STATUSES:
+                state = _yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}
+                status = str(state.get("status", "created"))
+                existing_source = state.get("source")
+            if status in _TERMINAL_DIRECTION_STATUSES:
+                continue
+
+            if _normalize_title(existing_title) == target:
                 return True
+
+            if (
+                target_keywords
+                and source is not None
+                and type_tag is not None
+                and existing_source == source
+                and str(metadata.get("type") or "") == type_tag
+            ):
+                existing_body = str(getattr(post, "content", "") or "")
+                existing_keywords = _extract_dedup_keywords(f"{existing_title}\n{existing_body}")
+                if target_keywords & existing_keywords:
+                    return True
         except Exception:
             continue
     return False
@@ -330,8 +411,18 @@ def _file_finding_as_direction(
     # new near-identical direction every run (observed 2026-07-06: ~38 duplicate
     # "resolve conflicted navigation context" directions). If a non-terminal
     # direction with the same normalized title already exists for this app,
-    # skip filing another. (Real runs only — dry-run writes to a scratch tree.)
-    if not dry_run and _has_open_duplicate_direction(app, title, software_factory_root):
+    # skip filing another. Also catches the same finding re-titled slightly
+    # differently each run (e.g. "...API routes" vs "...API flows") via the
+    # keyword-based semantic check — see ``_has_open_duplicate_direction``.
+    # (Real runs only — dry-run writes to a scratch tree.)
+    if not dry_run and _has_open_duplicate_direction(
+        app,
+        title,
+        software_factory_root,
+        source=f"scheduled-{persona}",
+        type_tag=type_tag,
+        body=why,
+    ):
         return None
     target_root = software_factory_root
     if dry_run:
