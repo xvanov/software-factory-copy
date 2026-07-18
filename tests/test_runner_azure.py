@@ -186,15 +186,14 @@ def test_ensure_bootstrapped_enables_litellm_drop_params() -> None:
 
 def test_ensure_bootstrapped_registers_deepseek_v4_pro_pricing() -> None:
     """LiteLLM ships without a price for ``azure/deepseek-v4-pro``. We
-    register an ESTIMATED price at bootstrap so sandbox dev / test_implementer
-    runs land non-zero cost in ``runs.cost_usd`` — otherwise the chain's spend
-    caps are useless against the heaviest model.
+    register the Azure retail rate at bootstrap so sandbox dev /
+    test_implementer runs land non-zero cost in ``runs.cost_usd`` — otherwise
+    the chain's spend caps are useless against the heaviest model.
 
     Test asserts:
       * The model id is registered.
       * Both per-token rates are present and > 0.
-      * The metadata carries the ``factory_cost_note`` marker so anyone
-        inspecting the cost map sees the values are estimates.
+      * The metadata carries the ``factory_cost_note`` provenance marker.
     """
     azure_foundry.ensure_bootstrapped()
     import litellm
@@ -203,29 +202,29 @@ def test_ensure_bootstrapped_registers_deepseek_v4_pro_pricing() -> None:
     assert entry is not None, "azure/deepseek-v4-pro is unregistered after bootstrap"
     assert entry["input_cost_per_token"] > 0
     assert entry["output_cost_per_token"] > 0
-    assert "ESTIMATED" in entry.get("factory_cost_note", "").upper(), (
-        "ESTIMATED marker missing — operators must know prices are not exact"
+    assert "azure retail" in entry.get("factory_cost_note", "").lower(), (
+        "provenance marker missing — operators must know where the price came from"
     )
 
 
 def test_deepseek_v4_pro_pricing_estimates_completion_cost() -> None:
     """LiteLLM's ``cost_per_token`` helper applies the registered rates.
 
-    The registered rates are ESTIMATED ($0.50 / $1.50 per 1M tokens); we
-    feed a known token count and assert the resulting cost is exactly
-    what those rates predict. Anchors the registration end-to-end.
+    Rates are the verified Azure retail price ($1.93 / $3.83 per 1M tokens,
+    eastus2, 2026-07-18); we feed a known token count and assert the cost is
+    exactly what those rates predict. Anchors the registration end-to-end.
     """
     azure_foundry.ensure_bootstrapped()
     import litellm
 
-    # 1M prompt + 1M completion → $0.50 input + $1.50 output = $2.00 total.
+    # 1M prompt + 1M completion → $1.93 input + $3.83 output = $5.76 total.
     prompt_cost, completion_cost = litellm.cost_per_token(
         model="azure/deepseek-v4-pro",
         prompt_tokens=1_000_000,
         completion_tokens=1_000_000,
     )
-    assert prompt_cost == pytest.approx(0.50, rel=1e-6)
-    assert completion_cost == pytest.approx(1.50, rel=1e-6)
+    assert prompt_cost == pytest.approx(1.93, rel=1e-6)
+    assert completion_cost == pytest.approx(3.83, rel=1e-6)
 
 
 # --------------------------------------------------------------------------- #

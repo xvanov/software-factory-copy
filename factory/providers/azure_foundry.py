@@ -116,14 +116,19 @@ def _enable_litellm_drop_params() -> None:
 # even though the model burns 700K+ tokens per call. Without a price, the
 # chain's spend caps are useless against the heaviest model.
 #
-# These rates are an estimate anchored on DeepSeek-V3 list pricing
-# (~$0.27 / $1.10 per 1M) with a typical Azure deployment markup applied.
-# UPDATE from real Azure billing data when available — search for this
-# constant and bump it. The registered metadata also tags the entry with
-# ``factory_cost_note`` so anyone inspecting ``litellm.model_cost`` sees the
-# caveat directly.
-_DEEPSEEK_V4_PRO_INPUT_PER_TOKEN = 0.0000005  # $0.50 per 1M (ESTIMATED)
-_DEEPSEEK_V4_PRO_OUTPUT_PER_TOKEN = 0.0000015  # $1.50 per 1M (ESTIMATED)
+# Verified 2026-07-18 against the Azure retail price API (eastus2, the
+# ``FW DeepSeek-V4-Pro`` meters — the only published tier; our deployment is
+# GlobalStandard, whose rate matches or slightly undercuts Data Zone):
+#   input   $0.00193 / 1K = $1.93 / 1M
+#   output  $0.00383 / 1K = $3.83 / 1M
+# The prior estimate ($0.50 / $1.50 per 1M) UNDER-counted dev spend ~3.8x on
+# input and ~2.5x on output — dev/test_implementer bulk runs on this model,
+# so historical ``runs.cost_usd`` for those rows reads low by roughly that
+# much. (Cost Management actuals would be the final word but this account
+# lacks the RBAC role for the billing API; retail list price is the
+# authoritative published rate.)
+_DEEPSEEK_V4_PRO_INPUT_PER_TOKEN = 0.00000193  # $1.93 per 1M (Azure retail, eastus2)
+_DEEPSEEK_V4_PRO_OUTPUT_PER_TOKEN = 0.00000383  # $3.83 per 1M (Azure retail, eastus2)
 
 
 def _register_litellm_pricing() -> None:
@@ -148,7 +153,7 @@ def _register_litellm_pricing() -> None:
                     "litellm_provider": "azure",
                     "mode": "chat",
                     # Marker so anyone inspecting the cost map sees the caveat.
-                    "factory_cost_note": "ESTIMATED — verify against Azure billing",
+                    "factory_cost_note": "Azure retail eastus2 2026-07-18 ($1.93/$3.83 per 1M)",
                 },
             }
         )
