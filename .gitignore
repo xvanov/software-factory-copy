@@ -30,3 +30,16 @@ state/worktrees/
 # FMS Phase-1 structured event streams (append-only NDJSON). Runtime-only;
 # read via ``factory manager signals dump``. Do NOT commit .ndjson files.
 state/events/
+# FMS runtime telemetry — concern documents (L2) and diagnosis proposals
+# (L3). Append-only runtime artifacts; the durable record is the PRs/issues
+# they produce. Read via ``factory manager ...`` CLI, never from git.
+state/concerns/
+state/manager_proposals/
+# Post-merge context-refresh scratch worktrees.
+state/context-refresh/
+# Halt/apply audit trails — runtime bookkeeping mutated by every
+# halt/resume/apply cycle; ``factory resume`` archives into them.
+state/.halt_history.json
+state/.manager_apply_history.json
+state/.improver_backoff.json
+state/*.log
