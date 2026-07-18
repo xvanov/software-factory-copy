@@ -1,141 +1,105 @@
-# software-factory
+# 🏭 software-factory
 
-Phase 0 foundation: runner, model router, dev persona, canonical context loader.
+**An autonomous software factory: an LLM persona pipeline that turns high-level product directions into reviewed, tested, merged pull requests — unattended, on cheap open-weight models.**
 
-This is the orchestrator. The OpenHands SDK is the execution substrate (consumed as a pip dep), BMAD personas are the prompt sources (substance ported, interactive chrome stripped).
+![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![Tests](https://github.com/xvanov/software-factory/actions/workflows/test.yml/badge.svg)
+![Test count](https://img.shields.io/badge/tests-1086%20passing-brightgreen)
+![Ruff](https://img.shields.io/badge/lint-ruff-D7FF64?logo=ruff&logoColor=black)
+![Typed](https://img.shields.io/badge/types-mypy-blue)
+
+The thesis: **harness quality beats model size.** A well-instrumented pipeline of small, verifiable steps — each gated by real tests and a live runtime smoke check — ships production code on models ~10× cheaper than frontier subscriptions. In a head-to-head benchmark against one-shot Claude Code on the same backlog, the factory passed the merge gates on **7/7 tasks at $0.65/task** vs 5/7 at $8.19 ([full campaign report](bench/CAMPAIGN-2026-07-17.md)).
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    D[Direction<br/>product intent] --> PM[PM<br/>triage + split]
+    PM --> SM[SM<br/>story files]
+    SM --> DEV[Dev sandbox<br/>code + tests<br/>run-until-green]
+    DEV --> REV[Reviewer<br/>different model<br/>proposes concrete edits]
+    REV -->|request changes| DEV
+    REV -->|approve| GATES[Merge gates<br/>full pytest + live smoke]
+    GATES --> PR[PR opened<br/>auto-merged]
+    PR --> TW[Tech-writer<br/>context docs]
+```
+
+- **Directions** are markdown work orders (`apps/<app>/directions/`) — filed by you, or by the factory's own scanner personas (hourly drift watchdog, bug hunter, weekly security audit, UX auditor).
+- **Personas** are prompt-defined roles (`factory/personas/*.md`) executed either as tool-using sandboxes (OpenHands SDK) or single structured-JSON calls. Model routing per persona/difficulty lives in one file: `factory/routes.yaml`.
+- **Nothing merges on green unit tests alone.** The `smoke-green` gate boots the PR's own code on an isolated port and drives the core user journey live before auto-merge.
+- **Convergence machinery** keeps dev↔review loops short: the reviewer carries memory of its own previous findings, proposes concrete `FIND/REPLACE` edits, and a drift clamp stops goalpost-moving at cycle 3.
+
+## The factory manages itself
+
+A four-tier management pipeline (FMS) watches the factory's own telemetry:
+
+| Tier | Role | Cadence |
+|------|------|---------|
+| L1 Watcher | summarize event streams, flag anomalies | every 60 s |
+| L2 Summarizer | structured concern documents | on escalation |
+| L3 Diagnostician | root-cause + unified-diff proposal | on escalation |
+| L4 Apply | classify safe/forbidden, branch, test, PR | on proposal |
+
+Blocked stories auto-recover (bounded), stale worktrees get pruned, and a halted factory refuses to burn spend until an operator runs `factory resume`.
 
 ## Quickstart
 
 ```bash
-# Sync runtime + dev deps (pytest, ruff, mypy live under the `dev` extra —
-# a bare `uv sync` will leave them out and `uv run pytest` will fail with
-# `ModuleNotFoundError: No module named 'pytest'`).
-uv sync --all-extras
-
-# Run tests (uv auto-activates .venv; manual `source .venv/bin/activate`
-# is not required when you go through `uv run`).
-uv run pytest -q
-
-# Run the Phase 0 acceptance target
-factory test-persona dev \
-  --story ~/factory-test/story.md \
-  --repo ~/factory-test \
-  --dry-run
+uv sync --all-extras          # dev extras included — bare `uv sync` omits pytest
+uv run pytest -q              # 1000+ tests, ~30s
+uv run factory --help
 ```
 
-See `factory/cli.py` for available commands.
-
-## Phase 6 autonomous-work scheduling
-
-The Phase 6 personas (Ralph, Bug-Hunter, Security, UX-Auditor) are designed to
-run on a cron. The factory does **not** install crontab entries for you — drop
-the following into `crontab -e` (or your system's cron-equivalent) once you're
-comfortable with the dry-run output:
-
-```cron
-# Ralph — hourly spec-vs-reality diff
-0 * * * * cd ~/software-factory && .venv/bin/factory ralph-now --app <app>
-
-# Bug-Hunter — daily security/quality scan at 04:00
-0 4 * * * cd ~/software-factory && .venv/bin/factory bug-hunt-now --app <app>
-
-# UX-Auditor — daily Playwright drive at 05:00
-0 5 * * * cd ~/software-factory && .venv/bin/factory ux-audit-now --app <app>
-
-# Security — weekly deeper audit on Monday at 09:00 UTC
-0 9 * * 1 cd ~/software-factory && .venv/bin/factory security-now --app <app>
-```
-
-Each entry consults the per-persona daily-run cap in
-`factory_settings.yaml::rate_limits` (`ralph_runs_per_day`,
-`bug_hunter_runs_per_day`, `security_runs_per_day`, `ux_auditor_runs_per_day`)
-before invoking the persona; runs that exceed the cap are refused with
-`rejected_reason=<persona>_rate_limit_exceeded` and no LLM call happens.
-
-Use `--dry-run` to exercise the chain end-to-end without an API key:
+Wire an app (see `apps/sacrifice/config.yaml` for a complete example), then:
 
 ```bash
-factory ralph-now --app <app> --dry-run
-factory bug-hunt-now --app <app> --dry-run
-factory security-now --app <app> --dry-run
-factory ux-audit-now --app <app> --dry-run
+uv run factory pm-sync --app <app>   # triage directions into stories
+uv run factory tick --app <app>      # one full pipeline pass
 ```
 
-## Phase 7 polish: inbox, status, idle, dual-draft
+Continuous operation runs on two systemd user units: `factory-tick@<app>.timer` (pipeline heartbeat, 5 min) and `factory-manager.service` (FMS L1 daemon). Models and API keys are configured in `factory/routes.yaml` + `.env` (`.env.example` documents every key; Azure OpenAI, DeepSeek, and OpenRouter routing supported out of the box).
 
-Phase 7 adds the operator-facing polish layer on top of the autonomous
-loop. Every command supports `--dry-run` for offline iteration.
-
-### Multi-app inbox
-
-`factory inbox` aggregates across every `apps/<name>/`:
-
-* Stories awaiting human action (`reviewer_requested_changes`,
-  `blocked_tests_need_clarification`, or any `last_rejection_reason`).
-* Directions in `needs-direction`.
-* Budget warnings when today's spend ≥ 75% of the daily cap.
-* Failed deploys in the last 24h.
-* Active Direction Trackers.
-* Recent scheduled persona runs (last 24h).
-* Idle apps (no work in flight, no recent findings, no recent deploys).
-* Pinned `factory-status` issue numbers per app.
-
-Pass `--app <name>` to restrict to a single app.
-
-### Pinned factory-status GitHub issue (per app)
-
-`factory status-sync --app <app>` opens (or updates) one GH issue
-per app, labeled `factory-status`, titled `[FACTORY] <app> live status`.
-The body carries the current mode, queue depth, today's spend, last 5
-deploys, active blockers, and active Direction Trackers. Idempotent.
+Day-to-day operator surface:
 
 ```bash
-# Dry-run — print the body without touching GH.
-factory status-sync --app <app> --dry-run
-
-# Real-run — requires GITHUB_TOKEN.
-factory status-sync --app <app>
+factory inbox                 # everything awaiting a human, across apps
+factory status-sync --app X   # pinned [FACTORY] live-status GitHub issue
+factory why <story-id>        # per-story event trail
+factory resume                # clear an FMS halt (operator-only)
 ```
 
-### Idle detection + `factory-idle` issue
+## Benchmarks
 
-When an app has no in-flight work AND no scheduled persona findings AND
-no deploys for the lookback window (default 2h), the factory opens a
-`factory-idle` issue listing the last 5 directions for context.
-Re-running while the issue is open updates the body — no duplicates.
+`bench/` contains a reproducible harness comparing the factory against one-shot Claude Code on real backlog tasks — same frozen base commit, same done-oracle (the app's own merge gates + a blind LLM-judge rubric).
 
-```bash
-# Dry-run — print the snapshot when idle, or "not idle" otherwise.
-factory idle-check --app <app> --dry-run
+| | Factory (open models) | Claude Code (one-shot) |
+|---|---|---|
+| Merge-gates pass rate | **7/7** | 5/7 |
+| Mean cost per task | **$0.65** | $8.19 |
+| Mean wall-clock | ~40 min | ~14 min |
+| Diff-quality rubric | 0.84 | **0.92** |
 
-# Real-run.
-factory idle-check --app <app>
+Run it: `uv run python bench/bench.py --help` ([protocol + caveats](bench/README.md)).
+
+## Repository map
+
+```
+factory/           the orchestrator
+  chain/           state machine, handlers, gates, auto-merge, worktrees
+  manager/         FMS tiers (watcher → summarizer → diagnostician → apply)
+  personas/        prompt-defined roles (pm, sm, dev, reviewer, …)
+  routes.yaml      per-persona model routing — the single model-choice seam
+apps/<app>/        per-app config, directions (work orders), stories
+bench/             factory-vs-Claude-Code benchmark harness + results
+state/             runtime: sqlite db, event streams, worktrees (gitignored)
+tests/             1086 tests
 ```
 
-### Dual-draft PRs (rare ambiguity workflow)
+## Design principles
 
-When a direction has the `(explore)` tag in frontmatter OR PM
-confidence < 0.6, `handle_stories_spawned` produces two
-StoryRecords with materially different interpretations (one per branch
-`story/<n>-<slug>-alt-a` and `story/<n>-<slug>-alt-b`). Each flows
-through the TDD chain independently → two `draft-alternative` PRs land
-plus a comparison comment on the Direction Tracker. No new CLI; fires
-automatically inside `factory pm-sync` when applicable.
-
-### Recommended cron entries (Phase 7)
-
-```cron
-# Pinned factory-status issue — every 5 minutes.
-*/5 * * * * cd ~/software-factory && .venv/bin/factory status-sync --app <app>
-
-# Idle detection — every 30 minutes.
-*/30 * * * * cd ~/software-factory && .venv/bin/factory idle-check --app <app>
-```
-
-### `_factory_improver` stub persona (v2-dormant)
-
-`factory/personas/_factory_improver.md` is a v2 placeholder for a
-future self-improvement persona. **Not invocable in v1.** It exists so
-a v2 agent that adds `apps/software-factory/` later has a starting
-point. The chain has no handler that routes work to it.
-
+1. **Verification-first** — a feature is done when it runs live, not when tests pass. (The smoke gate exists because an early version shipped a green-but-unbootable app.)
+2. **Decompose by context, not by pipeline stage** — the reviewer sees only the diff + gates + its own review history; the dev owns both code and tests.
+3. **Everything loops at most 3–6 times** — retry caps, review-cycle caps, recovery caps. Nothing burns spend unbounded.
+4. **The model is a config value** — swapping providers is a YAML edit; missing API keys degrade routes to a working fallback instead of crashing.
