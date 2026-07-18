@@ -14,7 +14,7 @@ app_repo_path: "../sacrifice"
 # Aspirational defaults — the factory reads these strings verbatim and
 # stays stack-agnostic.
 deploy:
-  enabled: false
+  enabled: true
   working_directory: "."
   pre_deploy_commands:
     - "docker compose -f docker-compose.prod.yml build"
@@ -22,7 +22,7 @@ deploy:
   health_check_command: "curl -fsS http://localhost:8000/healthz"
   health_check_max_attempts: 10
   health_check_interval_seconds: 3
-  smoke_test_command: "npx playwright test --grep @smoke --reporter=line"
+  smoke_test_command: "make smoke"
   rollback_command: "docker compose -f docker-compose.prod.yml.previous up -d"
   post_deploy_record:
     container_state: "docker compose ps --format json"
