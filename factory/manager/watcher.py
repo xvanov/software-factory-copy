@@ -55,8 +55,12 @@ def text_run(
 
     return _impl(persona, prompt, model_id, schema=schema, **kwargs)
 
-# Streams the watcher reads raw lines from.
-_RAW_STREAMS = ("runs", "ticks", "queue", "webhooks", "git", "spend")
+# Streams the watcher reads raw lines from. "recovery" (Phase 10) is
+# included so a recovered->re-failed->cooldown-blocked target (which
+# stalled_stories can't see -- blocked_deploy_failed is a terminal/exempt
+# state there) still reaches L1's context bundle instead of surfacing to
+# no one.
+_RAW_STREAMS = ("runs", "ticks", "queue", "webhooks", "git", "spend", "recovery")
 
 # Cap per stream (recent lines only; older lines are dropped for token budget).
 _MAX_LINES_PER_STREAM = 200

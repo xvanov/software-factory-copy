@@ -385,6 +385,20 @@ class TestRevertPrematureDeployEnable:
         targets = recovery.detect_premature_deploy_enabled(root)
         assert targets == []
 
+    def test_precondition_fails_when_file_flag_is_not_docker_compose(self, root: Path) -> None:
+        """A non-compose command using -f (curl's "fail on HTTP error" flag,
+        not a file path) must NOT be mistaken for a compose-file reference --
+        that would guess an artifact path and could flip a HEALTHY app's
+        deploy.enabled off. The detector must skip (uncertain), not act."""
+        _write_app_config(
+            root,
+            "sacrifice",
+            deploy_enabled=True,
+            pre_deploy_commands=["curl -f https://example.com/health"],
+        )
+        targets = recovery.detect_premature_deploy_enabled(root)
+        assert targets == []
+
     def test_dry_run_makes_no_mutation(self, root: Path) -> None:
         cfg_path = _write_app_config(root, "sacrifice", deploy_enabled=True)
         original = cfg_path.read_text()

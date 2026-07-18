@@ -489,14 +489,29 @@ def _config_paths(root: Path, apps: list[str] | None) -> list[Path]:
 
 _PRE_DEPLOY_FILE_FLAG_RE = re.compile(r"(?:^|\s)(?:-f|--file)\s+(\S+)")
 
+# Only commands that are actually invoking docker compose get their ``-f``
+# argument treated as a compose-file artifact path. ``-f``/``--file`` is a
+# common flag on many other CLIs (``curl -f``, ``grep -f patterns``) whose
+# argument is NOT a deploy artifact at all -- blindly extracting it would
+# make the detector GUESS an artifact path and could flip a healthy app's
+# deploy.enabled off. Whitespace-normalized so "docker  compose" or leading
+# indentation doesn't dodge the check.
+_DOCKER_COMPOSE_PREFIX_RE = re.compile(r"^(?:docker compose|docker-compose)\b")
+
 
 def _extract_pre_deploy_artifact(cfg: AppConfig) -> str | None:
     """Best-effort extraction of the file path a pre_deploy_command's
     ``-f``/``--file`` flag references (e.g. ``docker compose -f
     docker-compose.prod.yml build``). Returns ``None`` when no
-    pre_deploy_command references a file this way — the precondition is then
-    "uncertain" and the caller skips rather than guessing."""
+    pre_deploy_command is a recognized ``docker compose``/``docker-compose``
+    invocation with a ``-f``/``--file`` flag -- the precondition is then
+    "uncertain" and the caller skips rather than guessing (e.g. a
+    ``curl -f https://...`` or ``grep -f patterns`` pre-deploy command is
+    NOT a compose-file reference and must not be treated as one)."""
     for cmd in cfg.deploy.pre_deploy_commands:
+        normalized = " ".join(cmd.split())
+        if not _DOCKER_COMPOSE_PREFIX_RE.match(normalized):
+            continue
         m = _PRE_DEPLOY_FILE_FLAG_RE.search(cmd)
         if m:
             return m.group(1)
@@ -878,8 +893,18 @@ def run_recovery_cycle(
 
             if is_halted(root=root):
                 forced_dry_run = True
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _halt_exc:  # noqa: BLE001
+            # Fail-open (mirrors factory/chain/orchestrator.py's halt-check
+            # guard): a broken halt module must not block recovery, but a
+            # silent except here would hide that the halt module is broken.
+            import sys as _sys
+
+            print(
+                f"[recovery] WARNING: halt-check raised an exception: {_halt_exc!r}; "
+                "continuing without forcing dry-run (fail-open). This may "
+                "indicate a broken halt module.",
+                file=_sys.stderr,
+            )
     effective_dry_run = dry_run or forced_dry_run
 
     summary: dict[str, Any] = {
