@@ -1079,7 +1079,11 @@ def tick(
                         wait_for_ci=settings.auto_merge.wait_for_ci,
                         delete_branch_after_merge=settings.auto_merge.delete_branch_after_merge,
                     )
-                    summary.merges = merge_actions
+                    # EXTEND, never overwrite: the start-of-tick pass may have
+                    # already recorded decisions (and advanced those stories),
+                    # so a quiet end-of-tick pass would otherwise erase them
+                    # from the summary.
+                    summary.merges = list(summary.merges or []) + list(merge_actions)
                 except Exception as exc:
                     # Auto-merge failures must not break the tick — the
                     # operator can still inspect the chain via ``factory
