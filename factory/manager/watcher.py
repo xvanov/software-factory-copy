@@ -603,12 +603,24 @@ def run_watcher_daemon(
     trigger_l3: bool = True,
     auto_apply: bool = True,
     circuit_breaker_interval_min: int = 30,
+    auto_recover: bool = True,
+    recovery_dry_run: bool = False,
+    recovery_max_actions: int = 5,
 ) -> None:
     """Loop ``run_watcher_once`` every ``interval_s`` seconds.
 
     Runs until interrupted by SIGINT (KeyboardInterrupt) or until
     ``max_iters`` iterations have completed (when provided — useful
     for tests).
+
+    Each iteration first runs the operational-recovery layer (Phase 10,
+    ``factory.manager.recovery.run_recovery_cycle``) BEFORE the L1 watcher
+    cycle: rule-based playbooks reset stories stuck on stale
+    ``blocked_deploy_failed``/orphaned-PR states and revert a premature
+    ``deploy.enabled``, so operational breakage that recovery can fix never
+    even reaches the LLM escalation chain below. Anything recovery cannot
+    fix (or that it explicitly escalates, e.g. a real merge conflict) still
+    flows into L1/L2/L3/L4 exactly as before.
 
     When L1 produces a note with ``escalate_to_l2=true``, immediately
     triggers one L2 summarizer iteration (``run_summarizer_once``) unless
@@ -642,6 +654,20 @@ def run_watcher_daemon(
     circuit_breaker_interval_min:
         How often (minutes) to run circuit-breaker ``check_and_trip`` if there
         are tracked manager commits.  0 disables periodic checks.  Default: 30.
+    auto_recover:
+        If True (default -- ON), run the operational-recovery cycle each
+        iteration before the L1 watcher call.  Set to False
+        (``--no-auto-recover``) to disable it entirely (e.g. to validate L1/L2/L3
+        behaviour in isolation).
+    recovery_dry_run:
+        If True, the recovery cycle logs its intended actions to
+        ``state/events/recovery.ndjson`` but performs NO mutation (no DB
+        write, no git, no gh, no file edit).  Default False (real-run) --
+        use ``--recovery-dry-run`` (or set ``FACTORY_RECOVERY_DRY_RUN=1``) to
+        validate the playbooks against production data before trusting them.
+    recovery_max_actions:
+        Cap on real recovery mutations applied per cycle (anti-thrash).
+        Default: 5.
     """
     import sys
 
@@ -652,6 +678,7 @@ def run_watcher_daemon(
         f"[watcher] starting daemon (interval_s={interval_s}, "
         f"trigger_l2={trigger_l2}, trigger_l3={trigger_l3}, "
         f"auto_apply={auto_apply}, "
+        f"auto_recover={auto_recover}, recovery_dry_run={recovery_dry_run}, "
         f"circuit_breaker_interval_min={circuit_breaker_interval_min})",
         file=sys.stderr,
     )
@@ -659,6 +686,14 @@ def run_watcher_daemon(
         print(
             "[watcher] auto_apply=ON -- L4 will automatically apply safe proposals. "
             "Pass --no-auto-apply to disable.",
+            file=sys.stderr,
+        )
+    if auto_recover:
+        print(
+            "[watcher] auto_recover=ON -- operational recovery playbooks run "
+            f"each cycle before L1/L2/L3 escalation (dry_run={recovery_dry_run}). "
+            "Pass --no-auto-recover to disable, --recovery-dry-run to validate "
+            "without mutating.",
             file=sys.stderr,
         )
     try:
@@ -701,6 +736,37 @@ def run_watcher_daemon(
                     )
             except Exception:  # noqa: BLE001
                 pass
+
+            # Phase 10: operational recovery runs BEFORE L1/L2/L3 escalation.
+            # Rule-based playbooks fix stale operational state (stuck
+            # blocked_deploy_failed, orphaned pr_open rows, a premature
+            # deploy.enabled) directly, so a story recovery already fixed
+            # never gets summarized/diagnosed/escalated to a human below.
+            # Best-effort: any failure here must never take down the daemon.
+            if auto_recover:
+                try:
+                    from factory.manager.recovery import run_recovery_cycle
+
+                    _recovery_summary = run_recovery_cycle(
+                        root=root,
+                        dry_run=recovery_dry_run,
+                        max_actions=recovery_max_actions,
+                    )
+                    _n_recovered = len(_recovery_summary.get("recovered", []))
+                    _n_escalated = len(_recovery_summary.get("escalated", []))
+                    if _n_recovered or _n_escalated:
+                        print(
+                            f"[watcher] recovery: recovered={_n_recovered} "
+                            f"escalated={_n_escalated}"
+                            f"{' (dry-run)' if _recovery_summary.get('dry_run') else ''}",
+                            file=sys.stderr,
+                        )
+                except Exception as _recovery_exc:  # noqa: BLE001
+                    print(
+                        f"[watcher] WARNING: recovery cycle failed: {_recovery_exc!r}; "
+                        "continuing (fail-open)",
+                        file=sys.stderr,
+                    )
 
             try:
                 result = run_watcher_once(root=root, lookback=lookback)

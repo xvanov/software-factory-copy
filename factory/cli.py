@@ -2488,6 +2488,32 @@ def manager_watch_cmd(
             "0 disables periodic circuit-breaker checks. Default: 30."
         ),
     ),
+    no_auto_recover: bool = typer.Option(
+        False,
+        "--no-auto-recover",
+        help=(
+            "Suppress the operational-recovery cycle (Phase 10) that runs each "
+            "daemon iteration BEFORE L1/L2/L3 escalation. Default: auto-recover "
+            "is ON. Use this flag to validate L1/L2/L3 behaviour without the "
+            "recovery playbooks fixing things first."
+        ),
+    ),
+    recovery_dry_run: bool = typer.Option(
+        False,
+        "--recovery-dry-run",
+        envvar="FACTORY_RECOVERY_DRY_RUN",
+        help=(
+            "Run the recovery cycle in dry-run mode: log intended actions to "
+            "state/events/recovery.ndjson but make NO mutation (no DB write, "
+            "no git, no gh, no file edit). Also settable via "
+            "FACTORY_RECOVERY_DRY_RUN=1. Default: real-run."
+        ),
+    ),
+    recovery_max_actions: int = typer.Option(
+        5,
+        "--recovery-max-actions",
+        help="Cap on real recovery mutations applied per cycle (anti-thrash). Default: 5.",
+    ),
 ) -> None:
     """Run the L1 Watcher agent.
 
@@ -2496,15 +2522,20 @@ def manager_watch_cmd(
     prints the result JSON.  With ``--once --dry-run``, assembles and
     prints the prompt without calling the LLM.
 
-    In daemon mode, when L1 escalates (``escalate_to_l2=true``), an
-    immediate L2 summarizer iteration is triggered unless ``--no-l2``
-    is passed.  When L2 escalates (``escalate_to_l3=true``), an immediate
-    L3 diagnostician iteration is triggered unless ``--no-l3`` is passed.
-    When L3 produces a proposal, the L4 apply pipeline runs automatically
-    unless ``--no-auto-apply`` is passed.
+    In daemon mode, each iteration first runs the operational-recovery cycle
+    (``factory.manager.recovery.run_recovery_cycle``) before the L1 watcher
+    call -- see ``--no-auto-recover``/``--recovery-dry-run`` below. When L1
+    escalates (``escalate_to_l2=true``), an immediate L2 summarizer iteration
+    is triggered unless ``--no-l2`` is passed.  When L2 escalates
+    (``escalate_to_l3=true``), an immediate L3 diagnostician iteration is
+    triggered unless ``--no-l3`` is passed. When L3 produces a proposal, the
+    L4 apply pipeline runs automatically unless ``--no-auto-apply`` is passed.
 
     NOTE: auto-apply is ON by default (MVP default). Pass ``--no-auto-apply``
     to validate L3 proposal quality before enabling automated patching.
+    Auto-recover is also ON by default (real-run); pass ``--recovery-dry-run``
+    to validate the recovery playbooks against production data before
+    trusting them to mutate state.
     """
     from factory.manager.watcher import run_watcher_daemon, run_watcher_once
 
@@ -2527,6 +2558,9 @@ def manager_watch_cmd(
             trigger_l3=not no_l3,
             auto_apply=not no_auto_apply,
             circuit_breaker_interval_min=circuit_breaker_interval_min,
+            auto_recover=not no_auto_recover,
+            recovery_dry_run=recovery_dry_run,
+            recovery_max_actions=recovery_max_actions,
         )
 
 
