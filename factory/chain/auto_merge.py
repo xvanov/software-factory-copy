@@ -243,6 +243,25 @@ def _evaluate_one_pr(
             blocking_labels=blocking_present,
         )
 
+    # Synthesized placeholder (no real PR exists — ``pr_no = -(story.id)``
+    # in the fixture-synthesis path). NEVER shell it into ``gh pr merge``:
+    # a negative number parses as a flag ("unknown shorthand flag: '5' in
+    # -56", observed live 2026-07-18) and the failure terminally blocked the
+    # story. Record an auditable no-PR decision instead; the story needs PR
+    # (re-)creation, not a merge.
+    if fixture.pr_number <= 0:
+        return MergeAction(
+            app=app,
+            pr_number=fixture.pr_number,
+            merged=False,
+            reason=(
+                "no real PR exists for this story (placeholder number); "
+                "needs PR creation via docs_enforcer/_open_pr_for_story"
+            ),
+            gates_passed=gates_passed,
+            blocking_labels=blocking_present,
+        )
+
     # Gates passed + no blockers. Merge.
     if not dry_run:
         merge_err = _gh_pr_merge(
