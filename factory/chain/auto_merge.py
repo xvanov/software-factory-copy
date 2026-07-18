@@ -587,28 +587,43 @@ def auto_merge_tick(
             # The refresh runs in a background thread (or synchronously
             # in dry-run for deterministic tests) and is fully isolated
             # from the merge worker's return path.
+            #
+            # GATED OFF by default: the current refresh is a placeholder that
+            # only appends a ``<!-- factory:context-refresh -->`` marker to
+            # the same context/ files each merge, piling up as mutually
+            # CONFLICTING orphan PRs with no merge path (they carry no
+            # StoryRecord). Re-enable via AutoMergeConfig.context_refresh_enabled
+            # once it's swapped for a real onboarder/tech_writer invocation.
+            _refresh_on = False
             try:
-                from factory.chain.context_refresh import schedule_post_merge_refresh
+                from factory.settings.loader import load_settings as _ls
 
-                merged_scope = f.story.scope if f.story is not None else None
-                schedule_post_merge_refresh(
-                    app=app,
-                    merged_pr_number=action.pr_number,
-                    merged_scope=merged_scope,
-                    software_factory_root=root,
-                    db_path=db,
-                    sync=dry_run,
-                    github_client=github_client,
-                    # Dry-run uses synthetic fixtures with no real GH repo
-                    # to push to; suppress PR open there so we exercise
-                    # the worktree+commit path without network.
-                    open_pr=not dry_run,
-                )
+                _refresh_on = _ls(root).auto_merge.context_refresh_enabled
             except Exception:
-                # Never let a refresh failure poison the merge return.
-                # The refresh has its own event-log path; the merge worker
-                # cares about merging, not about context plumbing.
-                pass
+                _refresh_on = False
+            if _refresh_on:
+                try:
+                    from factory.chain.context_refresh import schedule_post_merge_refresh
+
+                    merged_scope = f.story.scope if f.story is not None else None
+                    schedule_post_merge_refresh(
+                        app=app,
+                        merged_pr_number=action.pr_number,
+                        merged_scope=merged_scope,
+                        software_factory_root=root,
+                        db_path=db,
+                        sync=dry_run,
+                        github_client=github_client,
+                        # Dry-run uses synthetic fixtures with no real GH repo
+                        # to push to; suppress PR open there so we exercise
+                        # the worktree+commit path without network.
+                        open_pr=not dry_run,
+                    )
+                except Exception:
+                    # Never let a refresh failure poison the merge return.
+                    # The refresh has its own event-log path; the merge worker
+                    # cares about merging, not about context plumbing.
+                    pass
             # Lazy import to avoid the auto-merge module importing the
             # deploy package at module load (the deploy package imports
             # back into the chain, which would risk a cycle).

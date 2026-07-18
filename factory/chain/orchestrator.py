@@ -1081,9 +1081,14 @@ def tick(
                     )
                     # EXTEND, never overwrite: the start-of-tick pass may have
                     # already recorded decisions (and advanced those stories),
-                    # so a quiet end-of-tick pass would otherwise erase them
-                    # from the summary.
-                    summary.merges = list(summary.merges or []) + list(merge_actions)
+                    # so a quiet end-of-tick pass would otherwise erase them.
+                    # Dedup by pr_number: in dry-run a "merged" fixture isn't
+                    # actually removed, so both passes report the same PR —
+                    # keep the first decision per PR.
+                    _seen_prs = {m.pr_number for m in (summary.merges or [])}
+                    summary.merges = list(summary.merges or []) + [
+                        m for m in merge_actions if m.pr_number not in _seen_prs
+                    ]
                 except Exception as exc:
                     # Auto-merge failures must not break the tick — the
                     # operator can still inspect the chain via ``factory

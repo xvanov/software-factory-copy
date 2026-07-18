@@ -296,6 +296,12 @@ def test_auto_merge_fires_refresh_on_merged_pr(
         "factory.chain.context_refresh.schedule_post_merge_refresh", _capture
     )
 
+    # Context refresh is gated OFF by default (placeholder generates
+    # conflicting orphan PRs); this test verifies the fire path, so opt in.
+    (root / "factory_settings.yaml").write_text(
+        "auto_merge:\n  context_refresh_enabled: true\n", encoding="utf-8"
+    )
+
     # Seed a docs-chain story (fewer gates) already in PR_OPEN so
     # auto_merge_tick lands the merge in dry-run.
     story = StoryRecord(

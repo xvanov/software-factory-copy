@@ -85,6 +85,16 @@ class AutoMergeConfig(BaseModel):
     merge_method: str = "squash"
     delete_branch_after_merge: bool = True
     wait_for_ci: bool = True
+    # Post-merge BMAD context-tree refresh. DISABLED by default (2026-07-18):
+    # the current implementation is a PLACEHOLDER that only appends a
+    # ``<!-- factory:context-refresh ts=... -->`` marker to the same handful
+    # of context/ files every merge — zero real content, and because every
+    # refresh touches the same append point they pile up as mutually
+    # CONFLICTING orphan PRs with no merge path (they carry no StoryRecord,
+    # so the auto-merge worker never evaluates them). Re-enable only once the
+    # placeholder is swapped for a real onboarder/tech_writer invocation AND
+    # the opener supersedes its own prior open PR.
+    context_refresh_enabled: bool = False
 
 
 class DevConvergenceConfig(BaseModel):
