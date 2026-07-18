@@ -117,6 +117,85 @@ def test_pm_sync_dry_run_two_complete_one_vague(tmp_path: Path) -> None:
     assert by_status["needs-direction"][0].endswith("-vague-thought")
 
 
+def test_pm_sync_gc_pass_closes_stale_scheduled_direction(tmp_path: Path) -> None:
+    """pm_sync's end-of-pass GC (factory.directions.gc) closes a scheduler-filed
+    direction that's been stuck at needs-direction well past the threshold —
+    the fix for audit 2026-07-18 leak 2 of 4 (directions filed by scheduler
+    personas that never got operator follow-up rotted at needs-direction
+    forever)."""
+    from datetime import UTC, datetime, timedelta
+
+    from factory.directions.gc import GC_BY, MAX_AGE_DAYS
+
+    _seed_app_config(tmp_path)
+    created = create_direction(
+        app="sacrifice",
+        title="rate-limit pledge endpoint",
+        type_tag="security",
+        why="pledge flooding",
+        has_ui=False,
+        flow_steps=None,
+        has_api=False,
+        api_spec_lines=None,
+        acceptance=["429 after 5/min"],
+        explore=True,
+        attach_files=None,
+        software_factory_root=tmp_path,
+        source="scheduled-security",
+    )
+    state_path = created.dir_path / "state.yaml"
+    state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    old = (datetime.now(UTC) - timedelta(days=MAX_AGE_DAYS + 1)).isoformat()
+    state["created_at"] = old
+    state["status"] = "needs-direction"
+    state["audit"] = [{"event": "status -> needs-direction"}]
+    state_path.write_text(yaml.safe_dump(state, sort_keys=False), encoding="utf-8")
+
+    summary = pm_sync(
+        app="sacrifice",
+        software_factory_root=tmp_path,
+        dry_run=True,
+        state_db_path=tmp_path / "state" / "factory.db",
+        # Narrow to "created" so this stale needs-direction entry is not
+        # re-validated by the normal pm loop — only the GC pass should
+        # touch it, mirroring the automated (maybe_auto_pm_sync) caller.
+        pending_statuses=frozenset({"created"}),
+    )
+
+    assert summary.gc_closed == [created.direction.id]
+    final_state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    assert final_state["status"] == "closed"
+    assert final_state["audit"][-1]["by"] == GC_BY
+
+
+def test_pm_sync_gc_pass_leaves_fresh_directions_alone(tmp_path: Path) -> None:
+    """A freshly-filed scheduled direction (or one from the main test fixture)
+    must not be touched by the GC pass."""
+    _seed_app_config(tmp_path)
+    create_direction(
+        app="sacrifice",
+        title="fresh scheduled finding",
+        type_tag="security",
+        why="just filed",
+        has_ui=False,
+        flow_steps=None,
+        has_api=False,
+        api_spec_lines=None,
+        acceptance=["fixed"],
+        explore=True,
+        attach_files=None,
+        software_factory_root=tmp_path,
+        source="scheduled-bug_hunter",
+    )
+    summary = pm_sync(
+        app="sacrifice",
+        software_factory_root=tmp_path,
+        dry_run=True,
+        state_db_path=tmp_path / "state" / "factory.db",
+    )
+    assert summary.gc_closed == []
+
+
 def test_pm_sync_dry_run_no_directions_empty_summary(tmp_path: Path) -> None:
     _seed_app_config(tmp_path)
     # Need at least the directions directory to exist.

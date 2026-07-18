@@ -120,6 +120,10 @@ class PMSyncSummary:
     validated: int = 0
     needs_direction: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
+    # Direction ids closed by the stale-scheduled-direction GC pass (see
+    # ``factory.directions.gc``) this pm-sync run. Empty unless one or more
+    # scheduler-filed directions crossed the GC threshold.
+    gc_closed: list[str] = field(default_factory=list)
 
 
 def _build_pm_prompt(direction: Direction, context_prelude: str) -> str:
@@ -632,6 +636,23 @@ def pm_sync(
 
         except Exception as exc:  # pragma: no cover - exercised in error tests
             summary.errors.append((direction.id or direction.slug, repr(exc)))
+
+    # GC pass: close scheduler-filed directions that have sat unactioned at
+    # needs-direction past the threshold (audit 2026-07-18, leak 2 of 4).
+    # Best-effort — a GC failure must never fail the pm-sync pass it rides
+    # along with.
+    try:
+        from factory.directions.gc import gc_stale_scheduled_directions
+
+        summary.gc_closed = gc_stale_scheduled_directions(
+            app,
+            root,
+            app_config,
+            github_client,
+            dry_run=dry_run,
+        )
+    except Exception as gc_exc:  # noqa: BLE001 - GC is a side pass, never fatal
+        summary.errors.append(("__gc__", repr(gc_exc)))
 
     return summary
 
