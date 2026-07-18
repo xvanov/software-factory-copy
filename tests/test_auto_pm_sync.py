@@ -11,10 +11,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import yaml
 from sqlmodel import SQLModel, create_engine
 
 from factory.chain.pm_sync import maybe_auto_pm_sync
 from factory.directions.creator import create_direction
+from factory.directions.gc import GC_BY, MAX_AGE_DAYS
 from factory.settings.loader import reload_settings
 
 
@@ -141,6 +143,49 @@ def test_needs_direction_entries_are_not_auto_retriaged(tmp_path: Path) -> None:
         "sacrifice", tmp_path, dry_run=True, state_db_path=db
     )
     assert summary is None and reason == "no_pending"
+
+
+def test_gc_runs_on_tick_with_only_stale_needs_direction_pending(tmp_path: Path) -> None:
+    """Regression (audit 2026-07-18): a backlog of stale ``needs-direction``
+    directions with no fresh ``created`` direction alongside used to never
+    reach GC, because ``maybe_auto_pm_sync``'s ``created``-only gate returned
+    ``no_pending`` before ``pm_sync()`` — and its internal GC pass — ever
+    ran. GC must fire on the automatic tick independently of that gate."""
+    db = _seed_app(tmp_path)
+    _write_settings(tmp_path, enabled=True)
+
+    created = create_direction(
+        app="sacrifice",
+        title="rate-limit pledge endpoint",
+        type_tag="security",
+        why="pledge flooding",
+        has_ui=False,
+        flow_steps=None,
+        has_api=False,
+        api_spec_lines=None,
+        acceptance=["429 after 5/min"],
+        explore=True,
+        attach_files=None,
+        software_factory_root=tmp_path,
+        source="scheduled-security",
+    )
+    state_path = created.dir_path / "state.yaml"
+    state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    old = (datetime.now(UTC) - timedelta(days=MAX_AGE_DAYS + 1)).isoformat()
+    state["created_at"] = old
+    state["status"] = "needs-direction"
+    state["audit"] = [{"event": "status -> needs-direction"}]
+    state_path.write_text(yaml.safe_dump(state, sort_keys=False), encoding="utf-8")
+
+    # No ``created`` direction pending anywhere — the previously-broken case.
+    summary, reason = maybe_auto_pm_sync(
+        "sacrifice", tmp_path, dry_run=True, state_db_path=db
+    )
+    assert summary is None and reason == "no_pending"
+
+    final_state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    assert final_state["status"] == "closed"
+    assert final_state["audit"][-1]["by"] == GC_BY
 
 
 def test_github_client_factory_not_called_when_nothing_pending(tmp_path: Path) -> None:

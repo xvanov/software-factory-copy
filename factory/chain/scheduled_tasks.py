@@ -278,7 +278,7 @@ _DEDUP_KEYWORD_GROUPS: dict[str, tuple[str, ...]] = {
         "access control",
         "object level authorization",
     ),
-    "rate-limit": ("rate limit", "rate-limit", "rate limiting", "abuse"),
+    "rate-limit": ("rate limit", "rate-limit", "rate limiting", "throttl", "abuse control"),
     "webhook": ("webhook",),
     "replay": ("replay",),
     "redaction": ("redact", "secret leak", "secret exposure", "secret sprawl"),

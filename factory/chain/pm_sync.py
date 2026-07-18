@@ -462,6 +462,7 @@ def pm_sync(
     github_client: Any = None,
     state_db_path: Path | None = None,
     pending_statuses: frozenset[str] = frozenset({"created", "needs-direction"}),
+    run_gc: bool = True,
 ) -> PMSyncSummary:
     """Run the PM-sync pipeline once for ``app``. Returns a summary record.
 
@@ -471,6 +472,13 @@ def pm_sync(
     direction gets it re-checked. Automated callers should pass
     ``frozenset({"created"})`` — re-validating an unchanged insufficient
     direction on every tick only re-posts the same tracker-issue comment.
+
+    ``run_gc=False`` skips this call's own stale-scheduled-direction GC pass
+    (see ``factory.directions.gc``). ``maybe_auto_pm_sync`` runs GC itself
+    independently of the ``created``-gate that decides whether it calls into
+    this function at all, then passes ``run_gc=False`` here to avoid running
+    the GC pass twice in the same tick. Manual ``factory pm-sync`` callers
+    should leave this at the default ``True``.
     """
     root = Path(software_factory_root)
     db_path = state_db_path or (root / "state" / "factory.db")
@@ -640,19 +648,21 @@ def pm_sync(
     # GC pass: close scheduler-filed directions that have sat unactioned at
     # needs-direction past the threshold (audit 2026-07-18, leak 2 of 4).
     # Best-effort — a GC failure must never fail the pm-sync pass it rides
-    # along with.
-    try:
-        from factory.directions.gc import gc_stale_scheduled_directions
+    # along with. Skipped when the caller (``maybe_auto_pm_sync``) already
+    # ran GC itself this tick — see ``run_gc``'s docstring.
+    if run_gc:
+        try:
+            from factory.directions.gc import gc_stale_scheduled_directions
 
-        summary.gc_closed = gc_stale_scheduled_directions(
-            app,
-            root,
-            app_config,
-            github_client,
-            dry_run=dry_run,
-        )
-    except Exception as gc_exc:  # noqa: BLE001 - GC is a side pass, never fatal
-        summary.errors.append(("__gc__", repr(gc_exc)))
+            summary.gc_closed = gc_stale_scheduled_directions(
+                app,
+                root,
+                app_config,
+                github_client,
+                dry_run=dry_run,
+            )
+        except Exception as gc_exc:  # noqa: BLE001 - GC is a side pass, never fatal
+            summary.errors.append(("__gc__", repr(gc_exc)))
 
     return summary
 
@@ -704,16 +714,30 @@ def maybe_auto_pm_sync(
     when there's nothing to triage.
 
     Only ``status: created`` directions are auto-triaged. ``needs-direction``
-    entries are deliberately excluded: they failed backpressure validation
-    and re-validating them unchanged every tick just re-posts the same
-    "Needs direction" comment on their tracker issues (observed live
-    2026-06-11: 15 stuck directions x one comment per 5-minute tick). They
-    are re-checked by an operator-invoked ``factory pm-sync`` after the
-    missing artifacts are added.
+    entries are deliberately excluded from the LLM-heavy pm-sync pipeline:
+    they failed backpressure validation and re-validating them unchanged
+    every tick just re-posts the same "Needs direction" comment on their
+    tracker issues (observed live 2026-06-11: 15 stuck directions x one
+    comment per 5-minute tick). They are re-checked by an operator-invoked
+    ``factory pm-sync`` after the missing artifacts are added.
+
+    The stale-scheduled-direction GC pass (``factory.directions.gc``) is the
+    one exception: it runs on every tick regardless of whether a ``created``
+    direction is pending, BEFORE the ``created``-gate below. GC is pure
+    filesystem work (plus an optional best-effort GitHub issue-close) — no
+    LLM call — so it doesn't need to wait behind the same gate that protects
+    the expensive pm-sync pipeline. Previously GC only rode along inside
+    ``pm_sync()``, which this function only reached when a ``created``
+    direction existed; a backlog of stale ``needs-direction`` directions
+    with nothing fresh alongside meant GC never fired on the automated tick
+    (audit 2026-07-18).
 
     Returns ``(summary_or_None, reason)`` with reason in
     {"disabled", "no_pending", "rate_limited", "synced"}.
     """
+    from datetime import UTC, datetime
+
+    from factory.directions.gc import gc_stale_scheduled_directions, is_gc_eligible
     from factory.settings.loader import load_settings
 
     root = Path(software_factory_root)
@@ -723,15 +747,44 @@ def maybe_auto_pm_sync(
     if not settings.auto_pm_sync.enabled:
         return None, "disabled"
 
+    pending = pending_directions(app, root, db_path)
+
+    # GC pass — independent of the ``created``-gate, see docstring above.
+    # Only bothers loading the app config / GitHub client when at least one
+    # direction actually crosses the GC threshold, so a tick with nothing
+    # pending (or nothing GC-eligible) still never touches GitHub — hosts
+    # without credentials must not fail on an idle queue.
+    now = datetime.now(UTC)
+    github_client: Any = None
+    if any(is_gc_eligible(d, now=now) for d in pending):
+        gc_app_config = None
+        if not dry_run:
+            try:
+                gc_app_config = load_app_config(app, root)
+            except FileNotFoundError:
+                gc_app_config = None
+            if github_client_factory is not None:
+                github_client = github_client_factory()
+        try:
+            gc_stale_scheduled_directions(
+                app,
+                root,
+                gc_app_config,
+                github_client,
+                dry_run=dry_run,
+                now=now,
+            )
+        except Exception:  # noqa: BLE001 - GC is a side pass, never fatal
+            pass
+
     auto_statuses = frozenset({"created"})
-    if not any(d.status in auto_statuses for d in pending_directions(app, root, db_path)):
+    if not any(d.status in auto_statuses for d in pending):
         return None, "no_pending"
 
     if _pm_runs_last_hour(db_path) >= settings.rate_limits.pm_invocations_per_hour:
         return None, "rate_limited"
 
-    github_client: Any = None
-    if not dry_run and github_client_factory is not None:
+    if github_client is None and not dry_run and github_client_factory is not None:
         github_client = github_client_factory()
 
     summary = pm_sync(
@@ -741,5 +794,6 @@ def maybe_auto_pm_sync(
         github_client=github_client,
         state_db_path=db_path,
         pending_statuses=auto_statuses,
+        run_gc=False,
     )
     return summary, "synced"
