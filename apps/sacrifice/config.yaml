@@ -14,7 +14,7 @@ app_repo_path: "../sacrifice"
 # Aspirational defaults — the factory reads these strings verbatim and
 # stays stack-agnostic.
 deploy:
-  enabled: true
+  enabled: false
   working_directory: "."
   pre_deploy_commands:
     - "docker compose -f docker-compose.prod.yml build"
