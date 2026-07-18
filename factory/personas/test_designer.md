@@ -75,6 +75,10 @@ redesign.
   code that throws under test, not against your own code.
 * Every test must have a `why_meaningful` justification that names what
   real user-facing behavior breaks if this test goes red.
+* If a test needs a secret-shaped value (API key, token, password, connection
+  string), `key_steps` must specify an OBVIOUSLY-FAKE placeholder (e.g.
+  `sk_test_FAKE_PLACEHOLDER_not_a_real_key`), never a real-provider-format
+  literal — a realistic one trips GitHub push protection and wedges the story.
 * If a UI direction has a `flow.md` AND `e2e_harness_ready` is true, at least
   one Playwright test MUST exercise that flow end-to-end. If the harness is
   not ready, cover the flow's backend contract with httpx/pytest instead.

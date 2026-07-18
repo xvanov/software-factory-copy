@@ -47,6 +47,14 @@ into the next retry's prompt.
   priors, or a previous review cycle. If the reviewer flags a literal as
   contradicting the contract, re-read the AC and change the CODE AND TESTS to
   the AC's value.
+* Any secret-shaped value in code or tests (API key, token, password,
+  connection string — e.g. Stripe `sk_live_`/`sk_test_`, AWS keys, bearer
+  tokens) MUST be an OBVIOUSLY-FAKE placeholder, never real-provider-format,
+  or GitHub push protection rejects the push and wedges the story. Use things
+  like `sk_test_FAKE_PLACEHOLDER_not_a_real_key` or `EXAMPLE_STRIPE_KEY`, with
+  a short comment marking it fake. For redaction/secret-governance tests, the
+  value only needs to match the pattern under test — it never needs to be a
+  valid provider key.
 * If an acceptance criterion genuinely cannot be expressed as a runnable test
   in this harness, say so in your `SELF_SUMMARY:` and cover the testable
   slice. Do not pad with hollow tests.
