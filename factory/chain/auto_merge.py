@@ -452,19 +452,53 @@ def auto_merge_tick(
 
     fixtures: list[FixturePR] = list(fixture_prs or [])
     def _story_worktree(root: Path, app: str, db_story: StoryRecord | None) -> Path | None:
-        """The story's chain worktree, if it still exists — command gates
+        """The story's chain worktree, RECREATED on demand — command gates
         (smoke-green boots the PR's OWN code) need a local tree to run in.
         Worktrees are keyed by GITHUB ISSUE NUMBER, not the db row id (see
-        handlers._writing_worktree). Without this, repo_root=None made the
-        required smoke gate unevaluable and every PR sat unmergeable on
-        'missing smoke-green' (observed 2026-07-18)."""
+        handlers._writing_worktree). Existence alone isn't enough: the
+        pruner reaps worktrees of waiting-state stories, which left PR 226
+        permanently unmergeable on 'missing smoke-green' (2026-07-18) —
+        ensure_worktree_for_story is idempotent and checks the story's
+        branch back out from origin when the tree is gone."""
         if db_story is None:
             return None
         try:
-            from factory.chain.worktree import worktree_path
+            import subprocess
 
-            cand = worktree_path(root, app, db_story.github_issue_number, db_story.slug)
-            return cand if cand.exists() else None
+            from factory.app_config import resolve_app_repo_path
+            from factory.chain.worktree import ensure_worktree_for_story
+
+            source_repo = resolve_app_repo_path(cfg, root)
+            wt = ensure_worktree_for_story(
+                source_repo,
+                software_factory_root=root,
+                app=app,
+                story_id=db_story.github_issue_number,
+                slug=db_story.slug,
+                base_branch=cfg.default_branch or "main",
+            )
+            # Refresh the branch with the CURRENT base before gates run. A
+            # PR that lingered through review cycles goes stale as siblings
+            # merge; its smoke gate then boots an old backend against the
+            # advanced shared-db schema and fails with false 500s (PR 226,
+            # 2026-07-18: register 500 pre-merge, full green after merging
+            # main). Conflict → abort and evaluate as-is (the conflicting-PR
+            # path handles those). Best-effort throughout.
+            base = cfg.default_branch or "main"
+            subprocess.run(
+                ["git", "fetch", "origin", base],
+                cwd=str(wt), check=False, capture_output=True, timeout=60,
+            )
+            merged = subprocess.run(
+                ["git", "merge", "--no-edit", f"origin/{base}"],
+                cwd=str(wt), capture_output=True, timeout=120,
+            )
+            if merged.returncode != 0:
+                subprocess.run(
+                    ["git", "merge", "--abort"],
+                    cwd=str(wt), check=False, capture_output=True, timeout=60,
+                )
+            return wt
         except Exception:
             return None
 
