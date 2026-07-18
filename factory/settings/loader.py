@@ -140,6 +140,25 @@ class AutoPMSyncConfig(BaseModel):
     enabled: bool = True
 
 
+class AutoIntakeConfig(BaseModel):
+    """Controls automatic intake of USER-FILED GitHub issues every tick.
+
+    When ``enabled``, ``factory tick`` finds open issues carrying ``label``
+    (default ``user-report``) that haven't been ingested yet (no
+    ``accepted_label``), converts each into a direction via
+    ``ingest_github_direction_issue``, and marks the issue accepted with a
+    back-link comment. The next auto_pm_sync pass triages the new direction
+    into stories, so a user filing an issue flows all the way to a PR with no
+    operator step. ``max_per_tick`` bounds a flood; the ``label`` convention
+    keeps the factory's OWN direction-tracker/story issues out of intake.
+    """
+
+    enabled: bool = True
+    label: str = "user-report"
+    accepted_label: str = "intake-accepted"
+    max_per_tick: int = 3
+
+
 class FactorySettings(BaseModel):
     caps: CapsConfig = Field(default_factory=CapsConfig)
     queues: QueuesConfig = Field(default_factory=QueuesConfig)
@@ -148,6 +167,7 @@ class FactorySettings(BaseModel):
     direction_defaults: DirectionDefaults = Field(default_factory=DirectionDefaults)
     auto_merge: AutoMergeConfig = Field(default_factory=AutoMergeConfig)
     auto_pm_sync: AutoPMSyncConfig = Field(default_factory=AutoPMSyncConfig)
+    auto_intake: AutoIntakeConfig = Field(default_factory=AutoIntakeConfig)
     dev_convergence: DevConvergenceConfig = Field(default_factory=DevConvergenceConfig)
 
 

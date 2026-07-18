@@ -504,6 +504,34 @@ def tick_cmd(
             (due.schedule.name, out.status, out.findings_count, len(out.directions_filed))
         )
 
+    # Auto intake: convert NEW user-filed GitHub issues (label ``user-report``)
+    # into directions, so a user reporting a bug/feature flows all the way to a
+    # PR with no operator step. Runs BEFORE auto_pm_sync so a freshly-ingested
+    # direction is triaged into stories on this very tick.
+    if not dry_run:
+        from factory.chain.issue_intake import maybe_auto_intake
+
+        try:
+            intake_summary, intake_reason = maybe_auto_intake(
+                app_name,
+                _FACTORY_ROOT,
+                dry_run=dry_run,
+                github_client_factory=_ensure_github_client,
+            )
+            if intake_summary is not None:
+                scheduled_results.append(
+                    (
+                        "auto_intake",
+                        "ok" if not intake_summary.errors else f"errors:{len(intake_summary.errors)}",
+                        len(intake_summary.accepted),
+                        len(intake_summary.accepted),
+                    )
+                )
+            elif intake_reason not in {"disabled", "dry_run", "no_client", "no_new_issues"}:
+                scheduled_results.append(("auto_intake", intake_reason, 0, 0))
+        except Exception as exc:  # noqa: BLE001 - never fail the tick on intake
+            scheduled_results.append(("auto_intake", f"errored:{exc!r}"[:60], 0, 0))
+
     # Auto PM-sync: triage directions still in ``status: created`` /
     # ``needs-direction`` (filed by the scheduled personas above, or by
     # ``factory tell``) into stories, so the queue refills without an
