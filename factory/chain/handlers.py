@@ -3173,6 +3173,12 @@ def handle_deploy(
     if not app_config.deploy.enabled:
         story.state = advance(story, EVENT_DEPLOY_SKIPPED).value
         persist_story(story, db)
+        # This early-return short-circuits before the ``deploy_post_merge``
+        # call below, so the reachable-but-only-via-that-path close call a
+        # few lines down never runs for apps with deploy.enabled=false
+        # (e.g. sacrifice) — the story reaches DEPLOYED here but its GH
+        # issues never closed (audit 2026-07-18). Close them here too.
+        _close_issues_on_deploy(story, app_config, software_factory_root, db, github_client, dry_run)
         return HandlerResult(
             next_state=StoryState(story.state),
             payload={"skipped": True, "reason": "deploy_disabled_in_config"},
