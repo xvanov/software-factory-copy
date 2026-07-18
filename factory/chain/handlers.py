@@ -3093,6 +3093,39 @@ def _lookup_merged_sha(app: str, pr_number: int, db_path: Path) -> str | None:
     return row.head_sha
 
 
+def _close_issues_on_deploy(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+    db: Path,
+    github_client: Any,
+    dry_run: bool,
+) -> None:
+    """Close a deployed story's GH issue + its direction tracker (when all
+    siblings are deployed). Best-effort; never raises. Fixes the accumulation
+    of open story/tracker issues for already-shipped work (audit 2026-07-18).
+    """
+    if dry_run or github_client is None:
+        return
+    try:
+        from factory.directions.tracker_issue import (
+            close_story_issue,
+            maybe_close_tracker_issue,
+        )
+
+        close_story_issue(story, app_config, github_client)
+        if story.direction_id:
+            maybe_close_tracker_issue(
+                story.direction_id,
+                app_config,
+                github_client,
+                software_factory_root=software_factory_root,
+                db_path=db,
+            )
+    except Exception:  # noqa: BLE001 - bookkeeping must never break deploy
+        pass
+
+
 def handle_deploy(
     story: StoryRecord,
     app_config: AppConfig,
@@ -3192,6 +3225,7 @@ def handle_deploy(
         story.state = advance(story, EVENT_DEPLOY_SUCCEEDED).value
         story.error = None
         persist_story(story, db)
+        _close_issues_on_deploy(story, app_config, software_factory_root, db, github_client, dry_run)
         return HandlerResult(
             next_state=StoryState(story.state),
             payload={"deploy_action": True, "success": True},
@@ -3208,6 +3242,9 @@ def handle_deploy(
         story.state = advance(story, EVENT_DEPLOY_SKIPPED).value
         story.error = action.error
         persist_story(story, db)
+        # deploy_disabled_in_config still reaches DEPLOYED — the story is done
+        # from the chain's perspective, so close its issues too.
+        _close_issues_on_deploy(story, app_config, software_factory_root, db, github_client, dry_run)
         return HandlerResult(
             next_state=StoryState(story.state),
             payload={"skipped": True, "reason": action.error},

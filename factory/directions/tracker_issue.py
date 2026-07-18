@@ -197,3 +197,86 @@ def _last_comment_body(issue: Any) -> str | None:
         return getattr(comments[total - 1], "body", None)
     except Exception:  # noqa: BLE001 - never block the comment on a read error
         return None
+
+
+def close_story_issue(
+    story: Any,
+    app_config: AppConfig,
+    github_client: Any,
+) -> bool:
+    """Close a story's GitHub issue after it deploys. Idempotent, best-effort.
+
+    The chain sets a deployed story's DB state but historically never closed
+    its issue, so per-story ``story`` issues accumulated open forever (audit
+    2026-07-18: 53 of them). Returns True if a close was attempted. Any GH
+    error is swallowed — a bookkeeping close must never break the deploy path.
+    """
+    num = getattr(story, "github_issue_number", None)
+    if not num:
+        return False
+    try:
+        repo = github_client.get_repo(app_config.repo)
+        issue = repo.get_issue(int(num))
+        if str(getattr(issue, "state", "")).lower() == "closed":
+            return False
+        issue.create_comment(
+            "✅ Deployed — closing automatically (story reached DEPLOYED in the chain)."
+        )
+        issue.edit(state="closed")
+        return True
+    except Exception:  # noqa: BLE001 - never break deploy on a bookkeeping close
+        return False
+
+
+def maybe_close_tracker_issue(
+    direction_id: str,
+    app_config: AppConfig,
+    github_client: Any,
+    *,
+    software_factory_root: Path,
+    db_path: Path | None = None,
+) -> bool:
+    """Close a direction's tracker issue once ALL its child stories deploy.
+
+    Reads the tracker number from the direction's ``state.yaml`` and checks
+    the ``stories`` table: if every story for ``direction_id`` is in state
+    ``deployed``, closes the tracker. Best-effort; returns True on close.
+    """
+    try:
+        from sqlmodel import Session, select
+
+        from factory.chain.state_machine import StoryRecord, StoryState
+        from factory.directions.parser import parse_direction_dir
+        from factory.runner import _engine
+
+        root = Path(software_factory_root)
+        # Locate the direction dir + its tracker issue number.
+        dirs = list((root / "apps" / app_config.name / "directions").glob(f"{direction_id}-*"))
+        if not dirs:
+            return False
+        direction = parse_direction_dir(
+            app_config.name, dirs[0], software_factory_root=root
+        )
+        tracker = (direction.state or {}).get("tracker_issue")
+        if not tracker:
+            return False
+
+        db = db_path or (root / "state" / "factory.db")
+        with Session(_engine(db)) as session:
+            rows = session.exec(
+                select(StoryRecord).where(StoryRecord.direction_id == direction_id)
+            ).all()
+        if not rows or any(r.state != StoryState.DEPLOYED.value for r in rows):
+            return False  # still work in flight for this direction
+
+        repo = github_client.get_repo(app_config.repo)
+        issue = repo.get_issue(int(tracker))
+        if str(getattr(issue, "state", "")).lower() == "closed":
+            return False
+        issue.create_comment(
+            f"✅ All {len(rows)} child stories deployed — closing the direction tracker."
+        )
+        issue.edit(state="closed")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
