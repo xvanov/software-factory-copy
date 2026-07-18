@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from typing import Any
 
 
 def resolve_github_token() -> str | None:
@@ -58,3 +59,23 @@ def resolve_github_token() -> str | None:
         return None
     token = result.stdout.strip()
     return token or None
+
+
+def build_github_client() -> Any | None:
+    """Construct a ``pygithub.Github`` client, best-effort.
+
+    Returns ``None`` when no token is available (see ``resolve_github_token``)
+    instead of raising. This is the shared client-construction path for
+    non-interactive callers — e.g. the deploy chain's issue-closing
+    bookkeeping (``factory/chain/handlers.py::_close_issues_on_deploy``) —
+    that must never crash their caller just because no GitHub token is
+    configured. Interactive callers (the CLI) should prefer a wrapper that
+    surfaces a clear error instead of silently returning ``None``; see
+    ``factory.cli._ensure_github_client``.
+    """
+    token = resolve_github_token()
+    if not token:
+        return None
+    from github import Github
+
+    return Github(token)

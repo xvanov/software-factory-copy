@@ -17,6 +17,7 @@ to invoke based on the story's current state.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -57,6 +58,8 @@ from factory.context.enforcer import format_violation_comment, scan_pr_diff
 from factory.context.updater import ContextUpdate, apply_context_updates
 from factory.directions.parser import Direction, list_direction_dirs, parse_direction_dir
 from factory.model_router import max_output_tokens_for, route
+
+_logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Result type
@@ -3104,21 +3107,42 @@ def _close_issues_on_deploy(
     """Close a deployed story's GH issue + its direction tracker (when all
     siblings are deployed). Best-effort; never raises. Fixes the accumulation
     of open story/tracker issues for already-shipped work (audit 2026-07-18).
+
+    ``github_client`` is ``None`` on every real call today: the orchestrator's
+    ``_invoke_handler`` never passes one to ``handle_deploy``, so this used to
+    silently no-op on every deploy (nothing ever closed). When not
+    ``dry_run``, self-construct a client via the shared
+    ``factory.providers.github.build_github_client`` helper — the same one
+    ``factory.cli._ensure_github_client`` uses — rather than requiring the
+    caller to thread one through. Missing token is swallowed to a warning:
+    bookkeeping must never break deploy.
     """
-    if dry_run or github_client is None:
+    if dry_run:
         return
+    client = github_client
+    if client is None:
+        from factory.providers.github import build_github_client
+
+        client = build_github_client()
+        if client is None:
+            _logger.warning(
+                "deploy: no GitHub token available (GITHUB_TOKEN/GH_TOKEN/"
+                "gh auth token) — skipping auto-close of story %s issue(s)",
+                story.id,
+            )
+            return
     try:
         from factory.directions.tracker_issue import (
             close_story_issue,
             maybe_close_tracker_issue,
         )
 
-        close_story_issue(story, app_config, github_client)
+        close_story_issue(story, app_config, client)
         if story.direction_id:
             maybe_close_tracker_issue(
                 story.direction_id,
                 app_config,
-                github_client,
+                client,
                 software_factory_root=software_factory_root,
                 db_path=db,
             )

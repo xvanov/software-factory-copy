@@ -151,11 +151,16 @@ def _ensure_github_client() -> Any:
     Token precedence: ``GITHUB_TOKEN`` env > ``GH_TOKEN`` env > ``gh auth token``.
     The ``gh`` CLI fallback means an operator who has run ``gh auth login`` once
     does not need to also paste the token into ``.env``.
-    """
-    from factory.providers.github import resolve_github_token
 
-    token = resolve_github_token()
-    if not token:
+    Delegates the actual construction to ``factory.providers.github.build_github_client``
+    (the shared, non-CLI helper) so other callers — e.g. the deploy chain's
+    issue-closing bookkeeping — get the same client without importing this
+    CLI module.
+    """
+    from factory.providers.github import build_github_client
+
+    client = build_github_client()
+    if client is None:
         console.print(
             "[red]error:[/red] no GitHub token available. Either set "
             "[bold]GITHUB_TOKEN[/bold] (or [bold]GH_TOKEN[/bold]) in the "
@@ -163,9 +168,7 @@ def _ensure_github_client() -> Any:
             "[bold]gh auth token[/bold] returns one."
         )
         raise typer.Exit(code=2)
-    from github import Github
-
-    return Github(token)
+    return client
 
 
 def _has_any_llm_provider_key() -> tuple[bool, str]:
