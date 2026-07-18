@@ -340,3 +340,157 @@ def test_loop4_story_merges_on_surviving_gates(tmp_path) -> None:
     assert len(actions) == 1
     act = actions[0]
     assert act.merged, f"expected merge, got reason={act.reason!r}"
+
+
+# --------------------------------------------------------------------------- #
+# Dual-draft sibling cleanup wiring (audit 2026-07-18, leak 4 of 4)
+# --------------------------------------------------------------------------- #
+
+
+def test_auto_merge_closes_sibling_draft_alternative_on_merge(
+    factory_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a dual-draft story's PR merges (real-run, not dry-run), the
+    losing sibling draft-alternative's still-open GitHub issue gets closed
+    automatically — the cleanup the tracker comment promised but that never
+    actually ran (e.g. #210 stayed open forever after #209 merged)."""
+    import subprocess
+
+    from factory.chain.handlers import persist_story
+
+    db = factory_root / "state" / "factory.db"
+
+    winner = StoryRecord(
+        direction_id="007",
+        app="sacrifice",
+        title="Make it better — narrow read",
+        slug="make-it-better-alt-a",
+        scope="backend",
+        state=StoryState.PR_OPEN.value,
+        chain_kind="docs",
+        github_issue_number=209,
+        github_pr_number=555,
+    )
+    persist_story(winner, db)
+    loser = StoryRecord(
+        direction_id="007",
+        app="sacrifice",
+        title="Make it better — broad read",
+        slug="make-it-better-alt-b",
+        scope="backend",
+        state=StoryState.PR_OPEN.value,
+        chain_kind="docs",
+        github_issue_number=210,
+        github_pr_number=556,
+    )
+    persist_story(loser, db)
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run, raising=True)
+
+    class _Issue:
+        def __init__(self, number: int, state: str = "open") -> None:
+            self.number = number
+            self.state = state
+            self.comments: list[str] = []
+            self.close_reason: str | None = None
+
+        def create_comment(self, body: str) -> None:
+            self.comments.append(body)
+
+        def edit(self, *, state: str, state_reason: str | None = None) -> None:
+            self.state = state
+            self.close_reason = state_reason
+
+    class _Repo:
+        def __init__(self, issues: dict[int, _Issue]) -> None:
+            self._issues = issues
+
+        def get_issue(self, n: int) -> _Issue:
+            return self._issues[n]
+
+    class _Client:
+        def __init__(self, repo: _Repo) -> None:
+            self._repo = repo
+
+        def get_repo(self, full_name: str) -> _Repo:
+            return self._repo
+
+    sibling_issue = _Issue(210)
+    client = _Client(_Repo({209: _Issue(209), 210: sibling_issue}))
+
+    fixture = FixturePR(
+        pr_number=555,
+        head_sha="alt-a-sha",
+        base_branch="main",
+        labels=[],
+        files_changed=["context/project.md"],
+        ci_state="success",
+        story=winner,
+    )
+
+    actions = auto_merge_tick(
+        factory_root,
+        "sacrifice",
+        dry_run=False,
+        fixture_prs=[fixture],
+        github_client=client,
+        db_path=db,
+    )
+
+    assert actions[0].merged, actions[0].reason
+    assert sibling_issue.state == "closed"
+    assert sibling_issue.close_reason == "not_planned"
+    assert sibling_issue.comments and "#209" in sibling_issue.comments[0]
+
+
+def test_auto_merge_does_not_close_sibling_when_dry_run(
+    factory_root: Path,
+) -> None:
+    """Sanity: dry-run merges must never touch GitHub for the sibling
+    cleanup either (mirrors the rest of the worker's dry-run contract)."""
+    from factory.chain.handlers import persist_story
+
+    db = factory_root / "state" / "factory.db"
+    winner = StoryRecord(
+        direction_id="011",
+        app="sacrifice",
+        title="Make it better — narrow read",
+        slug="make-it-better-alt-a",
+        scope="docs",
+        state=StoryState.PR_OPEN.value,
+        chain_kind="docs",
+        github_issue_number=219,
+        github_pr_number=565,
+    )
+    persist_story(winner, db)
+    loser = StoryRecord(
+        direction_id="011",
+        app="sacrifice",
+        title="Make it better — broad read",
+        slug="make-it-better-alt-b",
+        scope="docs",
+        state=StoryState.PR_OPEN.value,
+        chain_kind="docs",
+        github_issue_number=220,
+        github_pr_number=566,
+    )
+    persist_story(loser, db)
+
+    fixture = FixturePR(
+        pr_number=565,
+        head_sha="alt-a-sha-2",
+        base_branch="main",
+        labels=[],
+        files_changed=["context/project.md"],
+        ci_state="success",
+        story=winner,
+    )
+    actions = auto_merge_tick(
+        factory_root, "sacrifice", dry_run=True, fixture_prs=[fixture], db_path=db,
+    )
+    assert actions[0].merged, actions[0].reason
+    # No github_client was even provided in dry-run; nothing to assert on
+    # the (nonexistent) sibling issue beyond "no exception raised".

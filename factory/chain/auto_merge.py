@@ -663,11 +663,30 @@ def auto_merge_tick(
                     with Session(eng) as session:
                         session.add(story)
                         session.commit()
+                        # Refresh while the session is still open so
+                        # ``story``'s attributes stay readable afterwards
+                        # (commit() expires them; without this, the
+                        # sibling-cleanup read below raises
+                        # DetachedInstanceError once the ``with`` block
+                        # exits and the session closes).
+                        session.refresh(story)
                 except Exception:
                     # State-machine refusal is non-fatal here — the deploy
                     # queue entry still drives the work; the story will be
                     # reconciled by the orchestrator on a later tick.
                     pass
+                else:
+                    # Dual-draft cleanup: if ``story`` was one of two
+                    # draft-alternative interpretations of the same
+                    # direction, close the losing sibling's issue now that
+                    # this one has won the merge (audit 2026-07-18, leak 4
+                    # of 4 — the abandoned draft used to stay open
+                    # forever). Best-effort/idempotent; never raises.
+                    from factory.chain.dual_draft import close_abandoned_draft_sibling
+
+                    close_abandoned_draft_sibling(
+                        story, cfg, root, db, github_client, dry_run
+                    )
         elif (
             not dry_run
             and not action.merged

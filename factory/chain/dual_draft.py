@@ -19,7 +19,9 @@ flow offline.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from factory.directions.parser import Direction
@@ -279,3 +281,105 @@ def link_alternatives(
 
     comment = issue.create_comment("\n".join(lines))
     return int(getattr(comment, "id", 0)) or 1
+
+
+# --------------------------------------------------------------------------- #
+# Sibling cleanup — close the losing draft-alternative once one wins
+# --------------------------------------------------------------------------- #
+
+# ``handle_stories_spawned``'s dual-draft branch always suffixes each
+# story's slug with its ``interpretation_id`` (``alt-a`` / ``alt-b`` / ...)
+# so the two draft PRs don't collide on branch names. There's no dedicated
+# DB column marking "this story is one of a dual-draft pair" — matching the
+# slug suffix is how ``close_abandoned_draft_sibling`` (below) recognizes
+# dual-draft siblings without a schema change.
+_DRAFT_ALT_SLUG_RE = re.compile(r"-(alt-[a-z0-9]+)$")
+
+
+def _draft_alt_suffix(slug: str) -> str | None:
+    m = _DRAFT_ALT_SLUG_RE.search(slug or "")
+    return m.group(1) if m else None
+
+
+def close_abandoned_draft_sibling(
+    winner: Any,
+    app_config: Any,
+    software_factory_root: Path,
+    db_path: Path,
+    github_client: Any,
+    dry_run: bool,
+) -> bool:
+    """Close the losing dual-draft sibling's GitHub issue once ``winner`` merges.
+
+    The dual-draft flow spawns two ``draft-alternative`` StoryRecords per
+    ambiguous direction; the tracker comment (``link_alternatives``)
+    promises "the factory auto-cleans the other draft once one alternative
+    merges" but that cleanup never existed — whichever alternative's PR
+    merged first left its sibling's issue (and branch) open forever (e.g.
+    #210 orphaned after #209 merged — audit 2026-07-18, leak 4 of 4).
+
+    ``winner`` is the StoryRecord whose PR just merged. Looks up sibling
+    StoryRecords sharing ``direction_id`` + ``app``, filters to the ones
+    that carry the dual-draft slug suffix (excluding the winner's own
+    interpretation), and — for any still-open GitHub issue among them —
+    posts an explanatory comment and closes it with reason "not planned".
+
+    Best-effort and idempotent; never raises — a bookkeeping close must
+    never break the merge worker. Returns True iff at least one sibling
+    issue was closed.
+    """
+    if dry_run or github_client is None:
+        return False
+    if winner is None or not getattr(winner, "direction_id", None):
+        return False
+    winner_suffix = _draft_alt_suffix(getattr(winner, "slug", "") or "")
+    if winner_suffix is None:
+        return False  # not a dual-draft story; nothing to clean up
+
+    try:
+        from sqlmodel import Session, select
+
+        from factory.chain.state_machine import StoryRecord
+        from factory.runner import _engine
+
+        eng = _engine(Path(db_path))
+        with Session(eng) as session:
+            siblings = session.exec(
+                select(StoryRecord).where(
+                    StoryRecord.direction_id == winner.direction_id,
+                    StoryRecord.app == winner.app,
+                )
+            ).all()
+
+        closed_any = False
+        for sib in siblings:
+            if sib.id == winner.id:
+                continue
+            sib_suffix = _draft_alt_suffix(sib.slug or "")
+            if sib_suffix is None or sib_suffix == winner_suffix:
+                # Not a dual-draft sibling, or the same interpretation
+                # (shouldn't happen, but never self-close).
+                continue
+            if not sib.github_issue_number:
+                continue
+            try:
+                repo = github_client.get_repo(app_config.repo)
+                issue = repo.get_issue(int(sib.github_issue_number))
+                if str(getattr(issue, "state", "")).lower() == "closed":
+                    continue
+                winner_ref = (
+                    f"#{winner.github_issue_number}"
+                    if getattr(winner, "github_issue_number", None)
+                    else f"story {winner.id}"
+                )
+                issue.create_comment(
+                    f"Superseded by sibling {winner_ref} which shipped — "
+                    "closing this draft-alternative automatically."
+                )
+                issue.edit(state="closed", state_reason="not_planned")
+                closed_any = True
+            except Exception:  # noqa: BLE001 - bookkeeping must never break merge
+                continue
+        return closed_any
+    except Exception:  # noqa: BLE001
+        return False
