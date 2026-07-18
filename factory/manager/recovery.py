@@ -7,9 +7,11 @@ factory CODE (prompts, persona settings, dispatch code, detectors). But most
 of what actually goes wrong in production is OPERATIONAL: a story got stuck
 in a blocked state after a transient PR conflict resolved itself, a story's
 branch/PR never got created and the row is now an orphan, an app's
-``deploy.enabled`` flag got flipped on before the deploy artifacts existed.
-No code diff fixes any of that — it needs an ACTION (reset a DB row, flip a
-config flag). Because L3's action-space was code-diffs-only, every one of
+``deploy.enabled`` flag got flipped on before the deploy artifacts existed,
+or a single deploy failure auto-flipped the whole factory into ``fix-only``
+mode and nothing ever flipped it back. No code diff fixes any of that — it
+needs an ACTION (reset a DB row, flip a config flag, flip the mode back).
+Because L3's action-space was code-diffs-only, every one of
 these landed as ``target_class: escalate_to_human`` (100% of 124 proposals in
 production, 0 fixes applied). This module adds a rule-based recovery
 executor that performs the action directly, for a short, hand-audited list of
@@ -37,7 +39,9 @@ Safety rails
 * Every mutation is REVERSIBLE: playbooks 1/2 only move a story between
   states already reachable by the normal chain (a re-block or a fresh
   dispatch just re-runs the existing pipeline); playbook 3 only flips a
-  boolean the operator can flip back.
+  boolean the operator can flip back; playbook 5 only flips the factory mode
+  back to ``normal``, which the operator or the deploy-failure/rollback path
+  can re-set to ``fix-only`` at any time.
 * Every action (including dry-run intents and escalations) is appended to
   ``state/events/recovery.ndjson`` via ``factory.manager.signals.write_event``
   — ts, playbook, target, action_taken, precondition_snapshot.
@@ -51,10 +55,11 @@ Safety rails
   escalate-to-human path untouched.
 * Scope discipline: no playbook here ever touches a direction's content,
   title, scope, or body — only pipeline bookkeeping fields on
-  ``StoryRecord`` (state/error/PR identifiers) or the ``deploy.enabled``
-  boolean in an app's ``config.yaml``. Whatever a human (operator or
-  end-user, e.g. via the auto-intake GitHub-issue flow) actually asked for
-  is defined by the direction/story content, which this module never edits
+  ``StoryRecord`` (state/error/PR identifiers), the ``deploy.enabled``
+  boolean in an app's ``config.yaml``, or the global factory mode. Whatever
+  a human (operator or end-user, e.g. via the auto-intake GitHub-issue flow)
+  actually asked for is defined by the direction/story content, which this
+  module never edits
   — recovery only un-wedges the PIPELINE moving that content through the
   chain, never reinterprets or overrides it.
 * ``gh``/``git`` calls are wrapped so a transient CLI failure (network,
@@ -78,6 +83,8 @@ from sqlmodel import Session, create_engine, select
 from factory.app_config import AppConfig, load_app_config, resolve_app_repo_path
 from factory.chain.state_machine import StoryRecord, StoryState
 from factory.manager.signals import write_event
+from factory.settings.loader import FactorySettings
+from factory.settings.modes import get_mode, set_mode
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -103,6 +110,7 @@ PLAYBOOK_RETRY_MERGEABLE_BLOCKED = "retry-mergeable-blocked-story"
 PLAYBOOK_REDISPATCH_PHANTOM_PR = "redispatch-phantom-pr-open"
 PLAYBOOK_REVERT_PREMATURE_DEPLOY = "revert-premature-deploy-enable"
 PLAYBOOK_CONFLICTING_GATED_PR = "conflicting-gated-pr"  # escalate-only, v1
+PLAYBOOK_RECOVER_STUCK_FIXONLY = "recover-stuck-fixonly-mode"
 
 # Story states already known (auto_merge.py's _MERGEABLE_STATES) to mean
 # "already reached the merge gate" — reused here to spot a PR that passed
@@ -702,6 +710,137 @@ def detect_conflicting_gated_prs(
 
 
 # --------------------------------------------------------------------------- #
+# Playbook 5 — recover-stuck-fixonly-mode
+# --------------------------------------------------------------------------- #
+
+
+def detect_stuck_fixonly_mode(
+    root: Path,
+    *,
+    db_path: Path | None = None,
+    apps: list[str] | None = None,
+) -> list[RecoveryTarget]:
+    """PRECONDITION: factory mode == "fix-only" AND, for every in-scope app,
+    ``deploy.enabled`` is False.
+
+    ``fix-only`` is set by ``factory/deploy/orchestrator.py`` and
+    ``factory/chain/rollback.py`` on a deploy/rollback failure, to stop
+    feature/infra work from reaching production while a regression is being
+    fixed (``can_dispatch`` rejects non-bug-fix job kinds in this mode). But
+    NOTHING flips it back — a single deploy failure wedges the factory in
+    ``fix-only`` indefinitely, even after the cause is addressed or was
+    itself spurious.
+
+    The safe recovery condition: if NO in-scope app can actually reach
+    production (``deploy.enabled`` is False everywhere), ``fix-only`` cannot
+    be protecting a live deploy from a regression — merged feature work
+    can't reach prod either way, so blocking it serves no purpose. This
+    holds regardless of who/what set fix-only or why, which is what makes
+    the precondition robust without needing to reconstruct history.
+
+    Conversely, if ANY in-scope app has ``deploy.enabled`` true, a real
+    deploy is live and could be regressing — that is exactly the case
+    ``fix-only`` exists for, so this playbook must NOT match and the mode
+    stays put. An app whose ``deploy.enabled`` can't be determined (config
+    missing/unparseable) is treated the same as "enabled": strict
+    precondition, skip rather than guess it's safe.
+
+    Read-only: reads the mode from the DB and ``deploy.enabled`` from each
+    app's ``config.yaml`` (no mutation).
+    """
+    mode = get_mode(root, db_path=db_path)
+    if mode != "fix-only":
+        return []
+
+    deploy_enabled_by_app: dict[str, bool] = {}
+    for cfg_path in _config_paths(root, apps):
+        app = cfg_path.parent.name
+        try:
+            cfg = load_app_config(app, root)
+        except Exception:  # noqa: BLE001
+            # Can't determine this app's deploy.enabled — uncertain. A real
+            # deploy could be live for it; do not guess it's safe.
+            return []
+        if cfg.deploy.enabled:
+            # A real deploy is live for this app — fix-only may legitimately
+            # be protecting it. Do not auto-recover.
+            return []
+        deploy_enabled_by_app[app] = cfg.deploy.enabled
+
+    return [
+        RecoveryTarget(
+            playbook=PLAYBOOK_RECOVER_STUCK_FIXONLY,
+            key="mode:factory",
+            description=(
+                "factory mode is fix-only but deploy.enabled is False for "
+                f"every in-scope app ({sorted(deploy_enabled_by_app)!r}) — "
+                "fix-only cannot be protecting a live deploy, safe to "
+                "return to normal"
+            ),
+            extra={
+                "mode_before": mode,
+                "deploy_enabled_by_app": deploy_enabled_by_app,
+            },
+        )
+    ]
+
+
+def execute_recover_stuck_fixonly_mode(
+    root: Path,
+    target: RecoveryTarget,
+    *,
+    dry_run: bool,
+    db_path: Path | None = None,
+    settings: FactorySettings | None = None,
+) -> RecoveryOutcome:
+    """ACTION: set factory mode fix-only -> normal.
+
+    Reversible: the operator, or the deploy-failure/rollback path itself,
+    can set fix-only again at any time (subject to this playbook's own
+    cooldown before it would re-recover) — this only un-wedges a mode that
+    would otherwise never flip back on its own.
+    """
+    action_desc = "set factory mode fix-only -> normal"
+    if dry_run:
+        return RecoveryOutcome(target.playbook, target, "dry_run", action_desc)
+
+    # Re-check the precondition at execute time — the detector's snapshot
+    # could be stale if anything mutated mode/config between detection and
+    # execution within this cycle.
+    current_mode = get_mode(root, db_path=db_path)
+    if current_mode != "fix-only":
+        return RecoveryOutcome(
+            target.playbook,
+            target,
+            "skipped_stale",
+            "factory mode no longer fix-only at execute time",
+        )
+    for app in target.extra.get("deploy_enabled_by_app", {}):
+        try:
+            cfg = load_app_config(app, root)
+        except Exception:  # noqa: BLE001
+            return RecoveryOutcome(
+                target.playbook,
+                target,
+                "skipped_stale",
+                f"could not re-verify deploy.enabled for app {app!r} at execute time",
+            )
+        if cfg.deploy.enabled:
+            return RecoveryOutcome(
+                target.playbook,
+                target,
+                "skipped_stale",
+                f"app {app!r} now has deploy.enabled=true at execute time",
+            )
+
+    try:
+        new_mode = set_mode("normal", root, db_path=db_path, settings=settings)
+    except Exception as exc:  # noqa: BLE001
+        return RecoveryOutcome(target.playbook, target, "error", action_desc, error=repr(exc))
+    return RecoveryOutcome(target.playbook, target, "recovered", f"mode fix-only -> {new_mode}")
+
+
+# --------------------------------------------------------------------------- #
 # Recovery log (state/events/recovery.ndjson)
 # --------------------------------------------------------------------------- #
 
@@ -991,6 +1130,21 @@ def run_recovery_cycle(
             }
         )
 
+    # Playbook 5: recover-stuck-fixonly-mode
+    targets_5 = detect_stuck_fixonly_mode(root, db_path=db_path, apps=apps)
+    actions_taken = _apply_playbook(
+        root,
+        targets_5,
+        execute_recover_stuck_fixonly_mode,
+        dry_run=effective_dry_run,
+        now=now,
+        cooldown=cooldown,
+        max_actions=max_actions,
+        actions_taken=actions_taken,
+        summary=summary,
+        execute_kwargs={"db_path": db_path},
+    )
+
     return summary
 
 
@@ -1001,6 +1155,7 @@ __all__ = [
     "PLAYBOOK_REDISPATCH_PHANTOM_PR",
     "PLAYBOOK_REVERT_PREMATURE_DEPLOY",
     "PLAYBOOK_CONFLICTING_GATED_PR",
+    "PLAYBOOK_RECOVER_STUCK_FIXONLY",
     "detect_retry_mergeable_blocked_stories",
     "execute_retry_mergeable_blocked_story",
     "detect_phantom_pr_open_stories",
@@ -1008,5 +1163,7 @@ __all__ = [
     "detect_premature_deploy_enabled",
     "execute_revert_premature_deploy_enable",
     "detect_conflicting_gated_prs",
+    "detect_stuck_fixonly_mode",
+    "execute_recover_stuck_fixonly_mode",
     "run_recovery_cycle",
 ]

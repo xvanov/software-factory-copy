@@ -17,6 +17,7 @@ from sqlmodel import Session, create_engine
 
 from factory.chain.state_machine import StoryRecord, StoryState
 from factory.manager import recovery
+from factory.settings.modes import get_mode, set_mode
 
 # --------------------------------------------------------------------------- #
 # Fixtures
@@ -482,6 +483,155 @@ class TestConflictingGatedPr:
 
         story = _get_story(root, story_id)
         assert story.state == StoryState.CI_GREEN.value  # untouched
+
+
+# --------------------------------------------------------------------------- #
+# Playbook 5: recover-stuck-fixonly-mode
+# --------------------------------------------------------------------------- #
+
+
+class TestRecoverStuckFixonlyMode:
+    def test_precondition_matches_and_recovers(self, root: Path) -> None:
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        set_mode("fix-only", root)
+
+        targets = recovery.detect_stuck_fixonly_mode(root)
+        assert len(targets) == 1
+        target = targets[0]
+        assert target.playbook == recovery.PLAYBOOK_RECOVER_STUCK_FIXONLY
+        assert target.extra["mode_before"] == "fix-only"
+        assert target.extra["deploy_enabled_by_app"] == {"sacrifice": False}
+
+        outcome = recovery.execute_recover_stuck_fixonly_mode(root, target, dry_run=False)
+        assert outcome.status == "recovered"
+        assert get_mode(root) == "normal"
+
+    def test_recovers_end_to_end_via_run_recovery_cycle(self, root: Path) -> None:
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        set_mode("fix-only", root)
+
+        summary = recovery.run_recovery_cycle(root, dry_run=False)
+        assert len(summary["recovered"]) == 1
+        assert summary["recovered"][0]["playbook"] == recovery.PLAYBOOK_RECOVER_STUCK_FIXONLY
+        assert get_mode(root) == "normal"
+
+    def test_precondition_fails_when_any_app_deploy_enabled(self, root: Path) -> None:
+        """A real deploy could be live for this app -- fix-only may
+        legitimately be protecting it, so no auto-recovery. Uses a
+        non-compose pre_deploy_command so playbook 3 (revert-premature-
+        deploy-enable) stays out of scope and this test isolates playbook 5."""
+        _write_app_config(
+            root, "sacrifice", deploy_enabled=True, pre_deploy_commands=["echo hi"]
+        )
+        set_mode("fix-only", root)
+
+        targets = recovery.detect_stuck_fixonly_mode(root)
+        assert targets == []
+
+        summary = recovery.run_recovery_cycle(root, dry_run=False)
+        assert summary["recovered"] == []
+        assert get_mode(root) == "fix-only"
+
+    def test_precondition_fails_when_one_of_several_apps_deploy_enabled(
+        self, root: Path
+    ) -> None:
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        _write_app_config(root, "otherapp", deploy_enabled=True)
+        set_mode("fix-only", root)
+
+        targets = recovery.detect_stuck_fixonly_mode(root)
+        assert targets == []
+
+    def test_noop_when_mode_normal(self, root: Path) -> None:
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        # Default mode (no explicit set_mode call) is "normal".
+        targets = recovery.detect_stuck_fixonly_mode(root)
+        assert targets == []
+
+    def test_noop_when_mode_paused(self, root: Path) -> None:
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        set_mode("paused", root)
+
+        targets = recovery.detect_stuck_fixonly_mode(root)
+        assert targets == []
+        assert get_mode(root) == "paused"
+
+    def test_dry_run_makes_no_mode_change(self, root: Path) -> None:
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        set_mode("fix-only", root)
+
+        targets = recovery.detect_stuck_fixonly_mode(root)
+        assert len(targets) == 1
+        outcome = recovery.execute_recover_stuck_fixonly_mode(
+            root, targets[0], dry_run=True
+        )
+        assert outcome.status == "dry_run"
+        assert get_mode(root) == "fix-only"
+
+    def test_uncertain_app_config_skips(self, root: Path) -> None:
+        """An app whose config.yaml can't be loaded is treated the same as
+        'deploy.enabled=true' -- uncertain, so the detector must not guess
+        it's safe to flip the mode back."""
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        broken = root / "apps" / "broken" / "config.yaml"
+        broken.parent.mkdir(parents=True)
+        broken.write_text("not: valid: yaml: [", encoding="utf-8")
+        set_mode("fix-only", root)
+
+        targets = recovery.detect_stuck_fixonly_mode(root)
+        assert targets == []
+
+    def test_halted_forces_dry_run(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        set_mode("fix-only", root)
+
+        import factory.manager.halt as halt_mod
+
+        monkeypatch.setattr(halt_mod, "is_halted", lambda *, root: True)
+
+        summary = recovery.run_recovery_cycle(root, dry_run=False)
+        assert summary["forced_dry_run_halted"] is True
+        assert get_mode(root) == "fix-only"  # untouched
+
+    def test_cooldown_blocks_reflip_within_window(self, root: Path) -> None:
+        """A cooldown-blocked re-recovery must NOT fight a deploy-failure
+        path that legitimately re-sets fix-only shortly after."""
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        set_mode("fix-only", root)
+        now = datetime.now(UTC)
+
+        summary1 = recovery.run_recovery_cycle(root, dry_run=False, now=now)
+        assert len(summary1["recovered"]) == 1
+        assert get_mode(root) == "normal"
+
+        # Simulate the deploy-failure path legitimately re-flipping fix-only
+        # a few minutes later (e.g. a fresh, unrelated deploy failure).
+        set_mode("fix-only", root)
+
+        summary2 = recovery.run_recovery_cycle(
+            root, dry_run=False, now=now + timedelta(minutes=5)
+        )
+        assert summary2["recovered"] == []
+        assert any(
+            e["playbook"] == recovery.PLAYBOOK_RECOVER_STUCK_FIXONLY
+            and e["reason"] == "cooldown"
+            for e in summary2["escalated"]
+        )
+        assert get_mode(root) == "fix-only"  # not re-flipped within cooldown
+
+    def test_cooldown_expires(self, root: Path) -> None:
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        set_mode("fix-only", root)
+        now = datetime.now(UTC)
+
+        recovery.run_recovery_cycle(root, dry_run=False, now=now)
+        set_mode("fix-only", root)
+
+        summary2 = recovery.run_recovery_cycle(
+            root, dry_run=False, now=now + timedelta(minutes=45)
+        )
+        assert len(summary2["recovered"]) == 1
+        assert get_mode(root) == "normal"
 
 
 # --------------------------------------------------------------------------- #
