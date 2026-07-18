@@ -151,7 +151,7 @@ def test_close_abandoned_draft_sibling_ignores_non_dual_draft_story(tmp_path: Pa
         ),
         db,
     )
-    other = persist_story(
+    persist_story(
         StoryRecord(
             direction_id="008",
             app="sacrifice",
@@ -190,7 +190,7 @@ def test_close_abandoned_draft_sibling_ignores_same_interpretation(tmp_path: Pat
         ),
         db,
     )
-    same_suffix = persist_story(
+    persist_story(
         StoryRecord(
             direction_id="009",
             app="sacrifice",
