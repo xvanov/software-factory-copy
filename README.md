@@ -4,6 +4,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![Tests](https://github.com/xvanov/software-factory/actions/workflows/test.yml/badge.svg)
+![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xvanov/software-factory/python-coverage-comment-action-data/endpoint.json)
 ![Test count](https://img.shields.io/badge/tests-1086%20passing-brightgreen)
 ![Ruff](https://img.shields.io/badge/lint-ruff-D7FF64?logo=ruff&logoColor=black)
 ![Typed](https://img.shields.io/badge/types-mypy-blue)
