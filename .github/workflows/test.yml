@@ -29,9 +29,6 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Advisory until the 78 pre-existing package-wide mypy findings are paid
-    # down (2026-07-18) — per-module strictness is enforced in review instead.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
@@ -40,8 +37,14 @@ jobs:
           python-version: "3.12"
       - name: uv sync
         run: uv sync --all-extras
-      - name: mypy
-        run: uv run mypy factory/
+      # Advisory until the 78 pre-existing package-wide findings are paid
+      # down (2026-07-18): surfaces a warning annotation, never fails the job.
+      - name: mypy (advisory)
+        run: |
+          uv run mypy factory/ > mypy.out 2>&1 || true
+          tail -3 mypy.out
+          COUNT=$(grep -c "error:" mypy.out || true)
+          echo "::warning::mypy: ${COUNT} findings (advisory — tracked debt, not gating)"
 
   pytest:
     runs-on: ubuntu-latest

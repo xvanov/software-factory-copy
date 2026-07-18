@@ -87,3 +87,8 @@ follow_imports = "silent"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.coverage.run]
+# Required by python-coverage-comment-action: its container re-reads the
+# .coverage db from a different absolute root, so paths must be relative.
+relative_files = true
