@@ -23,6 +23,15 @@ class CapsConfig(BaseModel):
     per_repo_concurrent_agents: int = 2
     daily_spend_usd: float = 10.0
     hourly_spend_usd: float = 2.0
+    # WS1.1 GLOBAL per-story circuit breaker. The daily/hourly caps above are
+    # factory-wide; these bound a SINGLE story's aggregate cost across every
+    # composed loop it passes through (dev retries, reviewer cycles, tech_writer,
+    # docs, auto-recovery re-dispatch, CI-fix). Crossing either advances the
+    # story to the terminal BLOCKED_BUDGET_EXCEEDED sink so one pathological
+    # story can't burn the product of all the per-loop counters. Configurable
+    # from the same ``caps:`` block in ``factory_settings.yaml``.
+    per_story_spend_usd: float = 5.0
+    per_story_attempts: int = 20
 
 
 class QueuesConfig(BaseModel):

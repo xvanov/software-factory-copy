@@ -76,6 +76,25 @@ class StoryState(StrEnum):
     # (no outgoing transition) so the orchestrator stops dispatching the
     # story and it surfaces for human review instead of looping indefinitely.
     BLOCKED_REVIEW_NONCONVERGENT = "blocked_review_nonconvergent"
+    # WS1.1 global per-story budget circuit breaker. The composed loops (dev
+    # retries, reviewer cycles, auto-recovery re-dispatch, CI-fix) each have
+    # their OWN counter but no aggregate per-story ceiling, so a pathological
+    # story can burn dev(6)*review(6)+recovery(2)+CI-fix(3) loops of spend.
+    # When a story's ``total_attempts`` or ``total_spend_usd`` crosses the
+    # per-story cap, the orchestrator routes it here. Terminal (no outgoing
+    # transition) so a broken story stops burning spend and surfaces for a
+    # human with the evidence event the breaker emits.
+    #
+    # OPERATOR RESET (this is a terminal sink and its worktree gets pruned):
+    # to re-run a story parked here, move it back to a live dispatch state
+    # (e.g. ``sm_done`` to replay dev→review→merge, or ``story_created`` from
+    # scratch) AND zero the accumulators (``total_attempts = 0``,
+    # ``total_spend_usd = 0.0``) — otherwise the pre-dispatch breaker re-trips
+    # immediately. To raise the ceiling globally instead, bump
+    # ``caps.per_story_attempts`` / ``caps.per_story_spend_usd`` in
+    # factory_settings.yaml. There is deliberately no auto-recovery path
+    # (this state is absent from ``_AUTO_RECOVERABLE_STATES``).
+    BLOCKED_BUDGET_EXCEEDED = "blocked_budget_exceeded"
 
 
 class StoryRecord(SQLModel, table=True):
@@ -131,6 +150,17 @@ class StoryRecord(SQLModel, table=True):
     # ``BLOCKED_REVIEW_NONCONVERGENT`` instead of looping back to dev, so a
     # non-converging dev<->reviewer ping-pong cannot burn budget unbounded.
     reviewer_cycles: int = 0
+    # WS1.1 global per-story budget circuit breaker accumulators. Unlike the
+    # per-loop counters above (dev_retries, reviewer_cycles) these span EVERY
+    # loop the story passes through — dev retries, reviewer cycles, tech_writer,
+    # docs, auto-recovery re-dispatch, CI-fix — giving one aggregate ceiling no
+    # single loop's counter can see. ``total_attempts`` is bumped once per
+    # handler dispatch by the orchestrator; ``total_spend_usd`` is refreshed
+    # from the D003 per-run ledger (runs.cost_usd attributed to this story)
+    # after each dispatch. When either crosses the per-story cap the
+    # orchestrator advances the story to BLOCKED_BUDGET_EXCEEDED.
+    total_attempts: int = 0
+    total_spend_usd: float = 0.0
     current_model_tier: str = "standard"  # standard | hard
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -195,6 +225,11 @@ EVENT_DEPLOY_SKIPPED = "deploy_skipped"  # mode/cap rejection or deploy.enabled=
 # already-merged out-of-band, or CONFLICTING/DIRTY). Routes the story to the
 # terminal BLOCKED_DEPLOY_FAILED sink so it stops being retried every tick.
 EVENT_PR_UNMERGEABLE = "pr_unmergeable"
+# WS1.1 per-story budget circuit breaker fired: the story's aggregate
+# ``total_attempts`` or ``total_spend_usd`` crossed the per-story cap. Routes
+# every budget-metered dispatch state to the terminal BLOCKED_BUDGET_EXCEEDED
+# sink so the story stops burning spend across composed loops.
+EVENT_BUDGET_EXCEEDED = "budget_exceeded"
 
 
 # Lookup table: (current_state, event) -> next_state.
@@ -294,6 +329,26 @@ _TRANSITIONS: dict[tuple[StoryState, str], StoryState] = {
     (StoryState.PR_OPEN, EVENT_PR_UNMERGEABLE): StoryState.BLOCKED_DEPLOY_FAILED,
     (StoryState.CI_GREEN, EVENT_PR_UNMERGEABLE): StoryState.BLOCKED_DEPLOY_FAILED,
     (StoryState.READY_FOR_MERGE, EVENT_PR_UNMERGEABLE): StoryState.BLOCKED_DEPLOY_FAILED,
+    # ---- WS1.1 per-story budget circuit breaker ----
+    # Every budget-metered dispatch state (the LLM-persona loop states that
+    # burn spend) gets an edge to the terminal BLOCKED_BUDGET_EXCEEDED sink.
+    # The orchestrator fires EVENT_BUDGET_EXCEEDED *before* dispatching a
+    # handler when the story's aggregate attempts/spend cross the per-story
+    # cap. DEPLOY_PENDING is intentionally NOT metered: a story that reached
+    # deploy already passed every gate, and blocking it would strand merged
+    # work un-deployed without saving meaningful LLM spend.
+    (StoryState.STORY_CREATED, EVENT_BUDGET_EXCEEDED): StoryState.BLOCKED_BUDGET_EXCEEDED,
+    (StoryState.SM_DONE, EVENT_BUDGET_EXCEEDED): StoryState.BLOCKED_BUDGET_EXCEEDED,
+    (StoryState.DEV_RETRY, EVENT_BUDGET_EXCEEDED): StoryState.BLOCKED_BUDGET_EXCEEDED,
+    (
+        StoryState.REVIEWER_REQUESTED_CHANGES,
+        EVENT_BUDGET_EXCEEDED,
+    ): StoryState.BLOCKED_BUDGET_EXCEEDED,
+    (StoryState.TESTS_GREEN, EVENT_BUDGET_EXCEEDED): StoryState.BLOCKED_BUDGET_EXCEEDED,
+    (StoryState.REVIEWER_DONE, EVENT_BUDGET_EXCEEDED): StoryState.BLOCKED_BUDGET_EXCEEDED,
+    (StoryState.TECH_WRITER_DONE, EVENT_BUDGET_EXCEEDED): StoryState.BLOCKED_BUDGET_EXCEEDED,
+    (StoryState.DOCS_SM_DONE, EVENT_BUDGET_EXCEEDED): StoryState.BLOCKED_BUDGET_EXCEEDED,
+    (StoryState.DOCS_ONBOARDER_DONE, EVENT_BUDGET_EXCEEDED): StoryState.BLOCKED_BUDGET_EXCEEDED,
     (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_STARTED): StoryState.DEPLOY_PENDING,
     (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_SUCCEEDED): StoryState.DEPLOYED,
     (StoryState.DEPLOY_PENDING, EVENT_DEPLOY_FAILED): StoryState.BLOCKED_DEPLOY_FAILED,

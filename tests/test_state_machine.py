@@ -121,16 +121,20 @@ def test_illegal_transition_raises() -> None:
 
 
 def test_list_transitions_from_story_created() -> None:
-    """STORY_CREATED has TWO outgoing edges: the TDD start (SM_STARTED) and
-    the docs-chain start (DOCS_SM_STARTED). Which one fires is decided by the
-    orchestrator based on ``story.chain_kind``."""
+    """STORY_CREATED has THREE outgoing edges: the TDD start (SM_STARTED),
+    the docs-chain start (DOCS_SM_STARTED) — which one of those fires is
+    decided by the orchestrator based on ``story.chain_kind`` — and the
+    WS1.1 per-story budget breaker (BUDGET_EXCEEDED) which the orchestrator
+    fires pre-dispatch when the story's aggregate attempts/spend cross the
+    per-story cap."""
     edges = set(list_transitions_from(StoryState.STORY_CREATED))
     assert (EVENT_SM_STARTED, StoryState.SM_IN_PROGRESS) in edges
     # Imported here to keep the existing import list focused on TDD events.
-    from factory.chain.state_machine import EVENT_DOCS_SM_STARTED
+    from factory.chain.state_machine import EVENT_BUDGET_EXCEEDED, EVENT_DOCS_SM_STARTED
 
     assert (EVENT_DOCS_SM_STARTED, StoryState.DOCS_SM_IN_PROGRESS) in edges
-    assert len(edges) == 2
+    assert (EVENT_BUDGET_EXCEEDED, StoryState.BLOCKED_BUDGET_EXCEEDED) in edges
+    assert len(edges) == 3
 
 
 def test_sm_in_progress_transitions_to_sm_done() -> None:
