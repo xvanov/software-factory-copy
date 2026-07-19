@@ -22,9 +22,9 @@ queues:
 rate_limits:
   pm_invocations_per_hour: 4
   ralph_runs_per_day: 24
-  bug_hunter_runs_per_day: 2
-  security_runs_per_day: 1
-  ux_auditor_runs_per_day: 2
+  bug_hunter_runs_per_day: 6
+  security_runs_per_day: 2
+  ux_auditor_runs_per_day: 4
   # Factory self-improver. Now event-triggered — ``factory tick``
   # fires the improver whenever a fresh ``factory_needs_redesign``
   # event arrives (debounced ~10 min, capped daily). 12/day is the
@@ -81,15 +81,15 @@ schedules:
     persona: ralph
     rate_limit_key: ralph_runs_per_day
   - name: bug_hunt
-    cron: "0 6 * * *"
+    cron: "0 */4 * * *"
     persona: bug_hunter
     rate_limit_key: bug_hunter_runs_per_day
   - name: ux_audit
-    cron: "0 12 * * *"
+    cron: "0 */6 * * *"
     persona: ux_auditor
     rate_limit_key: ux_auditor_runs_per_day
   - name: security_weekly
-    cron: "0 9 * * 1"
+    cron: "0 9 * * *"
     persona: security
     rate_limit_key: security_runs_per_day
   # Factory self-improver is NOT a cron-scheduled persona anymore —
