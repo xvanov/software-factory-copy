@@ -92,6 +92,15 @@ def write_event(
         directory = _events_dir(software_factory_root)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{stream}.ndjson"
+        # Cap unbounded stream growth: roll the file BEFORE appending when it
+        # has crossed the size threshold. Rotation is best-effort and never
+        # raises; a failure here must not lose the event we are about to write.
+        try:
+            from factory.events.rotation import rotate_if_needed
+
+            rotate_if_needed(path)
+        except Exception as rot_exc:  # noqa: BLE001 - telemetry path, never fail
+            print(f"[signals] rotation check failed stream={stream!r}: {rot_exc}", file=sys.stderr)
         try:
             line = json.dumps(record) + "\n"
         except (TypeError, ValueError) as enc_exc:

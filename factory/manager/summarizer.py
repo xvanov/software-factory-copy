@@ -21,6 +21,7 @@ Public API
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -74,6 +75,21 @@ _CONCERNS_STREAM = "concerns"
 
 # How many prior concerns to include for continuity.
 _PRIOR_CONCERNS_LIMIT = 5
+
+# Bound on the watcher_notes tail scanned each cycle. The summarizer only ever
+# needs notes within its lookback window (default 2h); a stream that has grown
+# to tens of MB must not be scanned linearly every run. 5000 lines comfortably
+# covers the lookback at any realistic watcher cadence.
+_WATCHER_NOTES_TAIL_LINES = 5000
+
+# Cooldown for concern dedup. A persistent condition (e.g. a healthy drain)
+# would otherwise re-fire the SAME concern every cycle — 25 draining-mode
+# concerns/day were observed live. When an UNRESOLVED concern with the same
+# stable signature was emitted within this window, re-emission is suppressed.
+_CONCERN_DEDUP_COOLDOWN = timedelta(minutes=60)
+
+# Tail of concerns.ndjson scanned when checking dedup recency.
+_CONCERN_DEDUP_TAIL_LINES = 2000
 
 # Schema version emitted by this module.
 _SCHEMA_VERSION = 1
@@ -142,25 +158,31 @@ def _read_stream_between(
     return matching[-_MAX_LINES_PER_STREAM:]
 
 
-def _read_all_watcher_notes(root: Path) -> list[dict]:
-    """Return all watcher notes from watcher_notes.ndjson, oldest first."""
+def _read_all_watcher_notes(
+    root: Path, tail_lines: int = _WATCHER_NOTES_TAIL_LINES
+) -> list[dict]:
+    """Return recent watcher notes from watcher_notes.ndjson, oldest first.
+
+    Reads only the last ``tail_lines`` lines of the (possibly huge) stream so
+    a multi-MB file is not linearly scanned every summarizer cycle. This
+    preserves correctness for the summarizer's lookback window: the caller
+    filters by ``since`` (<= 2h back), which is well inside the tail bound.
+    """
     path = _events_path(root, _WATCHER_NOTES_STREAM)
     if not path.exists():
         return []
+    from factory.events.rotation import read_tail_lines
+
     notes: list[dict] = []
-    try:
-        with path.open(encoding="utf-8") as fh:
-            for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    rec = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                notes.append(rec)
-    except OSError:
-        return []
+    for raw in read_tail_lines(path, tail_lines):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        notes.append(rec)
     return notes
 
 
@@ -198,6 +220,78 @@ def _last_concern_ts(root: Path) -> datetime | None:
         return dt
     except (ValueError, TypeError):
         return None
+
+
+def _concern_signature(concern: dict[str, Any]) -> str:
+    """Compute a STABLE dedup signature for a concern.
+
+    The signature must be identical across cycles when the concern is
+    materially "the same", and different when a genuinely new/different
+    condition is reported. It therefore hashes only stable, low-cardinality
+    facets and DELIBERATELY excludes timestamps, run IDs, and volatile counts:
+
+      * normalized title (lowercased, whitespace-collapsed)
+      * app (if present on the concern)
+      * proposed_area
+      * urgency
+      * the sorted set of evidence ``kind`` values
+
+    Returns a hex sha256 digest.
+    """
+    title = str(concern.get("title", ""))
+    norm_title = re.sub(r"\s+", " ", title.strip().lower())
+    app = str(concern.get("app", ""))
+    proposed_area = str(concern.get("proposed_area", ""))
+    urgency = str(concern.get("urgency", ""))
+    evidence = concern.get("evidence", [])
+    kinds: list[str] = []
+    if isinstance(evidence, list):
+        kinds = sorted(
+            {str(e.get("kind", "")) for e in evidence if isinstance(e, dict)}
+        )
+    material = "|".join([norm_title, app, proposed_area, urgency, ",".join(kinds)])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _recent_concern_with_signature(
+    root: Path,
+    signature: str,
+    now: datetime,
+    cooldown: timedelta = _CONCERN_DEDUP_COOLDOWN,
+) -> dict | None:
+    """Return the most recent concern_emitted event matching *signature*.
+
+    Only events whose ``ts`` falls within ``[now - cooldown, now]`` count. The
+    concerns.ndjson tail is read (bounded) to avoid a full scan. Returns the
+    matching event dict, or ``None`` when no in-cooldown match exists.
+    """
+    if not signature:
+        return None
+    path = _events_path(root, _CONCERNS_STREAM)
+    if not path.exists():
+        return None
+    from factory.events.rotation import read_tail_lines
+
+    earliest_iso = (now - cooldown).isoformat()
+    now_iso = now.isoformat()
+    match: dict | None = None
+    for raw in read_tail_lines(path, _CONCERN_DEDUP_TAIL_LINES):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("signature") != signature:
+            continue
+        ts = rec.get("ts")
+        if not isinstance(ts, str) or ts < earliest_iso or ts > now_iso:
+            continue
+        match = rec  # keep scanning; last (newest) wins
+    return match
 
 
 def _read_prior_concerns(root: Path, limit: int = _PRIOR_CONCERNS_LIMIT) -> list[dict]:
@@ -540,9 +634,16 @@ def _write_concern(root: Path, concern: dict[str, Any], now: datetime) -> Path:
         "urgency": concern.get("urgency", "continue"),
         "escalate_to_l3": concern.get("escalate_to_l3", False),
         "concern_path": str(concern_path),
+        "signature": concern.get("signature", ""),
     }
     try:
         event_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from factory.events.rotation import rotate_if_needed
+
+            rotate_if_needed(event_path)
+        except Exception:  # noqa: BLE001 - telemetry path, never fail the append
+            pass
         with event_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(event) + "\n")
     except Exception as exc:  # noqa: BLE001
@@ -692,6 +793,31 @@ def run_summarizer_once(
             model_id=model_id,
             max_tokens=max_tokens,
         )
+
+    # Compute the stable dedup signature and stamp it onto the concern doc so
+    # future cycles (and L3) can match it.
+    signature = _concern_signature(concern)
+    concern["signature"] = signature
+
+    # Dedup + cooldown. A persistent condition re-fires the SAME concern every
+    # cycle; suppress re-emission when an in-cooldown concern with this exact
+    # signature already exists. Sentinel/parse-failure concerns are never
+    # deduped (they carry no real signal and must stay visible). dry-run never
+    # dedups either — it does not represent a real emission.
+    is_sentinel = concern.get("title") in ("l2-parse-failure", "dry-run-sentinel")
+    if not dry_run and not is_sentinel:
+        prior = _recent_concern_with_signature(root, signature, now)
+        if prior is not None:
+            # Suppress: do not write a new concern file or event.
+            return {
+                "suppressed": True,
+                "reason": "duplicate_within_cooldown",
+                "signature": signature,
+                "title": concern.get("title", ""),
+                "cooldown_minutes": _CONCERN_DEDUP_COOLDOWN.total_seconds() / 60.0,
+                "prior_concern_path": prior.get("concern_path"),
+                "prior_ts": prior.get("ts"),
+            }
 
     # Write the concern.
     concern_path = _write_concern(root, concern, now)

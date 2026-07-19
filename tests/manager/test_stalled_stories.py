@@ -216,3 +216,73 @@ def test_crashed_tick_dangling_start_still_alarms(
     assert res["tick_in_flight"] is True
     assert res["no_tick_recently"] is True
     assert any("no orchestrator tick" in a for a in res["alarms"])
+
+
+# ---------------------------------------------------------------------------
+# healthy_drain (WS0.2)
+# ---------------------------------------------------------------------------
+
+
+def _write_idle(root: Path, ts: datetime) -> None:
+    """Append an app_idle event to state/events/idle.ndjson."""
+    stream = root / "state" / "events" / "idle.ndjson"
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    with stream.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps({"ts": ts.isoformat(), "event": "app_idle", "app": "sacrifice"})
+            + "\n"
+        )
+
+
+def test_healthy_drain_true_on_drained_idle(tmp_path: Path) -> None:
+    """No alarms + draining + recent app_idle -> healthy_drain=true."""
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
+    fresh = (now - timedelta(minutes=2)).isoformat()  # keeps the chain "draining"
+    aged = (now - timedelta(hours=4)).isoformat()  # aged backlog, non-terminal
+    _make_db(tmp_path, [(1, "story_created", fresh), (2, "story_created", aged)])
+    _write_tick(tmp_path, now - timedelta(minutes=1))
+    _write_idle(tmp_path, now - timedelta(minutes=3))
+
+    res = stalled_stories(root=tmp_path, now=now)
+    assert res["alarms"] == []
+    assert res["draining"] is True
+    assert res["idle_recently"] is True
+    assert res["healthy_drain"] is True
+    # The aged story is surfaced under the neutral key, not as a stall.
+    assert res["stalled"] == []
+    assert res["aged_backlog_while_draining"]
+
+
+def test_healthy_drain_false_without_recent_idle(tmp_path: Path) -> None:
+    """Draining but no recent app_idle -> healthy_drain=false."""
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
+    fresh = (now - timedelta(minutes=2)).isoformat()
+    aged = (now - timedelta(hours=4)).isoformat()
+    _make_db(tmp_path, [(1, "story_created", fresh), (2, "story_created", aged)])
+    _write_tick(tmp_path, now - timedelta(minutes=1))
+    # No idle event at all.
+
+    res = stalled_stories(root=tmp_path, now=now)
+    assert res["draining"] is True
+    assert res["idle_recently"] is False
+    assert res["healthy_drain"] is False
+
+
+def test_healthy_drain_false_on_real_stall(tmp_path: Path, monkeypatch) -> None:
+    """A genuine stall (tick loop dead) never reads as a healthy drain, even
+    with a stale idle event on disk."""
+    import sys
+
+    mod = sys.modules["factory.manager.detectors.stalled_stories"]
+    monkeypatch.setattr(mod, "_tick_process_alive", lambda: False)
+
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
+    old = (now - timedelta(hours=10)).isoformat()
+    _make_db(tmp_path, [(1, "sm_done", old)])
+    _write_tick(tmp_path, now - timedelta(hours=2))  # no recent tick -> stall
+    _write_idle(tmp_path, now - timedelta(hours=2))  # stale idle
+
+    res = stalled_stories(root=tmp_path, now=now)
+    assert res["alarms"]  # a real stall alarms
+    assert res["draining"] is False
+    assert res["healthy_drain"] is False

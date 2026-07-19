@@ -60,7 +60,7 @@ def text_run(
 # stalled_stories can't see -- blocked_deploy_failed is a terminal/exempt
 # state there) still reaches L1's context bundle instead of surfacing to
 # no one.
-_RAW_STREAMS = ("runs", "ticks", "queue", "webhooks", "git", "spend", "recovery")
+_RAW_STREAMS = ("runs", "ticks", "queue", "webhooks", "git", "spend", "recovery", "idle")
 
 # Cap per stream (recent lines only; older lines are dropped for token budget).
 _MAX_LINES_PER_STREAM = 200
@@ -223,6 +223,27 @@ def _build_user_message(
     else:
         parts.append("_(no prior notes — this is the first watcher run)_")
     parts.append("")
+
+    # Explicit healthy-drain guidance. When the stalled_stories detector has
+    # affirmatively classified the current state as a healthy drain (no alarms,
+    # backlog draining, tick loop recently judged the app idle), the LLM must
+    # NOT escalate on the aged backlog. The raw draining/aged fields below still
+    # read as scary to a language model; this line is the countervailing
+    # instruction that stops the draining-mode escalation loop.
+    stalled_res = detector_results.get("stalled_stories")
+    if isinstance(stalled_res, dict) and stalled_res.get("healthy_drain"):
+        parts.append("### Liveness status: HEALTHY DRAIN")
+        parts.append("")
+        parts.append(
+            "The `stalled_stories` detector reports `healthy_drain=true`: there "
+            "are NO liveness alarms, the backlog is draining while work flows, "
+            "and the tick loop recently emitted an `app_idle` signal. This is "
+            "the NORMAL end-of-backlog state, NOT a stall. Do NOT set "
+            "`escalate_to_l2=true` on account of the aged backlog, the "
+            "`draining` flag, or the `aged_backlog_while_draining` list below. "
+            "Escalate only for a genuinely NEW anomaly unrelated to the drain."
+        )
+        parts.append("")
 
     # Detector results with docstrings
     parts.append("### Detector results")
@@ -589,6 +610,13 @@ def _append_watcher_note(root: Path, envelope: dict[str, Any]) -> None:
     path = _events_path(root, _WATCHER_NOTES_STREAM)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Cap unbounded growth of the hot watcher_notes stream before appending.
+        try:
+            from factory.events.rotation import rotate_if_needed
+
+            rotate_if_needed(path)
+        except Exception:  # noqa: BLE001 - telemetry path, never fail the append
+            pass
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(envelope) + "\n")
     except Exception as exc:  # noqa: BLE001
@@ -792,6 +820,16 @@ def run_watcher_daemon(
                         l2_result = run_summarizer_once(root=root)
                         if l2_result is None:
                             print("[watcher] L2: no flagged notes found (possible race).", file=sys.stderr)
+                        elif l2_result.get("suppressed"):
+                            # Dedup + cooldown fired in L2: the same concern was
+                            # already emitted within the window. Do NOT re-run
+                            # L3 on a re-fired concern.
+                            print(
+                                f"[watcher] L2 concern suppressed (dedup): "
+                                f"{l2_result.get('title', '?')!r} "
+                                f"reason={l2_result.get('reason', '?')}",
+                                file=sys.stderr,
+                            )
                         else:
                             l2_title = l2_result.get("title", "?")
                             l2_urgency = l2_result.get("urgency", "?")
@@ -803,8 +841,27 @@ def run_watcher_daemon(
                             )
                             # Store the concern path for L3 trigger below.
                             l2_concern_path = l2_result.get("concern_path")
+                            # Dedup on the L3 path too: if a proposal already
+                            # exists for this concern (matched by title), skip
+                            # re-diagnosis so a re-fired concern is not chewed
+                            # through L3->L4 again.
+                            already_processed = False
+                            try:
+                                from factory.manager.diagnostician import (
+                                    _is_concern_processed,
+                                )
+
+                                already_processed = _is_concern_processed(root, l2_result)
+                            except Exception:  # noqa: BLE001 - never fail on the guard
+                                already_processed = False
+                            if already_processed:
+                                print(
+                                    "[watcher] L3 skipped: concern already processed "
+                                    f"({l2_title!r}).",
+                                    file=sys.stderr,
+                                )
                             # Immediately trigger L3 if L2 escalated and trigger_l3 is enabled.
-                            if l2_esc and trigger_l3 and l2_concern_path:
+                            if l2_esc and trigger_l3 and l2_concern_path and not already_processed:
                                 print(
                                     "[watcher] triggering immediate L3 diagnostician run...",
                                     file=sys.stderr,

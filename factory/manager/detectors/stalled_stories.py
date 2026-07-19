@@ -88,6 +88,37 @@ def _last_tick_ts(root: Path) -> datetime | None:
     return last
 
 
+def _last_idle_ts(root: Path) -> datetime | None:
+    """Return the ts of the most recent ``app_idle`` event, or None.
+
+    Reads ``state/events/idle.ndjson`` (emitted by the tick's idle detector).
+    A recent ``app_idle`` means the tick loop is alive and has affirmatively
+    judged the app idle — i.e. the backlog is draining by design, not stuck.
+    """
+    stream = root / "state" / "events" / "idle.ndjson"
+    if not stream.exists():
+        return None
+    last: datetime | None = None
+    try:
+        with stream.open(encoding="utf-8") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("event") != "app_idle":
+                    continue
+                ts = _parse_ts(rec.get("ts"))
+                if ts is not None:
+                    last = ts
+    except OSError:
+        return None
+    return last
+
+
 def _tick_in_flight(root: Path) -> bool:
     """True when the last tick event is a ``tick_start`` with no ``tick_end``.
 
@@ -169,6 +200,7 @@ def stalled_stories(
     in_progress_stall_minutes: float = 30.0,
     stall_minutes: float = 120.0,
     tick_silence_minutes: float = 15.0,
+    idle_recently_minutes: float = 30.0,
 ) -> dict:
     """Return absolute liveness observations for the chain.
 
@@ -187,6 +219,10 @@ def stalled_stories(
         ``stalled`` (no forward progress).
     tick_silence_minutes:
         Minutes since the last tick above which ``no_tick_recently`` fires.
+    idle_recently_minutes:
+        Freshness window for an ``app_idle`` event to count toward
+        ``healthy_drain`` — the tick's idle detector must have fired within
+        this many minutes for the aged backlog to read as a healthy drain.
 
     Returns
     -------
@@ -318,8 +354,25 @@ def stalled_stories(
     else:
         aged_backlog_while_draining = []
 
+    # healthy_drain — an EXPLICIT, unambiguous "do not escalate" signal for L1.
+    # The detector already defuses alarms during a drain, but the raw
+    # ``draining``/aged-list fields still reach the L1 LLM, which re-escalated
+    # on judgment (25 draining-mode concerns/day). healthy_drain is true only
+    # when there is nothing alarming (alarms == []) AND the chain is draining
+    # AND the tick loop has affirmatively judged the app idle recently — i.e.
+    # the backlog is emptying by design, not stuck. L1 is instructed to NOT
+    # escalate when this is true.
+    last_idle = _last_idle_ts(root)
+    idle_recently = (
+        last_idle is not None
+        and (now - last_idle).total_seconds() / 60.0 <= idle_recently_minutes
+    )
+    healthy_drain = (not alarms) and draining and idle_recently
+
     return {
         "alarms": alarms,
+        "healthy_drain": healthy_drain,
+        "idle_recently": idle_recently,
         "stuck_in_progress": stuck_in_progress,
         "stalled": stalled,
         "aged_backlog_while_draining": aged_backlog_while_draining,
