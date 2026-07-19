@@ -7,21 +7,17 @@ before adding (or removing) the gate's label. Every gate produces a
 list lives in ``evaluator.ALL_GATE_LABELS``; the merge-REQUIRED subset for
 a given app comes from ``evaluator.required_gate_labels(app_config)``.
 
-Every gate is dry-run aware: when the worker is dry, gates read flags
-the chain handlers wrote into StoryRecord (e.g. ``test_run_passed``)
-instead of spawning subprocesses. When the worker is real, gates may
-shell out to the commands declared in ``apps/<app>/config.yaml.gates``.
+Every gate is dry-run aware: when the worker is dry, gates read recorded
+StoryRecord state instead of spawning subprocesses. When the worker is real
+(a story worktree is checked out), gates re-derive truth by shelling out to
+the commands declared in ``apps/<app>/config.yaml.gates`` — trusting recorded
+state at merge time is exactly the false-green class this package exists to
+prevent.
 
 The gates (one per file in this package):
 
-  * tests_red_first_confirmed
   * tests_green
   * tests_meaningful
-  * flow_verified
-  * coverage_verified
-  * lint_clean
-  * format_clean
-  * types_clean
   * docs_current
   * canonical_paths_only
   * smoke_green

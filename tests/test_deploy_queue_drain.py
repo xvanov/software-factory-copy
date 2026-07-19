@@ -122,7 +122,6 @@ def test_auto_merge_enqueues_deploy_on_successful_merge(tmp_path: Path) -> None:
         scope="backend",
         state=StoryState.PR_OPEN.value,
         test_plan_json=json.dumps({"test_plan": [{"name": "test_a", "key_steps": ["x"]}]}),
-        test_implementer_result_json=json.dumps({"exit_code": 1, "slop_detected": False}),
         tech_writer_result_json=json.dumps({"context_updates": [{"path": "context/project.md"}]}),
         github_pr_number=99,
     )

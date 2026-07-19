@@ -37,14 +37,20 @@ jobs:
           python-version: "3.12"
       - name: uv sync
         run: uv sync --all-extras
-      # Advisory until the 78 pre-existing package-wide findings are paid
-      # down (2026-07-18): surfaces a warning annotation, never fails the job.
-      - name: mypy (advisory)
+      # BLOCKING on the verification-truth code (factory/chain/gates/): this is
+      # the code that decides whether a PR is safe to merge, so it must not
+      # accrue type debt. The job FAILS if this subset regresses (WS1.6,
+      # 2026-07-19). The rest of factory/ carries ~85 pre-existing findings and
+      # is still surfaced as an advisory count until that debt is paid down.
+      - name: mypy (blocking on chain/gates)
+        run: uv run mypy factory/chain/gates/
+      - name: mypy (advisory, package-wide)
+        if: always()
         run: |
           uv run mypy factory/ > mypy.out 2>&1 || true
           tail -3 mypy.out
           COUNT=$(grep -c "error:" mypy.out || true)
-          echo "::warning::mypy: ${COUNT} findings (advisory — tracked debt, not gating)"
+          echo "::warning::mypy: ${COUNT} package-wide findings (advisory — tracked debt)"
 
   pytest:
     runs-on: ubuntu-latest

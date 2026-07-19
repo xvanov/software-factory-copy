@@ -105,8 +105,10 @@ class StoryRecord(SQLModel, table=True):
     github_pr_number: int | None = None
     story_file_path: str = ""
     sm_result_json: str | None = None  # JSON-serialized SM persona output
-    test_plan_json: str | None = None  # JSON-serialized Test-Designer output
-    test_implementer_result_json: str | None = None
+    # Retained: still rendered into the REVIEWER's prompt (handlers.handle_review)
+    # as the "## Test plan" section, even though the test_designer persona that
+    # once populated it was removed in the Loop-4 collapse (usually None now).
+    test_plan_json: str | None = None
     reviewer_result_json: str | None = None
     # JSON-serialised list of prior review cycles (capped to the last 4):
     # ``[{cycle, verdict, score, findings: [{severity, location, what,
@@ -135,14 +137,6 @@ class StoryRecord(SQLModel, table=True):
     error: str | None = None
     # Phase 3: last cap/mode rejection reason emitted by the dispatcher.
     last_rejection_reason: str | None = None
-    # Phase 8 cleanup: per-gate recorded outcomes the dev/CI handler writes
-    # after running each tool. Dry-run gates read these instead of returning
-    # an unconditional pass — None means "not run yet" and is treated as a
-    # blocking missing-signal.
-    lint_passed: bool | None = None
-    format_passed: bool | None = None
-    types_passed: bool | None = None
-    coverage_passed: bool | None = None
     # D002 Karpathy Layer-2 runtime verifier. Set True after the dev's sandbox
     # boots the product and the scripted smoke journey passes. Read by the
     # ``smoke-green`` gate in dry-run; None means "not run yet".
