@@ -1911,6 +1911,98 @@ def _fetch_latest_test_output(
     return "(no recent test run on record)"
 
 
+def _has_real_dev_attempt(story: StoryRecord) -> bool:
+    """True when at least one REAL (non-dry-run) dev attempt is on record.
+
+    ``dev_attempts_json`` is only ever appended to by ``_handle_dev_once``
+    on a non-dry-run completion — both the green-run record and the
+    red-run/retry record are gated behind ``if not dry_run:`` (see
+    ``_handle_dev_once``). So a non-empty list here is proof a real dev
+    sandbox actually ran, which is the signal the empty-diff short-circuit
+    needs before it's allowed to fire — it must never trigger on a story
+    that hasn't given dev a real chance yet.
+    """
+    try:
+        parsed = json.loads(story.dev_attempts_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(parsed, list) and len(parsed) > 0
+
+
+def _dev_produced_empty_diff(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+) -> bool | None:
+    """Best-effort check: is the story's branch diff-empty against its base?
+
+    Returns ``True`` when the COMMITTED diff (``git diff --quiet
+    origin/<base>...HEAD``) AND the working tree are both empty — i.e. the
+    dev genuinely produced nothing at all — ``False`` when either a real
+    committed diff OR uncommitted/untracked working-tree changes exist, or
+    ``None`` when the check itself could not be performed (no worktree yet,
+    git error, unexpected exit code, missing ``origin/<base>`` ref). ``None``
+    means "unknown" — callers MUST treat it as "do not short-circuit" and
+    fall back to the normal review path.
+
+    The working-tree check matters because the dev's "work happened" signal
+    is commit-agnostic: ``files_changed``/``test_run_passed`` come from the
+    on-disk working tree (``git status --porcelain`` / the pytest run
+    against it), but the dev agent is only INSTRUCTED to commit, not forced
+    to. An agent that produces real, test-passing work but never runs its
+    final ``git commit`` (e.g. it hit a turn/timeout limit) would otherwise
+    show an empty COMMITTED diff and get permanently blocked on its first
+    pass — worse than the review churn this check exists to prevent. So an
+    uncommitted/untracked change in the worktree is treated the same as a
+    committed one: NOT empty, fall back to the normal review path (which at
+    least gives dev more retries to land the commit).
+    """
+    import subprocess
+
+    try:
+        worktree = _writing_worktree(app_config, software_factory_root, story)
+    except Exception:  # noqa: BLE001 - best-effort, fail open
+        return None
+
+    # Working-tree check FIRST: uncommitted/untracked changes mean dev did
+    # real work even if it never committed. Never short-circuit on that.
+    try:
+        status_proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if status_proc.returncode != 0:
+        return None
+    if status_proc.stdout.strip():
+        return False
+
+    base = app_config.default_branch or "main"
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--quiet", f"origin/{base}...HEAD"],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    # ``git diff --quiet`` exits 0 (no diff), 1 (diff present), or >1 on a
+    # real error (e.g. bad/missing ref) — only 0/1 are meaningful signals.
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    return None
+
+
 def _fetch_pr_diff_for_review(
     story: StoryRecord,
     app_config: AppConfig,
@@ -2083,6 +2175,76 @@ def handle_review(
     db = db_path or (software_factory_root / "state" / "factory.db")
     story.state = advance(story, EVENT_REVIEWER_STARTED).value
     persist_story(story, db)
+
+    # Empty-diff short-circuit. Real (non-fixture, non-dry-run) reviews only:
+    # fixture-driven and dry-run tests never touch git and must be
+    # completely unaffected. When a REAL dev attempt has already run
+    # (``_has_real_dev_attempt``) and the branch's diff against its base is
+    # CONFIRMED empty (``_dev_produced_empty_diff`` returns True, never on
+    # an unknown/error result), the dev produced no changes at all.
+    # Continuing into the normal review flow would waste an LLM call only to
+    # have the reviewer correctly reject it, then churn a full
+    # request_changes cycle, repeating up to ``_MAX_REVIEW_CYCLES`` times
+    # before blocking (observed: D092/D094 each burned ~6 empty-diff cycles).
+    # Escalate straight to the terminal blocked state on the FIRST
+    # occurrence instead.
+    if fixture is None and not dry_run and _has_real_dev_attempt(story):
+        empty_diff = _dev_produced_empty_diff(story, app_config, software_factory_root)
+        if empty_diff is True:
+            reason = (
+                f"empty diff after dev attempt {story.dev_retries} — the dev "
+                "produced no changes; escalating instead of churning review "
+                "cycles; likely an un-doable-by-sandbox (runtime/operational) "
+                "task or a malformed story."
+            )
+            story.state = advance(story, EVENT_REVIEW_NONCONVERGENT).value
+            story.error = reason
+            result = {
+                "verdict": "request_changes",
+                "summary": reason,
+                "findings": [],
+                "test_quality_findings": [],
+                "test_quality_score": 0.0,
+                "empty_diff_short_circuit": True,
+            }
+            story.reviewer_result_json = json.dumps(result)
+            _append_reviewer_history(story, result)
+            persist_story(story, db)
+            log_story_event(
+                story.id,
+                "factory_needs_redesign",
+                {
+                    "kind": "empty_diff_short_circuit",
+                    "dev_retries": story.dev_retries,
+                    "reviewer_cycles": story.reviewer_cycles,
+                    "branch": story.github_branch,
+                    "suggestions": [
+                        "Dev produced an empty diff after a real attempt — "
+                        "likely a task that isn't doable by a code sandbox "
+                        "(a runtime/operational task) or a malformed story. "
+                        "Investigate before re-dispatching; do not just "
+                        "retry the same chain.",
+                    ],
+                },
+                software_factory_root=software_factory_root,
+                slug_hint=story.slug,
+            )
+            if not dry_run and github_client is not None and story.github_pr_number is not None:
+                try:
+                    repo = github_client.get_repo(app_config.repo)
+                    pr = repo.get_pull(story.github_pr_number)
+                    pr.add_to_labels("review-nonconvergent")
+                    pr.create_issue_comment(
+                        "⚠️ Empty-diff short-circuit: the dev produced no "
+                        "changes on this branch. Routing directly to "
+                        f"{StoryState.BLOCKED_REVIEW_NONCONVERGENT.value} "
+                        "instead of churning review cycles."
+                    )
+                except Exception:  # pragma: no cover - real-run path
+                    pass
+            return HandlerResult(
+                next_state=StoryState(story.state), payload=result, error=story.error
+            )
 
     if fixture is not None:
         result = fixture
