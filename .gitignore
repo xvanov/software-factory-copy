@@ -43,3 +43,6 @@ state/.halt_history.json
 state/.manager_apply_history.json
 state/.improver_backoff.json
 state/*.log
+
+# coverage.py data file (never commit)
+.coverage
