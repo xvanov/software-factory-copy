@@ -15,7 +15,10 @@ the story for this tick; an operator can inspect via ``factory why``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -480,6 +483,66 @@ _AUTO_RECOVERABLE_STATES: dict[str, str] = {
 }
 
 
+def _story_failure_signature(story: StoryRecord) -> str:
+    """Return a normalized signature of ``story``'s most recent failure.
+
+    Prefers the last ``dev_attempts_json`` entry's ``test_output_tail``
+    (the freshest evidence of *why* dev/review failed — see
+    ``handlers._fetch_latest_test_output`` for the same preference order),
+    falling back to ``story.error`` when no attempts are on record.
+
+    Volatile bits (timestamps, absolute paths, durations) are stripped so
+    a re-run that fails for the identical reason produces an identical
+    signature even though wall-clock/paths differ between attempts — that
+    identity is what lets ``_recover_blocked_stories`` detect "no new
+    signal" and stop hamster-wheeling a structurally unsatisfiable story.
+
+    Returns ``""`` when no failure text is available (e.g. brand-new story).
+    """
+    raw = ""
+    if story.dev_attempts_json:
+        try:
+            attempts = json.loads(story.dev_attempts_json)
+        except (TypeError, ValueError):
+            attempts = None
+        if isinstance(attempts, list) and attempts:
+            last = attempts[-1]
+            if isinstance(last, dict):
+                raw = (last.get("test_output_tail") or "").strip()
+    if not raw:
+        raw = (story.error or "").strip()
+    if not raw:
+        return ""
+
+    normalized = re.sub(
+        r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?",
+        "<ts>",
+        raw,
+    )
+    normalized = re.sub(r"(?:/[\w.\-]+){2,}", "<path>", normalized)
+    normalized = re.sub(r"\b\d+(?:\.\d+)?s\b", "<dur>", normalized)
+    normalized = re.sub(r"\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b", "<dur>", normalized)
+    # Strip non-deterministic identifiers so the SAME logical failure hashes
+    # identically across cycles: hex memory addresses / object ids
+    # (0x7f..., id=140234..., "at 0x..."), and generic long hex/uuid runs that
+    # appear in mock/object reprs and temp names. Without this the guard fails
+    # OPEN on failures whose tail embeds an address and never detects the loop.
+    normalized = re.sub(r"0x[0-9a-fA-F]+", "<addr>", normalized)
+    normalized = re.sub(r"\bid=\d+", "id=<id>", normalized)
+    normalized = re.sub(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+        "<uuid>",
+        normalized,
+    )
+    normalized = re.sub(r"\b[0-9a-fA-F]{12,}\b", "<hex>", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    # The tail carries the actual assertion/error; the head is often
+    # boilerplate pytest banner/collection noise that's identical across
+    # unrelated failures.
+    return hashlib.sha256(normalized[-500:].encode("utf-8")).hexdigest()
+
+
 def _recover_blocked_stories(
     db: Path, app: str, *, root: Path
 ) -> list[tuple[str, str, str]]:
@@ -496,6 +559,15 @@ def _recover_blocked_stories(
 
     Pure DB rewrite — no LLM/git work — mirroring ``_prune_stale_in_progress``.
     Returns (slug, from_state, to_state) tuples for the TickSummary.
+
+    Signal-changed guard: a recovery also requires that the story's current
+    failure differs from the one recorded at its *most recent* prior
+    recovery (see ``_story_failure_signature``). Recovering blindly on the
+    identical failure just burns a full dev cycle (up to 6 retries) to
+    rediscover the same dead end, so an unchanged signature escalates
+    immediately instead of consuming another slot of ``_MAX_AUTO_RECOVERIES``.
+    A story making genuine progress (a different failure each time) still
+    gets its recoveries; the first recovery is always allowed.
     """
     from factory.chain.event_log import log_story_event, read_story_events
     from factory.chain.handlers import persist_story
@@ -509,27 +581,24 @@ def _recover_blocked_stories(
         target = _AUTO_RECOVERABLE_STATES.get(story.state)
         if target is None:
             continue
+
+        events = read_story_events(story.id, software_factory_root=root, slug_hint=story.slug)
+
         # Only recoveries into the CURRENT re-entry point consume the budget.
         # When the chain is redesigned the re-entry target changes (e.g. the
         # old test-first regime re-entered at tests_red; Loop-4 re-enters at
         # sm_done), and attempts burnt under the old regime say nothing about
         # whether the new chain can converge the story — the budget resets.
-        prior = sum(
-            1
-            for e in read_story_events(
-                story.id, software_factory_root=root, slug_hint=story.slug
-            )
-            if e.get("event") == "auto_recovery" and e.get("to_state") == target
-        )
+        prior_recoveries = [
+            e for e in events if e.get("event") == "auto_recovery" and e.get("to_state") == target
+        ]
+        prior = len(prior_recoveries)
+
+        already_escalated = any(e.get("event") == "auto_recovery_exhausted" for e in events)
+
         if prior >= _MAX_AUTO_RECOVERIES:
             # Already re-attempted the allowed number of times and still
             # blocked → genuinely stuck. Emit a loud, deduped escalation once.
-            already_escalated = any(
-                e.get("event") == "auto_recovery_exhausted"
-                for e in read_story_events(
-                    story.id, software_factory_root=root, slug_hint=story.slug
-                )
-            )
             if not already_escalated:
                 log_story_event(
                     story.id,
@@ -543,6 +612,30 @@ def _recover_blocked_stories(
                     slug_hint=story.slug,
                 )
             continue
+
+        signature = _story_failure_signature(story)
+
+        if prior_recoveries:
+            last_signature = prior_recoveries[-1].get("failure_signature")
+            if signature and last_signature is not None and signature == last_signature:
+                # The last recovery attempt produced the EXACT same failure —
+                # nothing changed. Recovering again would just grind through
+                # another full dev cycle for no new signal; escalate instead
+                # (deduped, same as the cap-exhausted path above).
+                if not already_escalated:
+                    log_story_event(
+                        story.id,
+                        "auto_recovery_exhausted",
+                        {
+                            "state": story.state,
+                            "recoveries": prior,
+                            "error": (story.error or "")[:300],
+                            "reason": "identical_failure_signature",
+                        },
+                        software_factory_root=root,
+                        slug_hint=story.slug,
+                    )
+                continue
 
         from_state = story.state
         story.state = target
@@ -567,6 +660,7 @@ def _recover_blocked_stories(
                 "to_state": target,
                 "attempt": prior + 1,
                 "cap": _MAX_AUTO_RECOVERIES,
+                "failure_signature": signature,
             },
             software_factory_root=root,
             slug_hint=story.slug,

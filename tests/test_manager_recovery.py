@@ -484,6 +484,46 @@ class TestConflictingGatedPr:
         story = _get_story(root, story_id)
         assert story.state == StoryState.CI_GREEN.value  # untouched
 
+    def test_repeat_escalation_suppressed_within_cooldown(self, root: Path) -> None:
+        """The same conflicting-PR key must escalate at most once per
+        cooldown window — without this, an unresolved conflict re-escalates
+        every recovery cycle (observed: 9 escalations in 9 minutes)."""
+        _write_app_config(root, "sacrifice")
+        _add_story(root, state=StoryState.CI_GREEN.value, github_pr_number=99)
+        now = datetime.now(UTC)
+        gh = lambda **_: {"state": "OPEN", "mergeable": "CONFLICTING"}  # noqa: E731
+
+        # First cycle: escalates.
+        summary1 = recovery.run_recovery_cycle(root, dry_run=False, now=now, gh_pr_view=gh)
+        assert len(summary1["escalated"]) == 1
+        assert summary1["escalated"][0]["playbook"] == recovery.PLAYBOOK_CONFLICTING_GATED_PR
+
+        # Second cycle, 5 minutes later (well within the 30-minute cooldown):
+        # the same conflict must NOT escalate again.
+        summary2 = recovery.run_recovery_cycle(
+            root, dry_run=False, now=now + timedelta(minutes=5), gh_pr_view=gh
+        )
+        assert summary2["escalated"] == []
+        assert len(summary2["skipped_cooldown"]) == 1
+        assert summary2["skipped_cooldown"][0]["playbook"] == recovery.PLAYBOOK_CONFLICTING_GATED_PR
+
+    def test_escalation_resumes_after_cooldown_expires(self, root: Path) -> None:
+        """Once the cooldown window elapses, the still-unresolved conflict
+        escalates again — it isn't suppressed forever, just throttled."""
+        _write_app_config(root, "sacrifice")
+        _add_story(root, state=StoryState.CI_GREEN.value, github_pr_number=99)
+        now = datetime.now(UTC)
+        gh = lambda **_: {"state": "OPEN", "mergeable": "CONFLICTING"}  # noqa: E731
+
+        summary1 = recovery.run_recovery_cycle(root, dry_run=False, now=now, gh_pr_view=gh)
+        assert len(summary1["escalated"]) == 1
+
+        summary2 = recovery.run_recovery_cycle(
+            root, dry_run=False, now=now + timedelta(minutes=45), gh_pr_view=gh
+        )
+        assert len(summary2["escalated"]) == 1
+        assert summary2["escalated"][0]["playbook"] == recovery.PLAYBOOK_CONFLICTING_GATED_PR
+
 
 # --------------------------------------------------------------------------- #
 # Playbook 5: recover-stuck-fixonly-mode

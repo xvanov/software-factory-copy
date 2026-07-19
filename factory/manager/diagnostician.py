@@ -77,6 +77,34 @@ _SOURCE_FILE_CAP = 16 * 1024  # 16 KB per file
 # Total bundle cap before we warn (chars).
 _BUNDLE_TOTAL_CAP = 100 * 1024  # 100 KB
 
+# factory/chain/ holds the orchestrator/merge/git/recovery logic where most
+# dispatch_code bugs actually live, but several files there (handlers.py,
+# orchestrator.py) are much larger than the generic 16KB cap allows. Give
+# chain/ files a wider per-file cap and a dedicated bundle budget so the L3
+# diagnostician's source bundle can include the whole directory instead of a
+# hardcoded three-file allowlist that omitted auto_merge.py, worktree.py,
+# branch.py, rollback.py and recovery.py entirely.
+# Wide enough that the largest chain file (handlers.py, ~137KB) loads WHOLE —
+# a partial handlers.py was worse than useless: L3 would see a truncated file
+# and still not find the buggy function. The bundle budget fits the full
+# high-signal set plus headroom (~100K tokens for gpt-5.3-codex's context).
+_CHAIN_FILE_CAP = 160 * 1024  # 160 KB per file
+_DISPATCH_CODE_BUNDLE_CAP = 400 * 1024  # 400 KB for the dispatch_code chain/ loading budget
+# The final bundle-total enforcement (see bottom of _pre_load_source) otherwise
+# re-shrinks EVERY file to fit _BUNDLE_TOTAL_CAP (100KB), which would truncate
+# handlers.py back down to a few KB and defeat the widened dispatch_code/unknown
+# bundle. Chain-loading areas get this larger enforcement ceiling instead, sized
+# to hold the full priority set (~278KB) + glob fill + context modules with
+# headroom. ~140K tokens — within gpt-5.3-codex's context window.
+_WIDE_BUNDLE_TOTAL_CAP = 560 * 1024
+# proposed_area values that load persona/detector/observability files (small,
+# capped at 100KB deliberately — e.g. prompt_edit loads ALL personas ~147KB and
+# is MEANT to be trimmed). Everything else (dispatch_code + the unknown/else
+# branch) loads chain/ source and uses the wide ceiling.
+_NARROW_BUNDLE_AREAS = frozenset(
+    {"prompt", "prompt_edit", "persona_settings", "detector_tool", "observability"}
+)
+
 # Slug character validation pattern.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,58}[a-z0-9]$|^[a-z0-9]$")
 
@@ -200,14 +228,17 @@ def _pre_load_source(
     """
     files: dict[str, str] = {}
 
-    def _read_file(abs_path: Path) -> str:
+    def _read_file_capped(abs_path: Path, cap: int) -> str:
         try:
             text = abs_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return ""
-        if len(text) > _SOURCE_FILE_CAP:
-            text = text[:_SOURCE_FILE_CAP] + "\n...[truncated at 16KB]"
+        if len(text) > cap:
+            text = text[:cap] + f"\n...[truncated at {cap // 1024}KB]"
         return text
+
+    def _read_file(abs_path: Path) -> str:
+        return _read_file_capped(abs_path, _SOURCE_FILE_CAP)
 
     def _rel(abs_path: Path) -> str:
         """Return path relative to factory_dir.parent (the repo root)."""
@@ -230,10 +261,52 @@ def _pre_load_source(
             files[_rel(p)] = _read_file(p)
 
     elif proposed_area == "dispatch_code":
-        for name in ("orchestrator.py", "handlers.py", "state_machine.py"):
-            p = factory_dir / "chain" / name
-            if p.exists():
-                files[_rel(p)] = _read_file(p)
+        # Bugs in this area live throughout factory/chain/ (merge, git,
+        # recovery logic), not just the three files historically loaded here
+        # — that hardcoded allowlist is why L3 escalated ~100% of the time
+        # instead of proposing a fix. Load the whole directory, with the
+        # highest-signal files guaranteed to load first (in case the bundle
+        # budget is exhausted before the glob finishes) and a wider per-file
+        # cap since several chain/ files exceed the generic 16KB one.
+        chain_dir = factory_dir / "chain"
+        # Priority = the dispatch/merge/git/recovery surface where dispatch_code
+        # bugs actually live. The small git files (worktree/branch/rollback)
+        # are listed explicitly so a budget cutoff can never drop them the way
+        # a plain alphabetical glob did (worktree.py sorts after factory_*).
+        _priority_names = (
+            "orchestrator.py",
+            "handlers.py",
+            "state_machine.py",
+            "auto_merge.py",
+            "worktree.py",
+            "branch.py",
+            "rollback.py",
+        )
+        _seen: set[Path] = set()
+        running_total = 0
+
+        # Priority files always load first, regardless of budget.
+        for name in _priority_names:
+            p = chain_dir / name
+            if not p.exists():
+                continue
+            _seen.add(p)
+            content = _read_file_capped(p, _CHAIN_FILE_CAP)
+            files[_rel(p)] = content
+            running_total += len(content)
+
+        # Remaining chain/ files fill the rest of the budget in glob order;
+        # once exhausted, stop adding (lower-signal files are dropped, not
+        # truncated further — the priority files above stay whole).
+        if chain_dir.exists():
+            for p in sorted(chain_dir.glob("*.py")):
+                if p in _seen:
+                    continue
+                content = _read_file_capped(p, _CHAIN_FILE_CAP)
+                if running_total + len(content) > _DISPATCH_CODE_BUNDLE_CAP:
+                    break
+                files[_rel(p)] = content
+                running_total += len(content)
 
     elif proposed_area == "detector_tool":
         detectors_dir = factory_dir / "manager" / "detectors"
@@ -254,16 +327,27 @@ def _pre_load_source(
 
     else:
         # unknown or any other value: provide a file listing + a few key files.
-        for name in ("__main__.py", "chain/orchestrator.py", "runner.py"):
+        # chain/handlers.py and chain/auto_merge.py were previously omitted
+        # here even though the file listing below names them — an "unknown"
+        # concern about dispatch/merge behavior had no chance of a correct L3
+        # diagnosis without them.
+        for name in (
+            "__main__.py",
+            "chain/orchestrator.py",
+            "chain/handlers.py",
+            "chain/auto_merge.py",
+            "runner.py",
+        ):
+            cap = _CHAIN_FILE_CAP if name.startswith("chain/") else _SOURCE_FILE_CAP
             p = factory_dir / name
             if not p.exists():
                 # try without the subpath
                 p2 = factory_dir / Path(name).name
                 if p2.exists():
-                    files[_rel(p2)] = _read_file(p2)
+                    files[_rel(p2)] = _read_file_capped(p2, cap)
                     continue
             if p.exists():
-                files[_rel(p)] = _read_file(p)
+                files[_rel(p)] = _read_file_capped(p, cap)
         # File listing (capped at 100 lines)
         py_files: list[str] = []
         for p in sorted(factory_dir.rglob("*.py")):
@@ -327,22 +411,25 @@ def _pre_load_source(
     # diagnosis. Deterministically shrink each file to an equal share of the
     # budget so the total stays under the cap and every file remains visible
     # (truncated, not dropped). Files already under their share are untouched.
+    effective_cap = (
+        _BUNDLE_TOTAL_CAP if proposed_area in _NARROW_BUNDLE_AREAS else _WIDE_BUNDLE_TOTAL_CAP
+    )
     total = sum(len(v) for v in files.values())
-    if total > _BUNDLE_TOTAL_CAP and files:
-        per_file_budget = max(1, _BUNDLE_TOTAL_CAP // len(files))
+    if total > effective_cap and files:
+        per_file_budget = max(1, effective_cap // len(files))
         trimmed = 0
         for key in list(files):
             if len(files[key]) > per_file_budget:
                 files[key] = (
                     files[key][:per_file_budget]
                     + f"\n...[truncated to {per_file_budget} chars to fit the "
-                    f"{_BUNDLE_TOTAL_CAP}-char L3 context budget across "
+                    f"{effective_cap}-char L3 context budget across "
                     f"{len(files)} files]"
                 )
                 trimmed += 1
         new_total = sum(len(v) for v in files.values())
         print(
-            f"[diagnostician] bundle was {total} chars (>{_BUNDLE_TOTAL_CAP} cap); "
+            f"[diagnostician] bundle was {total} chars (>{effective_cap} cap); "
             f"trimmed {trimmed}/{len(files)} files to {per_file_budget} chars each "
             f"-> {new_total} chars.",
             file=sys.stderr,

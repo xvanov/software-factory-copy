@@ -886,6 +886,29 @@ def _recently_recovered(
     return False
 
 
+def _recently_escalated(
+    root: Path, playbook: str, key: str, *, now: datetime, cooldown: timedelta
+) -> bool:
+    """True if this exact (playbook, target key) was already logged as
+    ``escalated`` within ``cooldown`` of ``now``.
+
+    Mirrors ``_recently_recovered`` but for escalate-only playbooks (e.g.
+    conflicting-gated-pr) that never reach ``"recovered"`` status and so are
+    invisible to that check. Without this, an unresolved conflict
+    re-escalates identically every recovery cycle (observed: 9 escalations
+    in 9 minutes for one story), drowning real signal."""
+    cutoff = now - cooldown
+    for rec in _read_recovery_log(root):
+        if rec.get("playbook") != playbook or rec.get("target_key") != key:
+            continue
+        if rec.get("status") != "escalated":
+            continue
+        ts = _parse_ts(rec.get("ts"))
+        if ts is not None and ts >= cutoff:
+            return True
+    return False
+
+
 def _log_recovery(
     root: Path, outcome: RecoveryOutcome, *, precondition_snapshot: dict[str, Any]
 ) -> None:
@@ -1114,10 +1137,25 @@ def run_recovery_cycle(
     )
 
     # Playbook 4: conflicting-gated-pr — escalate-only, never mutates and
-    # never counts against the action cap (it never acts).
+    # never counts against the action cap (it never acts). Still deduped via
+    # the same cooldown mechanism the mutating playbooks use above: an
+    # unresolved conflict is escalated once per cooldown window, not every
+    # cycle, so it doesn't drown real signal with duplicate escalations.
     for target in detect_conflicting_gated_prs(
         root, db_path=db_path, apps=apps, gh_pr_view=gh_pr_view, runner=runner
     ):
+        if _recently_escalated(root, target.playbook, target.key, now=now, cooldown=cooldown):
+            outcome = RecoveryOutcome(
+                target.playbook,
+                target,
+                "skipped_cooldown",
+                "cooldown active — this conflict was already escalated recently; "
+                "suppressing the duplicate escalation",
+            )
+            _log_recovery(root, outcome, precondition_snapshot=target.extra)
+            summary["skipped_cooldown"].append({"playbook": target.playbook, "key": target.key})
+            continue
+
         recommendation = target.extra.get("recommendation", "manual rebase required")
         outcome = RecoveryOutcome(target.playbook, target, "escalated", recommendation)
         _log_recovery(root, outcome, precondition_snapshot=target.extra)
