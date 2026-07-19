@@ -666,10 +666,21 @@ def _handle_ci_failure(
         "(no CI log digest could be fetched; inspect the GitHub Actions run "
         f"for PR #{pr_number} directly)"
     )
-    finding = (
-        f"Real GitHub Actions CI failed on PR #{pr_number}. Fix the exact "
-        f"failure it reported below — do not just re-run or ignore it:\n\n{digest}"
-    )
+    # Emit a well-formed finding DICT (not a bare string): every downstream
+    # consumer — runner._build_initial_message, _findings_signature,
+    # _append_reviewer_history, _render_reviewer_history_section — indexes
+    # findings with ``f.get(...)``. A string element crashed the dev
+    # re-dispatch ("'str' object has no attribute 'get'"), silently breaking
+    # this entire CI-failure feedback loop.
+    finding = {
+        "severity": "high",
+        "criterion": "ci",
+        "location": f"GitHub Actions CI (PR #{pr_number})",
+        "what": (
+            f"Real GitHub Actions CI failed on PR #{pr_number}. Fix the exact "
+            f"failure it reported below — do not just re-run or ignore it:\n\n{digest}"
+        ),
+    }
     reviewer_payload = {
         "findings": [finding],
         "source": "ci_failure",

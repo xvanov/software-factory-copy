@@ -213,7 +213,11 @@ def test_first_ci_failure_redispatches_to_dev(
     payload = json.loads(r.reviewer_result_json)
     assert payload["source"] == "ci_failure"
     assert payload["findings"]
-    assert "AssertionError boom" in payload["findings"][0]
+    # The CI-failure finding is a well-formed dict (not a bare string): a string
+    # element crashed every consumer's f.get(...) and silently broke this loop.
+    finding = payload["findings"][0]
+    assert isinstance(finding, dict)
+    assert "AssertionError boom" in finding["what"]
 
     events = read_story_events(story.id, software_factory_root=tmp_path, slug_hint=story.slug)
     redispatch_events = [e for e in events if e.get("event") == "ci_fix_redispatch"]

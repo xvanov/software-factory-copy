@@ -818,8 +818,22 @@ def _build_initial_message(
     # blind, the reviewer re-raises the same findings, and the loop never
     # converges. Render the findings prominently, right after the story.
     if reviewer_findings:
-        findings = reviewer_findings.get("findings") or []
-        tq_findings = reviewer_findings.get("test_quality_findings") or []
+        # Findings are expected to be dicts, but some producers (e.g. the CI-
+        # failure feedback path) historically injected a bare string. Coerce
+        # any non-dict finding into a minimal dict so the render loop's
+        # ``f.get(...)`` can never crash the tick with "'str' object has no
+        # attribute 'get'" — and the text still reaches the dev.
+        def _coerce(items: Any, text_key: str) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for f in items or []:
+                if isinstance(f, dict):
+                    out.append(f)
+                elif f is not None:
+                    out.append({"severity": "high", text_key: str(f)})
+            return out
+
+        findings = _coerce(reviewer_findings.get("findings"), "what")
+        tq_findings = _coerce(reviewer_findings.get("test_quality_findings"), "issue")
         summary = (reviewer_findings.get("summary") or "").strip()
         # Loop-4: the dev persona owns BOTH code and tests, so its branch frames
         # every finding (code AND test-quality) as dev's to fix. The
