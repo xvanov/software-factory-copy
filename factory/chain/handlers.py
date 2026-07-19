@@ -206,6 +206,13 @@ _MIGRATION_COLUMNS: dict[str, str] = {
     # retroactively blocked.
     "acceptance_test_ref": "TEXT",
     "acceptance_expected": "INTEGER NOT NULL DEFAULT 0",
+    # WS1.1 per-story budget circuit breaker. Aggregate accumulators the
+    # pre-dispatch breaker reads; without these ALTERs an existing factory.db
+    # (predating the breaker) raises ``no such column: total_attempts`` on the
+    # first orchestrator read. Pre-existing stories start at 0 and accrue from
+    # their next dispatch, so none are retroactively tripped.
+    "total_attempts": "INTEGER NOT NULL DEFAULT 0",
+    "total_spend_usd": "REAL NOT NULL DEFAULT 0",
 }
 
 
