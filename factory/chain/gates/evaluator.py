@@ -33,6 +33,9 @@ ALL_GATE_LABELS: list[str] = [
     "docs-current",
     "canonical-paths-only",
     "smoke-green",
+    # WS1.2 independent acceptance oracle. Per-app opt-in like smoke-green;
+    # required only for stories that actually got an oracle authored.
+    "acceptance-verified",
 ]
 
 # The labels REQUIRED to merge a Loop-4 (dev-owns-tests) story. These are the
@@ -48,8 +51,11 @@ LOOP4_REQUIRED_GATE_LABELS: list[str] = [
 ]
 
 
-def required_gate_labels(app_config: AppConfig) -> list[str]:
-    """The merge-required gate labels for THIS app (D002).
+def required_gate_labels(
+    app_config: AppConfig, story: StoryRecord | None = None
+) -> list[str]:
+    """The merge-required gate labels for THIS app (D002), and — when a
+    ``story`` is supplied — for this specific story.
 
     The Loop-4 base set is universal. Runtime gates are appended per-app, only
     when the app declares the capability — keeping the rollout opt-in so an app
@@ -57,11 +63,27 @@ def required_gate_labels(app_config: AppConfig) -> list[str]:
     was caused by making a gate universally required before every app could
     satisfy it). ``smoke-green`` becomes required exactly when the app has a
     working, declared smoke harness.
+
+    ``acceptance-verified`` (WS1.2) becomes required when the app opts in
+    (``gates.acceptance_oracle``) AND the story is EXPECTED to have an oracle
+    (``story.acceptance_expected`` — set at spawn to "opted in AND the direction
+    carried ACs", INDEPENDENT of whether authoring succeeded). Keying off
+    ``acceptance_expected`` — NOT ``acceptance_test_ref`` — is the false-green
+    fix: a story whose author flaked (expected, no stored file) is STILL
+    required to pass, so it blocks (and self-heals) rather than silently
+    shipping un-gated. Legacy stories (``acceptance_expected`` default False)
+    with a stored ref are still required via the ref fallback. No-AC stories and
+    apps that haven't opted in are never blocked; without a ``story`` (app-level
+    query) it stays out of the required set.
     """
     labels = list(LOOP4_REQUIRED_GATE_LABELS)
     gates = app_config.gates
     if gates.smoke_harness_ready and gates.smoke_command:
         labels.append("smoke-green")
+    if gates.acceptance_oracle and story is not None and (
+        story.acceptance_expected or story.acceptance_test_ref
+    ):
+        labels.append("acceptance-verified")
     return labels
 
 
@@ -81,6 +103,9 @@ class PRContext:
     labels: list[str] = field(default_factory=list)
     ci_state: str | None = None  # "success" | "failure" | "pending" | None
     repo_root: Path | None = None  # local checkout for real-run gate execution
+    # Factory root — needed by the acceptance-verified gate to resolve a story's
+    # ``acceptance_test_ref`` (stored relative to this root, outside repo_root).
+    software_factory_root: Path | None = None
     story: StoryRecord | None = None
     commit_history: list[dict[str, Any]] = field(default_factory=list)
     # ^ each entry: {"sha": str, "files": [str], "tests_run_red": bool|None}
@@ -151,6 +176,7 @@ def evaluate_all_gates(pr: PRContext, app_config: AppConfig) -> dict[str, GateRe
     to see every blocking issue at once, not play whack-a-mole.
     """
     from factory.chain.gates import (
+        acceptance_verified,
         canonical_paths_only,
         docs_current,
         smoke_green,
@@ -165,6 +191,7 @@ def evaluate_all_gates(pr: PRContext, app_config: AppConfig) -> dict[str, GateRe
         docs_current,
         canonical_paths_only,
         smoke_green,
+        acceptance_verified,
     ):
         result = mod.evaluate(pr, app_config)
         out[result.label] = result

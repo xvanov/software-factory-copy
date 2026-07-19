@@ -167,6 +167,7 @@ def _evaluate_one_pr(
     merge_method: str = "squash",
     wait_for_ci: bool = True,
     delete_branch_after_merge: bool = True,
+    software_factory_root: Path | None = None,
 ) -> MergeAction:
     """Decide if a PR should be merged; merge it in real-run.
 
@@ -196,6 +197,7 @@ def _evaluate_one_pr(
             labels=list(fixture.labels),
             ci_state=fixture.ci_state,
             repo_root=fixture.repo_root,
+            software_factory_root=software_factory_root,
             story=story,
             dry_run=dry_run,
         )
@@ -215,7 +217,7 @@ def _evaluate_one_pr(
         present_labels = set(fixture.labels) | set(gates_passed)
         missing_labels = [
             label
-            for label in required_gate_labels(app_config)
+            for label in required_gate_labels(app_config, story)
             if label not in present_labels
         ]
 
@@ -959,6 +961,7 @@ def auto_merge_tick(
             merge_method=merge_method,
             wait_for_ci=wait_for_ci,
             delete_branch_after_merge=delete_branch_after_merge,
+            software_factory_root=root,
         )
         _record_merge_action(action, f.head_sha, db)
         # On a successful merge, enqueue a deploy candidate for the

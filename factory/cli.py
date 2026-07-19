@@ -563,6 +563,22 @@ def tick_cmd(
     except Exception as exc:  # noqa: BLE001 - never fail the tick on triage
         scheduled_results.append(("auto_pm_sync", f"errored:{exc!r}"[:60], 0, 0))
 
+    # WS1.2 acceptance-oracle self-heal. A story that is EXPECTED to have an
+    # independent acceptance oracle but whose authoring flaked (transient LLM
+    # error at spawn) blocks on the ``acceptance-verified`` gate. Re-author such
+    # stories from the SPEC (still dev-blind) here, BEFORE the chain advances and
+    # before merge evaluation, so the block is temporary — never a permanent
+    # dead-end and never a silent pass. Never fails the tick.
+    if not dry_run:
+        try:
+            from factory.chain.acceptance import reauthor_missing_oracles
+
+            healed = reauthor_missing_oracles(app_name, _FACTORY_ROOT, dry_run=dry_run)
+            if healed:
+                scheduled_results.append(("acceptance_reauthor", "healed", healed, 0))
+        except Exception as exc:  # noqa: BLE001 - never fail the tick on self-heal
+            scheduled_results.append(("acceptance_reauthor", f"errored:{exc!r}"[:60], 0, 0))
+
     # Idle signal. ``detect_idle`` used to be reachable only via the
     # ``factory idle-ping``/``factory status`` CLI paths, so "this app isn't
     # being actively developed" was never surfaced by the always-on tick.

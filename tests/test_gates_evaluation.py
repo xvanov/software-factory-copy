@@ -87,6 +87,7 @@ def test_all_gate_labels_complete() -> None:
         "docs-current",
         "canonical-paths-only",
         "smoke-green",
+        "acceptance-verified",
     ]
 
 

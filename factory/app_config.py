@@ -86,6 +86,23 @@ class AppGatesConfig(BaseModel):
     # avoiding the PRs 110/111 "every merge blocked" regression).
     smoke_harness_ready: bool = False
 
+    # WS1.2 independent acceptance oracle. When True, the chain authors an
+    # acceptance test from each story's direction acceptance criteria (the SPEC
+    # ONLY, blind to the dev's code/tests) at spawn time, stores it in factory
+    # state OUTSIDE the dev worktree, and the ``acceptance-verified`` gate copies
+    # it into the merge-candidate checkout and runs it as a REQUIRED gate. Off by
+    # default so the rollout is per-app opt-in — an app that hasn't enabled it
+    # sees no new merge blocks (mirrors the ``smoke_harness_ready`` rollout). The
+    # gate is required only for stories that actually got an oracle authored
+    # (ACs present + this flag on); legacy / no-AC stories are never blocked.
+    acceptance_oracle: bool = False
+    # Command template the acceptance gate runs, with ``{test_file}`` substituted
+    # for the copied-in test's path (relative to the checkout root). Defaults to
+    # ``python -m pytest {test_file} -q`` when unset; apps whose suite needs a
+    # wrapper (e.g. ``uv run pytest {test_file} -q``) override it here so the
+    # oracle runs against the app's real python env.
+    acceptance_test_command: str | None = None
+
 
 class AppConfig(BaseModel):
     name: str

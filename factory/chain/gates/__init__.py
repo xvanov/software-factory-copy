@@ -21,6 +21,7 @@ The gates (one per file in this package):
   * docs_current
   * canonical_paths_only
   * smoke_green
+  * acceptance_verified
 """
 
 from __future__ import annotations

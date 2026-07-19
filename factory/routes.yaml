@@ -44,6 +44,10 @@ routes:
     hard: azure/gpt-5.3-codex
   test_implementer: deepseek/deepseek-coder
   reviewer: azure/gpt-5.3-codex
+  # WS1.2 independent acceptance oracle. Deliberately a DIFFERENT model family
+  # than dev (deepseek) so the test author and the implementer never share a
+  # model — reinforces independence. gpt-5.4 is JSON-reliable (schema mode).
+  acceptance_author: azure/gpt-5.4
   tech_writer: deepseek/deepseek-chat
   release_manager: deepseek/deepseek-chat
   onboarder: azure/gpt-5.4
@@ -84,6 +88,8 @@ azure_routes:
   tech_writer: azure/gpt-5.4
   onboarder: azure/gpt-5.4
   architect: azure/gpt-5.4
+  # WS1.2 independent acceptance oracle — see the direct block for rationale.
+  acceptance_author: azure/gpt-5.4
   ux_designer: azure/gpt-5.4
   ux_auditor: azure/gpt-5.4
   ralph: azure/gpt-5.4

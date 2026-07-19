@@ -37,6 +37,11 @@ state/concerns/
 state/manager_proposals/
 # Post-merge context-refresh scratch worktrees.
 state/context-refresh/
+# WS1.2 independent acceptance oracles — spec-derived acceptance tests authored
+# at story spawn and stored per-story under state/acceptance/<app>/<id>/. Runtime
+# artifacts kept OUT of the app repo AND the dev worktree so the dev never sees
+# them; the durable record is the merge gate result, not git.
+state/acceptance/
 # Halt/apply audit trails — runtime bookkeeping mutated by every
 # halt/resume/apply cycle; ``factory resume`` archives into them.
 state/.halt_history.json

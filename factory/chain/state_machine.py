@@ -188,6 +188,28 @@ class StoryRecord(SQLModel, table=True):
     # before this column existed keep ``None``.
     points: int | None = None
     estimated_seconds: float | None = None
+    # WS1.2 independent acceptance oracle. Path (relative to the factory root)
+    # of the acceptance test authored from THIS story's direction acceptance
+    # criteria — the SPEC ONLY, blind to the dev's implementation and the dev's
+    # own tests. Authored EARLY (at story spawn, before dev runs) and stored in
+    # factory state UNDER ``state/acceptance/<app>/<story_id>/`` — deliberately
+    # outside the app repo and outside the per-story dev worktree, so the dev
+    # sandbox never receives it (the anti-reward-hack property: a coder that
+    # cannot see the test judging it cannot special-case it — ImpossibleBench).
+    # None means no oracle FILE is stored yet — which is NOT the same as "not
+    # required": authoring can flake (transient LLM error) for a story that DOES
+    # need an oracle. The required/blocking decision keys off
+    # ``acceptance_expected`` below, never off this ref, so a failed author
+    # cannot silently ship un-gated code.
+    acceptance_test_ref: str | None = None
+    # WS1.2 — whether this story is EXPECTED to have an acceptance oracle, set at
+    # spawn to ``bool(gates.acceptance_oracle and direction.acceptance)``,
+    # INDEPENDENT of whether authoring succeeded. This is the single source of
+    # truth for "acceptance-verified is required for this story". When True but
+    # ``acceptance_test_ref`` is missing (authoring flaked), the gate BLOCKS
+    # authoritatively and the tick self-heal re-authors from the spec on a later
+    # tick — expected-but-missing never silently passes and never blocks forever.
+    acceptance_expected: bool = False
 
 
 # Event names — strings the chain emits when a handler completes.
