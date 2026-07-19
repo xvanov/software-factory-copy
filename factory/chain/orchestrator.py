@@ -483,6 +483,43 @@ _AUTO_RECOVERABLE_STATES: dict[str, str] = {
 }
 
 
+def _normalize_failure_text(raw: str) -> str:
+    """Strip volatile bits (timestamps, paths, durations, addresses/ids) from
+    ``raw`` failure text so a re-run that fails for the identical reason
+    produces identical normalized text even though wall-clock/paths differ
+    between attempts.
+
+    Factored out of ``_story_failure_signature`` so ``auto_merge``'s real-CI
+    failure signature (a different failure-text source: a ``gh run view
+    --log-failed`` digest instead of a dev/review test-output tail) can reuse
+    the exact same "is this the SAME failure" normalization rather than
+    maintaining a parallel copy of the regex list.
+    """
+    normalized = re.sub(
+        r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?",
+        "<ts>",
+        raw,
+    )
+    normalized = re.sub(r"(?:/[\w.\-]+){2,}", "<path>", normalized)
+    normalized = re.sub(r"\b\d+(?:\.\d+)?s\b", "<dur>", normalized)
+    normalized = re.sub(r"\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b", "<dur>", normalized)
+    # Strip non-deterministic identifiers so the SAME logical failure hashes
+    # identically across cycles: hex memory addresses / object ids
+    # (0x7f..., id=140234..., "at 0x..."), and generic long hex/uuid runs that
+    # appear in mock/object reprs and temp names. Without this the guard fails
+    # OPEN on failures whose tail embeds an address and never detects the loop.
+    normalized = re.sub(r"0x[0-9a-fA-F]+", "<addr>", normalized)
+    normalized = re.sub(r"\bid=\d+", "id=<id>", normalized)
+    normalized = re.sub(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+        "<uuid>",
+        normalized,
+    )
+    normalized = re.sub(r"\b[0-9a-fA-F]{12,}\b", "<hex>", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
 def _story_failure_signature(story: StoryRecord) -> str:
     """Return a normalized signature of ``story``'s most recent failure.
 
@@ -514,28 +551,7 @@ def _story_failure_signature(story: StoryRecord) -> str:
     if not raw:
         return ""
 
-    normalized = re.sub(
-        r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?",
-        "<ts>",
-        raw,
-    )
-    normalized = re.sub(r"(?:/[\w.\-]+){2,}", "<path>", normalized)
-    normalized = re.sub(r"\b\d+(?:\.\d+)?s\b", "<dur>", normalized)
-    normalized = re.sub(r"\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b", "<dur>", normalized)
-    # Strip non-deterministic identifiers so the SAME logical failure hashes
-    # identically across cycles: hex memory addresses / object ids
-    # (0x7f..., id=140234..., "at 0x..."), and generic long hex/uuid runs that
-    # appear in mock/object reprs and temp names. Without this the guard fails
-    # OPEN on failures whose tail embeds an address and never detects the loop.
-    normalized = re.sub(r"0x[0-9a-fA-F]+", "<addr>", normalized)
-    normalized = re.sub(r"\bid=\d+", "id=<id>", normalized)
-    normalized = re.sub(
-        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
-        "<uuid>",
-        normalized,
-    )
-    normalized = re.sub(r"\b[0-9a-fA-F]{12,}\b", "<hex>", normalized)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = _normalize_failure_text(raw)
 
     # The tail carries the actual assertion/error; the head is often
     # boilerplate pytest banner/collection noise that's identical across

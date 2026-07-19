@@ -21,6 +21,7 @@ without network.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -56,6 +57,14 @@ _MERGEABLE_STATES = {
     StoryState.CI_GREEN.value,
     StoryState.READY_FOR_MERGE.value,
 }
+
+# CI-failure -> dev re-fix loop (the operator's "run the real CI, check the
+# output, and if it craps out, fix what crapped out" loop). Bounds how many
+# times ``_handle_ci_failure`` will re-dispatch the SAME story back to dev
+# before giving up and leaving it for a human — mirrors
+# ``orchestrator._MAX_AUTO_RECOVERIES``'s cap + signature-guard pattern so a
+# CI failure the dev cannot fix escalates instead of looping forever.
+_MAX_CI_FIX_CYCLES = 3
 
 # Gate labels the docs chain produces. The docs chain skips the TDD
 # red→green loop, so the 10 TDD gate labels don't apply. The single
@@ -447,6 +456,264 @@ def _query_ci_state(*, app_config: AppConfig, pr_number: int) -> str | None:
     return "success"
 
 
+def _ci_failure_signature(log_text: str) -> str:
+    """Signature of a real-CI failure digest.
+
+    Normalized the SAME way ``orchestrator._story_failure_signature``
+    normalizes dev/review failure text (timestamps/paths/durations/addresses
+    stripped) — reusing that normalization (rather than maintaining a second
+    copy of the regex list) is what lets ``_handle_ci_failure`` tell "the dev
+    fixed something and CI failed for a NEW reason" apart from "CI failed for
+    the exact same reason again", the same distinction
+    ``_recover_blocked_stories`` makes for blocked-state recoveries.
+
+    Returns ``""`` when there is no log text (e.g. the best-effort log fetch
+    came back empty) — an empty signature never matches a prior one, so a
+    missing-evidence case never falsely looks like "no new signal".
+    """
+    from factory.chain.orchestrator import _normalize_failure_text
+
+    text = (log_text or "").strip()
+    if not text:
+        return ""
+    normalized = _normalize_failure_text(text)
+    return hashlib.sha256(normalized[-500:].encode("utf-8")).hexdigest()
+
+
+def _fetch_ci_failure_logs(*, app_config: AppConfig, pr_number: int) -> str:
+    """Best-effort fetch of the failing CI run's log digest for ``pr_number``.
+
+    Finds the PR's most recent failed Actions run via ``gh pr view --json
+    headRefName,statusCheckRollup`` — preferring a failed check's
+    ``detailsUrl`` (points straight at its run) and falling back to ``gh run
+    list --branch <headRefName>`` when no ``detailsUrl`` resolves to a run id
+    — then pulls the failing job's log lines via ``gh run view --log-failed``.
+
+    Returns the last ~4000 chars of the digest, or ``""`` on ANY error,
+    timeout, or empty result. This feeds a dev prompt, not a merge gate — a
+    fetch failure must never crash the auto-merge tick.
+    """
+    import re as _re
+    import subprocess
+
+    if pr_number <= 0:  # synthesized placeholder — nothing real to look up
+        return ""
+    try:
+        view = subprocess.run(
+            [
+                "gh", "pr", "view", str(pr_number), "--repo", app_config.repo,
+                "--json", "headRefName,statusCheckRollup",
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if view.returncode != 0:
+        return ""
+    try:
+        data = json.loads(view.stdout or "{}")
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+
+    head_ref = str(data.get("headRefName") or "")
+    run_id: str | None = None
+    rollup = data.get("statusCheckRollup") or []
+    if isinstance(rollup, list):
+        for check in rollup:
+            if not isinstance(check, dict):
+                continue
+            conclusion = str(check.get("conclusion") or "").upper()
+            if conclusion in {"FAILURE", "CANCELLED", "TIMED_OUT", "ERROR"}:
+                url = str(check.get("detailsUrl") or "")
+                m = _re.search(r"/actions/runs/(\d+)", url)
+                if m:
+                    run_id = m.group(1)
+                    break
+
+    if run_id is None and head_ref:
+        try:
+            listed = subprocess.run(
+                [
+                    "gh", "run", "list", "--repo", app_config.repo,
+                    "--branch", head_ref, "--limit", "5",
+                    "--json", "databaseId,conclusion,status",
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return ""
+        if listed.returncode == 0:
+            try:
+                runs = json.loads(listed.stdout or "[]")
+            except ValueError:
+                runs = []
+            if isinstance(runs, list):
+                for run in runs:
+                    if (
+                        isinstance(run, dict)
+                        and str(run.get("conclusion") or "").lower() == "failure"
+                    ):
+                        run_id = str(run.get("databaseId"))
+                        break
+
+    if not run_id:
+        return ""
+
+    try:
+        log_proc = subprocess.run(
+            ["gh", "run", "view", run_id, "--repo", app_config.repo, "--log-failed"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    digest = (log_proc.stdout or "").strip() or (log_proc.stderr or "").strip()
+    if not digest:
+        return ""
+    return digest[-4000:]
+
+
+def _handle_ci_failure(
+    *,
+    story: StoryRecord,
+    app_config: AppConfig,
+    pr_number: int,
+    db: Path,
+    root: Path,
+) -> bool:
+    """Feed a real CI failure back to dev instead of just skipping the merge.
+
+    This closes the loop the operator asked for: "run the real CI, check the
+    output, and if it craps out, fix what crapped out, then move on." Before
+    this, ``_query_ci_state`` returning ``"failure"`` only made the merge
+    gate decline to merge — nothing told the dev WHAT failed.
+
+    Called when a mergeable-state story's real ``ci_state`` is ``"failure"``.
+    Returns ``True`` if the story was re-dispatched back to dev (the caller
+    should skip merging it this tick); ``False`` if the story was left alone
+    (not mergeable) or escalated instead (cap reached / identical failure).
+
+    Bounded two ways so this can never become a new infinite loop, mirroring
+    ``orchestrator._recover_blocked_stories``:
+
+      * a hard cap (``_MAX_CI_FIX_CYCLES``) on prior ``ci_fix_redispatch``
+        events for THIS story;
+      * a signature guard — if the current CI failure digest hashes
+        identically to the one recorded at the story's most recent
+        ``ci_fix_redispatch``, the dev's last attempt didn't actually fix it,
+        so we stop instead of burning another dev cycle on the same dead end.
+
+    Either bound trips a deduped ``ci_fix_exhausted`` event (an operator/FMS
+    signal) and returns ``False``. Otherwise it re-dispatches the story back
+    to dev via the EXISTING reviewer-findings plumbing (``handle_dev`` already
+    reads ``story.reviewer_result_json`` into a findings list and feeds it to
+    the sandbox — see ``handlers._handle_dev_once``) and returns ``True``.
+    """
+    from factory.chain.event_log import log_story_event, read_story_events
+    from factory.chain.handlers import persist_story
+
+    if story.state not in _MERGEABLE_STATES:
+        # Defensive: callers already guard on this, but never re-dispatch a
+        # story that isn't actually sitting in a mergeable state.
+        return False
+
+    events = read_story_events(story.id, software_factory_root=root, slug_hint=story.slug)
+    prior_redispatches = [e for e in events if e.get("event") == "ci_fix_redispatch"]
+    already_escalated = any(e.get("event") == "ci_fix_exhausted" for e in events)
+
+    def _escalate(reason: str) -> None:
+        if already_escalated:
+            return
+        try:
+            log_story_event(
+                story.id,
+                "ci_fix_exhausted",
+                {
+                    "pr_number": pr_number,
+                    "redispatches": len(prior_redispatches),
+                    "cap": _MAX_CI_FIX_CYCLES,
+                    "reason": reason,
+                },
+                software_factory_root=root,
+                slug_hint=story.slug,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    if len(prior_redispatches) >= _MAX_CI_FIX_CYCLES:
+        _escalate("cap_reached")
+        return False
+
+    try:
+        logs = _fetch_ci_failure_logs(app_config=app_config, pr_number=pr_number)
+    except Exception:  # noqa: BLE001
+        logs = ""
+    signature = _ci_failure_signature(logs)
+
+    if prior_redispatches:
+        last_signature = prior_redispatches[-1].get("failure_signature")
+        if signature and last_signature is not None and signature == last_signature:
+            # The last redispatch's CI failure recurred verbatim — the dev
+            # didn't actually fix it. Recovering again would just grind
+            # through another full dev cycle for no new signal.
+            _escalate("identical_failure_signature")
+            return False
+
+    digest = logs.strip() or (
+        "(no CI log digest could be fetched; inspect the GitHub Actions run "
+        f"for PR #{pr_number} directly)"
+    )
+    finding = (
+        f"Real GitHub Actions CI failed on PR #{pr_number}. Fix the exact "
+        f"failure it reported below — do not just re-run or ignore it:\n\n{digest}"
+    )
+    reviewer_payload = {
+        "findings": [finding],
+        "source": "ci_failure",
+        "summary": "Real GitHub Actions CI failed; fix the exact failure it reported.",
+    }
+
+    # Re-entry point: REVIEWER_REQUESTED_CHANGES (not DEV_IN_PROGRESS) is the
+    # correct target — ``DEV_IN_PROGRESS`` has no entry in the orchestrator's
+    # per-state dispatch table (it's the transient "handler is actively
+    # running" state that ``handle_dev`` itself transitions into and out of
+    # within a single invocation; see ``orchestrator._DISPATCH``). Setting
+    # the state directly to DEV_IN_PROGRESS would strand the story with no
+    # handler ever picking it up again. REVIEWER_REQUESTED_CHANGES dispatches
+    # to "dev" on the next tick AND is the exact existing path that feeds
+    # ``story.reviewer_result_json`` into ``handle_dev``'s reviewer_findings
+    # (see ``handlers._handle_dev_once``) — precisely the plumbing this
+    # re-dispatch needs to reuse.
+    story.reviewer_result_json = json.dumps(reviewer_payload)
+    story.state = StoryState.REVIEWER_REQUESTED_CHANGES.value
+    # Reset BOTH counters (mirror _recover_blocked_stories). A CI-fix redispatch
+    # hits an already-approved story whose reviewer_cycles may be near
+    # _MAX_REVIEW_CYCLES; without resetting it, the follow-up review pass could
+    # trip BLOCKED_REVIEW_NONCONVERGENT on the first non-approving pass and
+    # mislabel a CI-only hiccup as review non-convergence.
+    story.dev_retries = 0
+    story.reviewer_cycles = 0
+    persist_story(story, db)
+
+    try:
+        log_story_event(
+            story.id,
+            "ci_fix_redispatch",
+            {
+                "pr_number": pr_number,
+                "attempt": len(prior_redispatches) + 1,
+                "cap": _MAX_CI_FIX_CYCLES,
+                "failure_signature": signature,
+            },
+            software_factory_root=root,
+            slug_hint=story.slug,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 def _attempt_pr_reconcile(*, app_config: AppConfig, pr_number: int) -> bool:
     """Try to make a stale PR mergeable by merging the base branch into it.
 
@@ -649,6 +916,40 @@ def auto_merge_tick(
 
     actions: list[MergeAction] = []
     for f in fixtures:
+        # CI-failure -> dev re-fix loop. Real CI reporting "failure" used to
+        # just make the merge gate decline; now the failure is fed back to
+        # dev BEFORE the normal gate/merge decision runs, so a story with a
+        # broken PR gets a chance to actually converge instead of sitting in
+        # PR_OPEN forever waiting for a human to notice. Guarded to real,
+        # non-placeholder PRs in real-run only — synthesized-fixture/dry-run
+        # tests (negative ``pr_number``, ``dry_run=True``) are unaffected.
+        if (
+            not dry_run
+            and f.pr_number > 0
+            and f.ci_state == "failure"
+            and f.story is not None
+            and f.story.state in _MERGEABLE_STATES
+        ):
+            redispatched = _handle_ci_failure(
+                story=f.story,
+                app_config=cfg,
+                pr_number=f.pr_number,
+                db=db,
+                root=root,
+            )
+            if redispatched:
+                action = MergeAction(
+                    app=app,
+                    pr_number=f.pr_number,
+                    merged=False,
+                    reason="real CI failed; story re-dispatched to dev for a fix",
+                    gates_passed=[],
+                    blocking_labels=[],
+                )
+                _record_merge_action(action, f.head_sha, db)
+                actions.append(action)
+                continue
+
         action = _evaluate_one_pr(
             app=app,
             fixture=f,
