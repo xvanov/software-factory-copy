@@ -1143,6 +1143,12 @@ def _render_reviewer_history_section(story: StoryRecord) -> str:
             f"### Cycle {entry.get('cycle')} — verdict: {entry.get('verdict')}"
         )
         for f in (entry.get("findings") or []) + (entry.get("test_quality_findings") or []):
+            # Legacy history (written before _digest's isinstance guard) can
+            # contain a bare-string finding; skip it rather than crash the
+            # whole tick with "'str' object has no attribute 'get'". Mirrors
+            # the guards in _findings_signature and _append_reviewer_history.
+            if not isinstance(f, dict):
+                continue
             reg = " (regression)" if f.get("regression") else ""
             crit = f.get("criterion")
             crit_tag = f"/{crit}" if crit else ""
