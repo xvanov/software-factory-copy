@@ -98,10 +98,12 @@ def _writing_worktree(
     Read-only callsites (context-prelude scans) keep using
     ``resolve_app_repo_path`` because they don't mutate state.
     """
+    import subprocess
+
     from factory.app_config import resolve_app_repo_path
 
     source_repo = resolve_app_repo_path(app_config, software_factory_root)
-    return ensure_worktree_for_story(
+    wt = ensure_worktree_for_story(
         source_repo,
         software_factory_root=software_factory_root,
         app=story.app,
@@ -109,6 +111,65 @@ def _writing_worktree(
         slug=story.slug,
         base_branch=app_config.default_branch or "main",
     )
+
+    # Refresh the worktree against the CURRENT base before the writing handler
+    # runs. ensure_worktree_for_story's reuse path returns a worktree cut from
+    # an OLD base; when a fix merges to main while a story is mid-flight (e.g. a
+    # sibling un-breaks the test suite), that in-flight story's dev run keeps
+    # testing against the stale base and can never go green — the dev churns on
+    # a failure it cannot fix. The PR-open path already re-merges base at PR
+    # time (see _open_pr_for_story); do the same here so every dev/writing
+    # attempt sees since-merged fixes. Best-effort and NON-destructive: `git
+    # merge` preserves uncommitted WIP that doesn't overlap the merged files,
+    # and on ANY conflict/dirty-overlap we abort and proceed on the current
+    # base (never silently clobber the dev's in-progress work).
+    base = app_config.default_branch or "main"
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin", base],
+            cwd=str(wt), check=False, capture_output=True, timeout=60,
+        )
+        merged = subprocess.run(
+            ["git", "merge", "--no-edit", f"origin/{base}"],
+            cwd=str(wt), capture_output=True, text=True, timeout=120,
+        )
+        if merged.returncode != 0:
+            subprocess.run(
+                ["git", "merge", "--abort"],
+                cwd=str(wt), check=False, capture_output=True, timeout=60,
+            )
+    except (OSError, subprocess.SubprocessError):
+        pass  # base refresh is best-effort; never block the writing handler
+    finally:
+        # CRITICAL: if the merge timed out or the process was killed mid-merge,
+        # the except above skips the return-code abort and leaves the worktree
+        # with MERGE_HEAD + an unmerged index. A later `git add -A` + commit in
+        # a writing handler would then bake unresolved conflict markers into a
+        # real commit and push them (silent corruption, worse than a stale
+        # base). Guarantee no in-progress merge is ever left behind, however
+        # the merge call exited.
+        _abort_inflight_merge(wt)
+    return wt
+
+
+def _abort_inflight_merge(worktree: Path) -> None:
+    """Best-effort: clear a left-in-progress merge (MERGE_HEAD present) so no
+    downstream ``git add -A`` + commit can bake conflict markers into a real
+    commit. Idempotent — a no-op when no merge is in progress."""
+    import subprocess
+
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+            cwd=str(worktree), capture_output=True, timeout=15,
+        )
+        if head.returncode == 0:
+            subprocess.run(
+                ["git", "merge", "--abort"],
+                cwd=str(worktree), check=False, capture_output=True, timeout=30,
+            )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 # --------------------------------------------------------------------------- #
