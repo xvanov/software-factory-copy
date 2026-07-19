@@ -878,10 +878,12 @@ def _build_initial_message(
                     parts.append("\n## Code change requests (fix these in production code)")
                 for i, f in enumerate(findings, 1):
                     sev = f.get("severity", "?")
+                    crit = str(f.get("criterion") or "").strip()
+                    sev_tag = f"{sev}/{crit}" if crit else sev
                     loc = f.get("location", "")
                     what = (f.get("what") or "").strip()
                     fix = (f.get("fix_suggestion") or "").strip()
-                    parts.append(f"\n{i}. **[{sev}]** {loc}".rstrip())
+                    parts.append(f"\n{i}. **[{sev_tag}]** {loc}".rstrip())
                     if what:
                         parts.append(f"   - Problem: {what[:500]}")
                     if fix:

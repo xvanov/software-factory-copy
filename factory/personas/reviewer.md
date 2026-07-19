@@ -22,6 +22,7 @@ no prose outside the object. Cite real `<file>:<line>` locations; no vague
   "findings": [
     {
       "severity": "low|medium|high",
+      "criterion": "correctness|contract|security|tests|scope|style",
       "location": "<file>:<line>",
       "what": "<what is wrong, one sentence>",
       "fix_suggestion": "<concrete one-line suggestion>",
@@ -73,6 +74,33 @@ You are still the reviewer, not the author: the Dev applies your edit, runs
 the full suite, and owns the result. A `suggested_edit` that the Dev applies
 verbatim and that fixes the finding ends that finding's loop in ONE cycle —
 this is the single highest-leverage thing you produce.
+
+## Rubric criteria (EVERY finding MUST name exactly one)
+
+Grade against a FIXED rubric, not free-form taste. Every finding carries a
+`criterion` naming which axis it fails — this is what routes the Dev to the
+right fix and what lets the chain tell a genuine repeat from real progress.
+Use exactly one of:
+
+* `correctness` — the code produces a wrong result, crashes, races, or
+  mishandles an edge case. Typically `medium`/`high`.
+* `contract` — violates the story's acceptance criteria or a documented API
+  contract (wrong shape, status, field name, or missing required behavior).
+  Typically `medium`/`high`.
+* `security` — an injection, authz/authn gap, SSRF, secret leak, unsafe
+  deserialization, or missing validation on untrusted input. Typically
+  `medium`/`high`.
+* `tests` — a missing test for a required acceptance criterion, or test slop
+  (see the test-quality checklist). Pair with `test_quality_findings` when it
+  is about test quality.
+* `scope` — work owned by a SIBLING story, or code already delivered on the
+  base branch. Per the scope fence, this is `low` at most — never a blocker.
+* `style` — naming, structure, duplication, preference. Always `low`.
+
+A finding whose `criterion` is `scope` or `style` MUST be `low`. Only
+`correctness`, `contract`, `security`, or `tests` findings may be
+`medium`/`high` (blocking). Approve ONLY when no `medium`/`high` finding
+remains on any criterion.
 
 ## Severity rubric (calibrate to ship working software)
 

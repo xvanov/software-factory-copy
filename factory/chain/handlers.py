@@ -876,13 +876,127 @@ def _finding_location_file(f: dict[str, Any]) -> str:
     return loc.split(":", 1)[0].strip()
 
 
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """Best-effort parse of a JSON object from an LLM text response.
+
+    The reviewer is dispatched with ``schema=None`` (its output is large and we
+    don't want the runner's json_object mode / doubling ladder here), so the
+    raw model text can arrive fenced in ```json ... ``` or with a stray
+    sentence before/after the object. A bare ``json.loads`` silently fails on
+    those and the caller would degrade to an empty ``request_changes`` — losing
+    every finding and churning the loop. This recovers the object in three
+    escalating steps: (1) parse as-is; (2) strip a Markdown code fence;
+    (3) slice from the first ``{`` to the last ``}``. Returns ``None`` only
+    when no JSON object can be recovered — the caller MUST treat that as
+    ``request_changes`` (never a silent approve).
+    """
+    if not isinstance(text, str):
+        return text if isinstance(text, dict) else None
+
+    def _as_obj(s: str) -> dict[str, Any] | None:
+        try:
+            parsed = json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    candidate = text.strip()
+    obj = _as_obj(candidate)
+    if obj is not None:
+        return obj
+
+    # Strip a fenced block: ```json\n{...}\n``` (or plain ```), keeping body.
+    if candidate.startswith("```"):
+        body = candidate[3:]
+        if body[:4].lower() == "json":
+            body = body[4:]
+        body = body.strip()
+        if body.endswith("```"):
+            body = body[:-3].strip()
+        obj = _as_obj(body)
+        if obj is not None:
+            return obj
+
+    # Last resort: slice the outermost brace span.
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        obj = _as_obj(candidate[start : end + 1])
+        if obj is not None:
+            return obj
+    return None
+
+
+def _parse_reviewer_result(result_any: Any) -> dict[str, Any]:
+    """Normalize the reviewer's raw output into a review result dict.
+
+    The reviewer runs schema-free, so the raw text may be fenced or
+    prose-wrapped; ``_extract_json_object`` recovers the object (fence-strip /
+    brace-slice) before we give up. A genuine parse failure degrades to
+    ``request_changes`` WITH a synthetic rubric finding — never a silent
+    approve, and never an empty ``request_changes`` the dev can't act on. The
+    synthetic finding carries a rubric ``criterion`` so it flows through the
+    same signature / history / dev-findings plumbing as a real one.
+    """
+    result = result_any if isinstance(result_any, dict) else _extract_json_object(result_any)
+    if isinstance(result, dict) and "verdict" in result:
+        return result
+    return {
+        "verdict": "request_changes",
+        "test_quality_score": 0.0,
+        "findings": [
+            {
+                "severity": "high",
+                "criterion": "contract",
+                "location": "(reviewer output):0",
+                "what": (
+                    "Reviewer response was not valid rubric JSON; re-review "
+                    "required (safe fallback — not an approval)."
+                ),
+                "fix_suggestion": (
+                    "No actionable code change parsed; the reviewer will "
+                    "re-run. If this recurs, the reviewer model is not "
+                    "emitting the JSON contract."
+                ),
+            }
+        ],
+        "test_quality_findings": [],
+        "summary": "reviewer JSON parse failed",
+    }
+
+
+# Fixed rubric axes the reviewer grades against. ``scope``/``style`` are
+# non-blocking by construction (the persona clamps them to ``low``); the rest
+# may be blocking. Kept here so the parse-fallback and the signature agree on
+# the vocabulary. An unknown/absent criterion normalizes to "" — it still
+# participates in the signature (via location + text) but carries no rubric
+# axis, which is the correct backward-compatible behavior for pre-rubric output.
+_RUBRIC_CRITERIA = frozenset(
+    {"correctness", "contract", "security", "tests", "scope", "style"}
+)
+
+
+def _finding_criterion(f: dict[str, Any]) -> str:
+    """Normalized rubric criterion for a finding ("" when absent/unknown)."""
+    crit = str(f.get("criterion") or "").strip().lower()
+    return crit if crit in _RUBRIC_CRITERIA else ""
+
+
 def _findings_signature(result: dict[str, Any]) -> str:
     """Stable hash of a review's actionable findings (order-independent).
 
-    Keys on normalized location FILE + ``what``/``issue`` text: two cycles
-    flagging the same site count as "same" even when the reviewer rewords the
-    complaint (rewording defeated the text-only signature — benchmark t3,
-    2026-07-17, six cycles with consecutive_same=1 throughout).
+    Keys on a NORMALIZED structured signature per finding: location FILE +
+    rubric ``criterion`` + ``what``/``issue`` text. Two cycles flagging the
+    same site on the same rubric axis count as "same" even when the reviewer
+    rewords the complaint (rewording defeated the text-only signature —
+    benchmark t3, 2026-07-17, six cycles with consecutive_same=1 throughout).
+    The criterion is part of the key so a genuinely different rubric objection
+    at the same file (e.g. a NEW ``security`` finding where cycle-1 raised
+    ``style``) reads as PROGRESS, not a stuck repeat. Line number is
+    deliberately excluded — it shifts as the dev edits, and file-grain identity
+    is what the 2026-07-17 fix established. Pre-rubric findings (no criterion)
+    normalize to "" and hash exactly as before, so the guard is unchanged for
+    legacy output.
     """
     import hashlib
 
@@ -890,8 +1004,10 @@ def _findings_signature(result: dict[str, Any]) -> str:
     for f in (result.get("findings") or []) + (result.get("test_quality_findings") or []):
         if isinstance(f, dict):
             loc = _finding_location_file(f)
+            crit = _finding_criterion(f)
             what = (f.get("what") or f.get("issue") or "").strip().lower()[:160]
-            parts.append(f"{loc}|{what}" if loc else what)
+            key = "|".join(p for p in (loc, crit, what) if p)
+            parts.append(key)
     digest = hashlib.sha256(" ".join(sorted(parts)).encode("utf-8", "replace"))
     return digest.hexdigest()[:16]
 
@@ -914,6 +1030,7 @@ def _append_reviewer_history(story: StoryRecord, result: dict[str, Any]) -> None
             out.append(
                 {
                     "severity": f.get("severity", "medium" if not is_test else "low"),
+                    "criterion": _finding_criterion(f) or ("tests" if is_test else ""),
                     "location": str(f.get("location") or f.get("test_name") or "")[:160],
                     "what": str(f.get("what") or f.get("issue") or "")[:200],
                     "regression": bool(f.get("regression")),
@@ -968,8 +1085,10 @@ def _render_reviewer_history_section(story: StoryRecord) -> str:
         )
         for f in (entry.get("findings") or []) + (entry.get("test_quality_findings") or []):
             reg = " (regression)" if f.get("regression") else ""
+            crit = f.get("criterion")
+            crit_tag = f"/{crit}" if crit else ""
             lines.append(
-                f"- [{f.get('severity')}] {f.get('location')}: {f.get('what')}{reg}"
+                f"- [{f.get('severity')}{crit_tag}] {f.get('location')}: {f.get('what')}{reg}"
             )
         lines.append("")
     return "\n".join(lines)
@@ -2318,10 +2437,7 @@ def handle_review(
             direction_id=story.direction_id,
             db_path=db,
         )
-        try:
-            result = json.loads(result_any) if isinstance(result_any, str) else result_any
-        except (TypeError, json.JSONDecodeError):
-            result = {"verdict": "request_changes", "summary": "reviewer JSON parse failed"}
+        result = _parse_reviewer_result(result_any)
 
     story.reviewer_result_json = json.dumps(result)
 
