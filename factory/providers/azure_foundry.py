@@ -130,6 +130,27 @@ def _enable_litellm_drop_params() -> None:
 _DEEPSEEK_V4_PRO_INPUT_PER_TOKEN = 0.00000193  # $1.93 per 1M (Azure retail, eastus2)
 _DEEPSEEK_V4_PRO_OUTPUT_PER_TOKEN = 0.00000383  # $3.83 per 1M (Azure retail, eastus2)
 
+# D003 audit finding (2026-07-19): this registration had NO
+# ``cache_read_input_token_cost``. LiteLLM's ``generic_cost_per_token`` prices
+# cache-hit prompt tokens at whatever that key resolves to — and its
+# ``_get_cost_per_unit`` helper DEFAULTS A MISSING KEY TO 0.0, not to the full
+# input rate. Concretely: ``cost_per_token(model="azure/deepseek-v4-pro",
+# prompt_tokens=1000, completion_tokens=100, cache_read_input_tokens=900)``
+# returned a prompt_cost of $0.000193 (only the 100 uncached tokens billed) —
+# the other 900 tokens cost nothing. Runs show ~93% cache-hit on this route
+# (dev standard / test_implementer / manager_watcher — the heaviest-volume
+# model), so historical ``runs.cost_usd`` for those rows UNDERSTATES real
+# spend by roughly that fraction, not overstates it.
+#
+# No Azure retail meter publishes a separate cached-token rate for this
+# deployment, so the rate below is an ESTIMATE: LiteLLM's own built-in entry
+# for the same model on a different host (``fireworks_ai/deepseek-v4-pro``)
+# publishes cache_read_input_token_cost=$0.145/1M against an input rate of
+# $1.74/1M — a ~8.33% cache/input ratio. Applying that ratio to our verified
+# Azure input rate ($1.93/1M) gives the estimate below. Flagged as ESTIMATED
+# in the registration metadata like the other two rates.
+_DEEPSEEK_V4_PRO_CACHE_READ_PER_TOKEN = 1.61e-7  # ~$0.161 per 1M (estimated, see above)
+
 
 def _register_litellm_pricing() -> None:
     """Register cost-per-token entries for Azure deployments LiteLLM doesn't know.
@@ -150,10 +171,17 @@ def _register_litellm_pricing() -> None:
                 "azure/deepseek-v4-pro": {
                     "input_cost_per_token": _DEEPSEEK_V4_PRO_INPUT_PER_TOKEN,
                     "output_cost_per_token": _DEEPSEEK_V4_PRO_OUTPUT_PER_TOKEN,
+                    "cache_read_input_token_cost": _DEEPSEEK_V4_PRO_CACHE_READ_PER_TOKEN,
                     "litellm_provider": "azure",
                     "mode": "chat",
                     # Marker so anyone inspecting the cost map sees the caveat.
-                    "factory_cost_note": "Azure retail eastus2 2026-07-18 ($1.93/$3.83 per 1M)",
+                    "factory_cost_note": (
+                        "Azure retail eastus2 2026-07-18 ($1.93/$3.83 per 1M); "
+                        "cache_read rate estimated 2026-07-19 by scaling the "
+                        "fireworks_ai/deepseek-v4-pro cache/input ratio onto "
+                        "this deployment's input rate — no published Azure "
+                        "meter for cached tokens on this deployment."
+                    ),
                 },
             }
         )

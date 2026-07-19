@@ -62,6 +62,19 @@ _RUNS_NEW_COLUMNS: list[tuple[str, str]] = [
     ("duration_s", "REAL"),
     ("story_id", "INTEGER"),
     ("model_tier", "VARCHAR"),
+    # D003 — per-unit cost/token/time accounting. ``direction_id`` +
+    # ``app`` complete the attribution chain (story_id alone is not enough
+    # to roll up spend per direction or per app when a run predates a
+    # story, e.g. PM/analyst calls). Added via ALTER so the live
+    # ``state/factory.db`` gains them without a rebuild.
+    ("direction_id", "VARCHAR"),
+    ("app", "VARCHAR"),
+    # D003 follow-up — the cached/fresh prompt-token SPLIT, not just the
+    # blended cost_usd. Some models price cache-read tokens at an ESTIMATED
+    # rate (see factory_cost_note in factory/providers/azure_foundry.py);
+    # storing the split makes cost_usd recomputable once a real rate is
+    # confirmed, instead of the guess being baked in unrecoverably.
+    ("cached_input_tokens", "INTEGER"),
 ]
 
 _STORIES_NEW_COLUMNS: list[tuple[str, str]] = [

@@ -227,6 +227,56 @@ def test_deepseek_v4_pro_pricing_estimates_completion_cost() -> None:
     assert completion_cost == pytest.approx(3.83, rel=1e-6)
 
 
+def test_deepseek_v4_pro_registers_cache_read_discount() -> None:
+    """D003 audit fix: the registration MUST carry ``cache_read_input_token_cost``.
+
+    Before the fix, this key was absent — and LiteLLM's cost calculator
+    defaults a missing cache-read rate to $0.0, not to the full input rate,
+    so cached tokens were priced at ZERO (cost UNDERSTATED, not overstated).
+    Runs on this route show ~93% cache-hit, so this bug mattered a lot.
+    """
+    azure_foundry.ensure_bootstrapped()
+    import litellm
+
+    entry = litellm.model_cost.get("azure/deepseek-v4-pro")
+    assert entry is not None
+    assert entry.get("cache_read_input_token_cost", 0.0) > 0.0
+    # Cache rate must be cheaper than the full input rate — otherwise it
+    # isn't a discount at all.
+    assert entry["cache_read_input_token_cost"] < entry["input_cost_per_token"]
+
+
+def test_deepseek_v4_pro_cache_hit_cost_is_pinned() -> None:
+    """Pin the exact cache-aware cost math for a known cache-hit split.
+
+    1000 prompt tokens where 900 are cache hits + 100 are fresh, plus 100
+    completion tokens. Before the fix this returned $0.000193 (only the 100
+    fresh tokens billed — the 900 cached tokens were free). After the fix,
+    the cached tokens are billed at the discounted cache-read rate instead
+    of $0.0 or the full input rate.
+    """
+    azure_foundry.ensure_bootstrapped()
+    import litellm
+
+    prompt_cost, completion_cost = litellm.cost_per_token(
+        model="azure/deepseek-v4-pro",
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_input_tokens=900,
+    )
+    entry = litellm.model_cost["azure/deepseek-v4-pro"]
+    cache_rate = entry["cache_read_input_token_cost"]
+    input_rate = entry["input_cost_per_token"]
+    output_rate = entry["output_cost_per_token"]
+
+    expected_prompt_cost = 100 * input_rate + 900 * cache_rate
+    assert prompt_cost == pytest.approx(expected_prompt_cost, rel=1e-9)
+    assert completion_cost == pytest.approx(100 * output_rate, rel=1e-9)
+    # Sanity: pinned to the concrete rate documented in azure_foundry.py so a
+    # silent rate change (e.g. re-estimating the ratio) shows up as a diff.
+    assert cache_rate == pytest.approx(1.61e-7, rel=1e-6)
+
+
 # --------------------------------------------------------------------------- #
 # routes.yaml + model_router integration
 # --------------------------------------------------------------------------- #

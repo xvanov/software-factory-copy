@@ -1607,6 +1607,114 @@ def spend_cmd(
     console.print(table)
 
 
+@app.command("audit")
+def audit_cmd(
+    days: int = typer.Option(7, "--days", help="Days of history to roll up"),
+    top: int = typer.Option(20, "--top", help="Max rows per rollup table"),
+    reconcile: bool = typer.Option(
+        False, "--reconcile", help="Print the provider-bill reconciliation note"
+    ),
+) -> None:
+    """Per-unit cost/token/time audit: rollups by story, direction, and app.
+
+    D003 — complements ``factory spend`` (which only sums cost per calendar
+    day) with the attribution operators need to answer "what did THIS story
+    cost", not just "what did today cost". Also reports total chain-persona
+    spend that has NO ``story_id`` (the "unattributed" bucket) so operators
+    can see how complete the attribution is, not just what it totals to.
+    """
+    from factory.settings.audit import build_audit_report
+
+    report = build_audit_report(_FACTORY_ROOT, days=days)
+
+    header = (
+        f"window={report.window_days}d  runs={report.total_run_count}  "
+        f"total_cost_usd=${report.total_cost_usd:.4f}"
+    )
+    if report.estimated_cost_usd > 0:
+        header += (
+            f"  [yellow]~estimated={report.estimated_cost_pct:.1f}% "
+            f"(${report.estimated_cost_usd:.4f})[/yellow]"
+        )
+    console.print(Panel.fit(header, title="audit"))
+
+    def _rows_table(title: str, key_col: str, rows: list[Any]) -> Table:
+        t = Table(title=title)
+        t.add_column(key_col)
+        t.add_column("runs", justify="right")
+        t.add_column("tokens_in", justify="right")
+        t.add_column("tokens_out", justify="right")
+        t.add_column("cost_usd", justify="right")
+        t.add_column("duration_s", justify="right")
+        for row in rows[:top]:
+            # ``~`` marks rows whose cost_usd includes spend priced at an
+            # ESTIMATED rate (see the footnote below) — operators must not
+            # read these as exact until reconciled against the real bill.
+            key_display = f"~{row.key}" if row.has_estimated_cost else row.key
+            t.add_row(
+                key_display,
+                str(row.run_count),
+                str(row.tokens_in),
+                str(row.tokens_out),
+                f"${row.cost_usd:.4f}",
+                f"{row.duration_s:.1f}",
+            )
+        return t
+
+    console.print(_rows_table("audit — by story", "story_id", report.by_story))
+    console.print(_rows_table("audit — by direction", "direction_id", report.by_direction))
+    console.print(_rows_table("audit — by app", "app", report.by_app))
+
+    if report.estimated_cost_usd > 0:
+        models = ", ".join(report.estimated_models)
+        console.print(
+            Panel.fit(
+                f"[yellow]~ marks rows priced with an ESTIMATED rate, not an exact "
+                f"one: {report.estimated_cost_pct:.1f}% of window spend "
+                f"(${report.estimated_cost_usd:.4f}) used a model whose LiteLLM "
+                f"price registration is flagged estimated ({models}) — the "
+                f"cache-read rate has no published provider meter and is pending "
+                f"reconciliation against the real bill. See --reconcile.[/yellow]",
+                title="audit — cost-accuracy caveat",
+            )
+        )
+
+    u = report.unattributed
+    by_persona = ", ".join(f"{k}={v}" for k, v in sorted(u.by_persona.items())) or "(none)"
+    unattributed_style = "red" if u.run_count > 0 else "green"
+    console.print(
+        Panel.fit(
+            f"[{unattributed_style}]runs={u.run_count}  cost_usd=${u.cost_usd:.4f}  "
+            f"tokens_in={u.tokens_in}  tokens_out={u.tokens_out}[/{unattributed_style}]\n"
+            f"by persona: {by_persona}",
+            title="audit — unattributed chain-persona spend (NULL story_id)",
+        )
+    )
+
+    if reconcile:
+        console.print(
+            Panel.fit(
+                "To reconcile summed cost_usd against the real provider bill for "
+                "this window:\n"
+                "  1. Pull the provider's billed total for the same UTC window "
+                "(Azure Cost Management for azure/* model ids; the DeepSeek "
+                "dashboard for deepseek/* direct-provider ids).\n"
+                "  2. Compare against this command's total_cost_usd above.\n"
+                "  3. A variance beyond a few percent usually means either (a) a "
+                "model/provider is missing a price registration in "
+                "factory/providers/azure_foundry.py (cost_usd under-counts, "
+                "often silently — a new/renamed Azure deployment ships with no "
+                "LiteLLM price entry until someone registers one), or (b) the "
+                "provider changed a rate LiteLLM/our registration hasn't caught "
+                "up with yet.\n"
+                "  4. The 'unattributed' panel above does NOT explain a variance "
+                "against the bill — those runs still recorded a cost_usd, they "
+                "just aren't tied to a story/direction/app.",
+                title="audit — reconciliation note",
+            )
+        )
+
+
 @app.command("auto-merge")
 def auto_merge_cmd(
     app_name: str = typer.Option(..., "--app", help="App name"),

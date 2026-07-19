@@ -707,6 +707,12 @@ def _live_run(persona: str, app: str, software_factory_root: Path) -> dict[str, 
         model,
         schema={"type": "object"},
         max_tokens=max_tokens,
+        # These app-level personas (ralph/bug_hunter/security/ux_auditor) run
+        # ahead of any story, so story_id/direction_id are legitimately
+        # unknown here — but ``app`` IS known and must be stamped so
+        # ``factory audit`` can roll spend up per app instead of leaving it
+        # in the unattributed bucket.
+        app=app,
     )
     if isinstance(result, dict):
         return result

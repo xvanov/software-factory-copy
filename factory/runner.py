@@ -133,6 +133,33 @@ def _log_prompt_metadata(
         pass
 
 
+def _extract_cached_tokens(usage: Any) -> int:
+    """Return cache-read prompt tokens from a litellm ``Usage``-shaped object.
+
+    LiteLLM normalizes both the DeepSeek wire field (``prompt_cache_hit_
+    tokens``) and the OpenAI-style field (native ``prompt_tokens_details.
+    cached_tokens``, which Azure's gpt-5.4/gpt-5.3-codex deployments also
+    use) into the same ``usage.prompt_tokens_details.cached_tokens``
+    location — so one accessor covers every model in ``routes.yaml``.
+    Defensive against ``usage`` being a plain dict (some call paths) or a
+    ``Usage``-like object (the common case); never raises.
+    """
+    try:
+        details: Any = None
+        if hasattr(usage, "get"):
+            details = usage.get("prompt_tokens_details")
+        elif isinstance(usage, dict):
+            details = usage.get("prompt_tokens_details")
+        if details is None:
+            return 0
+        cached = getattr(details, "cached_tokens", None)
+        if cached is None and isinstance(details, dict):
+            cached = details.get("cached_tokens")
+        return int(cached or 0)
+    except Exception:
+        return 0
+
+
 # --------------------------------------------------------------------------- #
 # Public dataclasses
 # --------------------------------------------------------------------------- #
@@ -206,6 +233,23 @@ class Run(SQLModel, table=True):
     duration_s: float | None = None
     story_id: int | None = None
     model_tier: str | None = None
+    # D003 — complete per-unit attribution. ``story_id`` alone undercounts
+    # per-direction / per-app rollups whenever a run predates story creation
+    # (PM/analyst) or is a scheduled app-level persona (ralph/bug_hunter/
+    # security/ux_auditor) — those legitimately have no story_id but DO have
+    # a known app. Chain-persona runs (sm/dev/reviewer/tech_writer/
+    # onboarder) are expected to carry all three.
+    direction_id: str | None = None
+    app: str | None = None
+    # D003 follow-up — the cached/fresh token SPLIT, not just the blended
+    # cost_usd. cost_usd for models with an estimated cache-read rate (see
+    # ``factory.providers.azure_foundry``) mixes an exact-rate fresh-token
+    # cost with a guessed-rate cached-token cost; without the split, that
+    # guess can never be recomputed once a real rate is known, and
+    # historical rows would be permanently unfixable. NULL means "unknown /
+    # not applicable" (pre-model failures, dry-runs) — 0 means "a real call
+    # happened and had zero cache hits".
+    cached_input_tokens: int | None = None
 
 
 def _engine(db_path: Path | None = None) -> Any:
@@ -238,6 +282,9 @@ def _record_run(
     duration_s: float | None = None,
     story_id: int | None = None,
     model_tier: str | None = None,
+    direction_id: str | None = None,
+    app: str | None = None,
+    cached_input_tokens: int | None = None,
     software_factory_root: Path | None = None,
     started_at: str | None = None,
 ) -> None:
@@ -259,6 +306,9 @@ def _record_run(
             duration_s=duration_s,
             story_id=story_id,
             model_tier=model_tier,
+            direction_id=direction_id,
+            app=app,
+            cached_input_tokens=cached_input_tokens,
         )
         session.add(row)
         session.commit()
@@ -1111,6 +1161,8 @@ async def sandbox_run(
             duration_s=_elapsed(),
             story_id=story_id,
             model_tier=difficulty,
+            direction_id=direction_id,
+            app=app,
         )
         summary = (
             f"[DRY-RUN] persona={persona} model={llm_config.model} difficulty={difficulty}\n"
@@ -1154,6 +1206,8 @@ async def sandbox_run(
             duration_s=_elapsed(),
             story_id=story_id,
             model_tier=difficulty,
+            direction_id=direction_id,
+            app=app,
         )
         return RunResult(success=False, error=err, summary=err)
 
@@ -1181,6 +1235,8 @@ async def sandbox_run(
             duration_s=_elapsed(),
             story_id=story_id,
             model_tier=difficulty,
+            direction_id=direction_id,
+            app=app,
         )
         return RunResult(success=False, error=err, summary=err)
 
@@ -1259,7 +1315,7 @@ async def sandbox_run(
 
     loop = asyncio.get_running_loop()
 
-    def _do_run() -> tuple[int, int, float, str, list[dict[str, Any]]]:
+    def _do_run() -> tuple[int, int, int, float, str, list[dict[str, Any]]]:
         # ``Conversation`` is a factory that returns LocalConversation/RemoteConversation
         # depending on the workspace type. Treat as Any for mypy purposes.
         conversation: Any = Conversation(
@@ -1275,6 +1331,10 @@ async def sandbox_run(
             tok = stats.accumulated_token_usage
             t_in = int(getattr(tok, "prompt_tokens", 0) or 0)
             t_out = int(getattr(tok, "completion_tokens", 0) or 0)
+            # The OpenHands SDK's ``TokenUsage`` already carries the
+            # cache/fresh split (``cache_read_tokens``) — no need to re-parse
+            # a raw litellm response here.
+            t_cached = int(getattr(tok, "cache_read_tokens", 0) or 0)
             cost = float(getattr(stats, "accumulated_cost", 0.0) or 0.0)
             # Extract cross-retry memory signal from the conversation's
             # event stream BEFORE closing. ``conversation.state.events`` is
@@ -1283,7 +1343,7 @@ async def sandbox_run(
             # executor (same thread that owns the state) and pass plain
             # dicts back to the async layer.
             last_msg, recent = _extract_conversation_memory(conversation)
-            return (t_in, t_out, cost, last_msg, recent)
+            return (t_in, t_out, t_cached, cost, last_msg, recent)
         finally:
             conversation.close()
 
@@ -1307,6 +1367,7 @@ async def sandbox_run(
             (
                 tokens_in,
                 tokens_out,
+                cached_input_tokens,
                 cost_usd,
                 last_assistant_message,
                 recent_tool_calls,
@@ -1340,6 +1401,8 @@ async def sandbox_run(
             duration_s=_elapsed(),
             story_id=story_id,
             model_tier=difficulty,
+            direction_id=direction_id,
+            app=app,
         )
         # test_run_passed defaults to None + zero cost/tokens → matches
         # handle_dev._is_premodel_infra_failure, so the dev circuit breaker
@@ -1369,6 +1432,8 @@ async def sandbox_run(
             duration_s=_elapsed(),
             story_id=story_id,
             model_tier=difficulty,
+            direction_id=direction_id,
+            app=app,
         )
         return RunResult(
             success=False,
@@ -1398,6 +1463,9 @@ async def sandbox_run(
         duration_s=_elapsed(),
         story_id=story_id,
         model_tier=difficulty,
+        direction_id=direction_id,
+        app=app,
+        cached_input_tokens=cached_input_tokens,
     )
 
     return RunResult(
@@ -1492,6 +1560,8 @@ def text_run(
             duration_s=_elapsed(),
             story_id=story_id,
             model_tier=model_tier,
+            direction_id=direction_id,
+            app=app,
         )
         if schema is not None:
             return {"_dry_run": True, "persona": persona, "model": model_id}
@@ -1514,6 +1584,8 @@ def text_run(
             duration_s=_elapsed(),
             story_id=story_id,
             model_tier=model_tier,
+            direction_id=direction_id,
+            app=app,
         )
         raise RuntimeError(msg)
 
@@ -1567,6 +1639,7 @@ def text_run(
     current_max = max_tokens if max_tokens is not None else _DEFAULT_MAX_OUTPUT_TOKENS
     tokens_in = 0
     tokens_out = 0
+    cached_input_tokens = 0
     cost_usd = 0.0
     text = ""
     parsed: dict[str, Any] | None = None
@@ -1611,6 +1684,7 @@ def text_run(
         tokens_in += int(usage.get("prompt_tokens", 0) or 0)
         attempt_out = int(usage.get("completion_tokens", 0) or 0)
         tokens_out += attempt_out
+        cached_input_tokens += _extract_cached_tokens(usage)
         try:
             cost_usd += float(getattr(response, "_hidden_params", {}).get("response_cost") or 0.0)
         except Exception:
@@ -1671,6 +1745,9 @@ def text_run(
                         duration_s=_elapsed(),
                         story_id=story_id,
                         model_tier=model_tier,
+                        direction_id=direction_id,
+                        app=app,
+                        cached_input_tokens=cached_input_tokens,
                     )
                     raise RuntimeError(
                         f"JSON-mode response was not valid JSON after "
@@ -1702,6 +1779,9 @@ def text_run(
         duration_s=_elapsed(),
         story_id=story_id,
         model_tier=model_tier,
+        direction_id=direction_id,
+        app=app,
+        cached_input_tokens=cached_input_tokens,
     )
 
     if schema is not None:
