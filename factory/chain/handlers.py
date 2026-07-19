@@ -3073,6 +3073,39 @@ def _open_pr_for_story(
             timeout=60,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as _push_exc:
+        # A PR may already exist for this branch (e.g. the story re-reached
+        # PR_OPEN after a CI-fix / review re-dispatch). `gh pr create` then
+        # exits non-zero with "already exists" — but the story genuinely HAS a
+        # PR, so RELINK it: look up the existing PR number and return it.
+        # Without this, github_pr_number stays None and the auto-merge / CI-fix
+        # machinery can never act on the existing PR (it sits orphaned forever).
+        stderr = getattr(_push_exc, "stderr", "") or ""
+        if isinstance(_push_exc, subprocess.CalledProcessError) and "already exists" in stderr:
+            try:
+                existing = subprocess.run(
+                    [
+                        "gh", "pr", "view", str(branch), "--repo", app_config.repo,
+                        "--json", "number", "-q", ".number",
+                    ],
+                    cwd=str(target_repo), capture_output=True, text=True, timeout=30,
+                )
+                num = (existing.stdout or "").strip()
+                if existing.returncode == 0 and num.isdigit():
+                    try:
+                        from factory.manager.signals import write_git_event as _wge_relink
+
+                        _wge_relink(
+                            kind="pr_open",
+                            story_id=story.id,
+                            pr_number=int(num),
+                            result="relinked",
+                            software_factory_root=software_factory_root,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return int(num)
+            except (subprocess.SubprocessError, OSError):
+                pass
         # Emit error signal — best-effort.
         try:
             from factory.manager.signals import write_git_event as _wge_err
