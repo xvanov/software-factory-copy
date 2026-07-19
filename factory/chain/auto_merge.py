@@ -393,6 +393,60 @@ def _pr_terminally_unmergeable(
     return state in ("CLOSED", "MERGED") or mergeable == "CONFLICTING" or merge_status == "DIRTY"
 
 
+def _query_ci_state(*, app_config: AppConfig, pr_number: int) -> str | None:
+    """Query the REAL CI conclusion for a PR via the ``gh`` CLI.
+
+    Returns ``"success"`` (every REQUIRED check passed/skipped), ``"failure"``
+    (at least one required check failed/cancelled/errored), ``"pending"``
+    (required checks still queued/running), or ``None`` when there is nothing
+    to gate on — no branch protection / no required checks, ``gh``
+    missing/timeout, a placeholder (non-positive) PR number, or unparseable
+    output. ``None`` makes the ``tests-green`` gate fall back to the recorded
+    dev flag, so apps without CI/protection (e.g. sacrifice pre-CI) are
+    unaffected while protected repos gate on their real Actions run.
+
+    This replaces the historical hardcoded ``ci_state="success"``, which let
+    the gate pass on a string literal instead of a real signal (the "thinks
+    CI passed then it crashes" class). Read-only; safe in dry-run.
+
+    Implementation note: ``gh pr checks`` (v2.45) does NOT support ``--json``,
+    so we parse its tab-separated rows and use ``--required`` so non-required
+    integrations (e.g. CodeRabbit, which can sit PENDING forever) never poison
+    the aggregate and block the factory's own merges. CRITICAL: gh prints
+    "no required checks reported" and exits 0 when protection is absent —
+    that must map to ``None`` (nothing to consult), never ``"success"``.
+    """
+    import subprocess
+
+    if pr_number <= 0:  # synthesized placeholder (dry-run docs) — nothing to query
+        return None
+    cmd = [
+        "gh", "pr", "checks", str(pr_number), "--repo", app_config.repo, "--required",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    combined = ((proc.stdout or "") + " " + (proc.stderr or "")).lower()
+    if "no required checks" in combined or "no checks reported" in combined:
+        # No protection / no required checks → nothing real to gate on.
+        return None
+    # Each row: "<name>\t<status>\t<elapsed>\t<url>"; status is the 2nd column.
+    statuses: set[str] = set()
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1].strip():
+            statuses.add(parts[1].strip().lower())
+    if not statuses:
+        return None
+    if statuses & {"fail", "failing", "failure", "cancel", "cancelled", "timed_out", "error"}:
+        return "failure"
+    if statuses & {"pending", "in_progress", "queued", "waiting"}:
+        return "pending"
+    # Remaining rows are all pass/skipping/neutral → required set is green.
+    return "success"
+
+
 def _attempt_pr_reconcile(*, app_config: AppConfig, pr_number: int) -> bool:
     """Try to make a stale PR mergeable by merging the base branch into it.
 
@@ -477,6 +531,32 @@ def auto_merge_tick(
                 slug=db_story.slug,
                 base_branch=cfg.default_branch or "main",
             )
+            # Fetch-before-trust: the gate must evaluate the EXACT commit that
+            # will be squash-merged — origin/<feature_branch> — not whatever
+            # local ref the worktree reuse path happened to leave checked out.
+            # gh pr update-branch (_attempt_pr_reconcile) writes a merge commit
+            # straight to origin, and other worktrees/rebases can advance the
+            # remote tip, leaving the local feature ref behind; without this
+            # sync the smoke/tests gates boot STALE code while gh pr merge
+            # merges the real tip (the 2026-07-18 stale-worktree gate bug).
+            # Best-effort: only resets when origin/<feature> resolves.
+            from factory.chain.branch import feature_branch_name
+
+            feat = db_story.github_branch or (
+                feature_branch_name(db_story.github_issue_number, db_story.slug)
+                if db_story.github_issue_number is not None
+                else None
+            )
+            if feat:
+                fetched = subprocess.run(
+                    ["git", "fetch", "origin", feat],
+                    cwd=str(wt), check=False, capture_output=True, timeout=60,
+                )
+                if fetched.returncode == 0:
+                    subprocess.run(
+                        ["git", "reset", "--hard", f"origin/{feat}"],
+                        cwd=str(wt), check=False, capture_output=True, timeout=60,
+                    )
             # Refresh the branch with the CURRENT base before gates run. A
             # PR that lingered through review cycles goes stale as siblings
             # merge; its smoke gate then boots an old backend against the
@@ -534,7 +614,10 @@ def auto_merge_tick(
                     base_branch=cfg.default_branch or "main",
                     labels=[],
                     files_changed=[],
-                    ci_state="success",
+                    # Real CI conclusion via gh, never a hardcoded pass. Falls
+                    # back to None (→ gate reads the recorded flag) for
+                    # placeholder PR numbers or when no checks are configured.
+                    ci_state=_query_ci_state(app_config=cfg, pr_number=int(pr_no)),
                     story=db_story,
                     repo_root=_story_worktree(root, app, db_story),
                 )
@@ -558,7 +641,7 @@ def auto_merge_tick(
                     base_branch=str(pr.base.ref),
                     labels=[lbl.name for lbl in pr.labels],
                     files_changed=[f.filename for f in pr.get_files()],
-                    ci_state=None,
+                    ci_state=_query_ci_state(app_config=cfg, pr_number=int(pr.number)),
                     story=story_row,
                     repo_root=_story_worktree(root, app, story_row),
                 )
