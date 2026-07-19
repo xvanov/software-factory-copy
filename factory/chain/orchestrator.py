@@ -30,6 +30,7 @@ from sqlmodel import Session, create_engine, select
 from factory.app_config import AppConfig, load_app_config
 from factory.chain import handlers as H
 from factory.chain.auto_merge import MergeAction, auto_merge_tick
+from factory.chain.ci_health import CiHealthResult, main_ci_health_tick
 from factory.chain.event_log import log_story_event
 from factory.chain.state_machine import StoryRecord, StoryState
 from factory.directions.parser import Direction
@@ -83,6 +84,9 @@ class TickSummary:
     # End-of-tick auto-merge decisions (one entry per PR evaluated).
     # Empty when ``auto_merge.enabled=false`` or no PRs are eligible.
     merges: list[MergeAction] = field(default_factory=list)
+    # Post-merge main-branch CI-health monitor result (D004). ``None`` when
+    # ``ci_health.enabled=false`` or the factory mode suppresses it.
+    ci_health: CiHealthResult | None = None
     # Phase 7: set to True when tick exits early due to factory halt.
     halted: bool = False
     halt_reason: str | None = None
@@ -1205,6 +1209,24 @@ def tick(
                     # story`` and re-run auto-merge by hand.
                     summary.errors.append(("auto-merge", repr(exc)))
 
+        # Post-merge main-branch CI-health monitor (D004). Cheap (1-2 ``gh``
+        # calls) — runs once per app per tick regardless of in-flight story
+        # count, since it isn't watching any particular story: it's watching
+        # main itself for a required check that went red AFTER merge (flaky
+        # test, merge-interaction failure, infra/runner change). Gated the
+        # same way as auto-merge: an explicit settings flag, and suppressed
+        # in modes where forward motion (here: filing a new direction) is
+        # deliberately paused.
+        if settings.ci_health.enabled:
+            current_mode = get_mode(root, db_path=db)
+            if current_mode not in {"paused", "drain-reviews"}:
+                try:
+                    summary.ci_health = main_ci_health_tick(root, app, dry_run=dry_run)
+                except Exception as exc:
+                    # Best-effort: a CI-health monitor failure must never
+                    # break the tick.
+                    summary.errors.append(("ci-health", repr(exc)))
+
         _tick_succeeded = True
     except Exception as _exc:  # noqa: BLE001
         _tick_exception = repr(_exc)
@@ -1259,4 +1281,16 @@ def tick_summary_as_dict(summary: TickSummary) -> dict[str, Any]:
             }
             for m in summary.merges
         ],
+        "ci_health": (
+            None
+            if summary.ci_health is None
+            else {
+                "state": summary.ci_health.state,
+                "filed": summary.ci_health.filed,
+                "filed_direction_id": summary.ci_health.filed_direction_id,
+                "reason": summary.ci_health.reason,
+                "required_failing": list(summary.ci_health.required_failing),
+                "advisory_failing": list(summary.ci_health.advisory_failing),
+            }
+        ),
     }

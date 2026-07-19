@@ -62,6 +62,15 @@ auto_merge:
 # runs table.
 auto_pm_sync:
   enabled: true
+# Post-merge main-branch CI-health monitor (D004). When enabled, ``factory
+# tick`` polls each app's main branch once per tick for a REQUIRED status
+# check gone red AFTER merge and auto-files a ``ci-health`` direction so it
+# gets fixed through the normal chain. This is the POST-merge safety net;
+# the pre-merge required-check gate (branch protection) is unchanged and
+# remains the primary defense. Advisory (non-required) reds never file a
+# direction regardless of this flag.
+ci_health:
+  enabled: true
 # Phase 6 scheduled personas. ``factory tick`` consults this on every run
 # and dispatches due entries via ``factory.chain.scheduled_tasks``. Rate
 # limits referenced by ``rate_limit_key`` look up the same-named field in

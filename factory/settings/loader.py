@@ -140,6 +140,25 @@ class AutoPMSyncConfig(BaseModel):
     enabled: bool = True
 
 
+class CiHealthConfig(BaseModel):
+    """Controls the post-merge main-branch CI-health monitor (D004).
+
+    When ``enabled``, ``orchestrator.tick`` calls ``main_ci_health_tick``
+    once per app per tick (cheap: 1-2 ``gh`` calls). It polls the app's
+    ``main`` branch for a REQUIRED status check gone red post-merge and
+    auto-files a ``ci-health`` direction so the failure is fixed through
+    the normal dev -> review -> CI -> merge chain. This is the POST-merge
+    safety net; the pre-merge required-check gate (branch protection,
+    ``auto_merge._query_ci_state``) remains the primary defense and is
+    unaffected by this flag.
+
+    Advisory (non-required) reds never file a direction regardless of this
+    setting — see ``factory.chain.ci_health.query_main_ci_status``.
+    """
+
+    enabled: bool = True
+
+
 class AutoIntakeConfig(BaseModel):
     """Controls automatic intake of USER-FILED GitHub issues every tick.
 
@@ -169,6 +188,7 @@ class FactorySettings(BaseModel):
     auto_pm_sync: AutoPMSyncConfig = Field(default_factory=AutoPMSyncConfig)
     auto_intake: AutoIntakeConfig = Field(default_factory=AutoIntakeConfig)
     dev_convergence: DevConvergenceConfig = Field(default_factory=DevConvergenceConfig)
+    ci_health: CiHealthConfig = Field(default_factory=CiHealthConfig)
 
 
 _CACHED: dict[Path, FactorySettings] = {}

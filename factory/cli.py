@@ -645,6 +645,7 @@ def tick_cmd(
         and not summary.errors
         and not summary.rejected
         and not summary.merges
+        and (summary.ci_health is None or summary.ci_health.state in ("unknown", "green"))
     ):
         console.print(
             Panel.fit(
@@ -684,6 +685,12 @@ def tick_cmd(
                 str(len(m.gates_passed)),
             )
         console.print(merge_table)
+    if summary.ci_health is not None and summary.ci_health.state not in ("unknown", "green"):
+        console.print(
+            f"ci-health: state={summary.ci_health.state} "
+            f"filed={summary.ci_health.filed} "
+            f"reason={summary.ci_health.reason!r}"
+        )
     console.print(
         f"advanced={summary.stories_advanced} "
         f"blocked_by_caps={summary.blocked_by_caps} "
