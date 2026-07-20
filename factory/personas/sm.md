@@ -169,3 +169,5 @@ stories/*.md
 
 You only emit story files. Doc rewrites are the Tech-Writer's job; ADRs are
 forbidden entirely.
+
+<!-- ws3.5 staging plumbing probe -->
