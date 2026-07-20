@@ -507,6 +507,56 @@ def tick_cmd(
             (due.schedule.name, out.status, out.findings_count, len(out.directions_filed))
         )
 
+    # Idle -> generate work (Ceiling A: keep the factory productively busy).
+    # Detect_idle runs AFTER the cron scheduler loop above: if a scheduled
+    # persona already filed findings this tick the app isn't idle, so we don't
+    # double-generate. When the app IS drained (no in-flight stories, no recent
+    # findings, no recent deploys) we (a) emit the ``app_idle`` event for FMS /
+    # operator visibility and (b) dispatch a work-generating persona on demand
+    # (rotating bug_hunter/ux_auditor/security, respecting each persona's daily
+    # cap + a multi-hour cooldown) so a well-maintained app that has drained
+    # refills its OWN backlog instead of idling and manufacturing stall-noise.
+    # Runs BEFORE auto_pm_sync so any direction filed here is decomposed into
+    # stories on this very tick — closing finding->direction->story with no
+    # operator. Never fails the tick.
+    if not dry_run:
+        try:
+            from factory.chain.idle import detect_idle, maybe_generate_idle_work
+            from factory.manager.signals import write_event
+
+            idle_snap = detect_idle(app_name, _FACTORY_ROOT, since_hours=2)
+            if idle_snap is not None:
+                write_event(
+                    "idle",
+                    {
+                        "event": "app_idle",
+                        "app": app_name,
+                        "idle_since": idle_snap.idle_since.isoformat(),
+                        "recent_direction_count": len(idle_snap.recent_directions),
+                    },
+                    software_factory_root=_FACTORY_ROOT,
+                )
+                scheduled_results.append(("idle_detector", "idle", 0, 0))
+                gen = maybe_generate_idle_work(
+                    app_name,
+                    _FACTORY_ROOT,
+                    dry_run=dry_run,
+                    idle_snapshot=idle_snap,
+                )
+                if gen.fired:
+                    scheduled_results.append(
+                        (
+                            f"idle_generate ({gen.persona})",
+                            gen.status or "ok",
+                            gen.findings_count,
+                            gen.directions_filed,
+                        )
+                    )
+                else:
+                    scheduled_results.append(("idle_generate", f"skipped:{gen.reason}", 0, 0))
+        except Exception as exc:  # noqa: BLE001 - never fail the tick
+            scheduled_results.append(("idle_generate", f"errored:{exc!r}"[:60], 0, 0))
+
     # Auto intake: convert NEW user-filed GitHub issues (label ``user-report``)
     # into directions, so a user reporting a bug/feature flows all the way to a
     # PR with no operator step. Runs BEFORE auto_pm_sync so a freshly-ingested
@@ -578,36 +628,6 @@ def tick_cmd(
                 scheduled_results.append(("acceptance_reauthor", "healed", healed, 0))
         except Exception as exc:  # noqa: BLE001 - never fail the tick on self-heal
             scheduled_results.append(("acceptance_reauthor", f"errored:{exc!r}"[:60], 0, 0))
-
-    # Idle signal. ``detect_idle`` used to be reachable only via the
-    # ``factory idle-ping``/``factory status`` CLI paths, so "this app isn't
-    # being actively developed" was never surfaced by the always-on tick.
-    # Wiring it here emits an ``app_idle`` event (state/events/idle.ndjson) that
-    # the FMS and operator can see — the point at which the scheduled bug-hunt
-    # personas (bug_hunter/ralph/ux_auditor/security) are the only thing driving
-    # the app forward. Cheap: no LLM, no GitHub; the cron personas already do
-    # the hunting, and their explore-mode findings (see scheduled_tasks) now
-    # refill the queue. Never fails the tick.
-    if not dry_run:
-        try:
-            from factory.chain.idle import detect_idle
-            from factory.manager.signals import write_event
-
-            idle_snap = detect_idle(app_name, _FACTORY_ROOT, since_hours=2)
-            if idle_snap is not None:
-                write_event(
-                    "idle",
-                    {
-                        "event": "app_idle",
-                        "app": app_name,
-                        "idle_since": idle_snap.idle_since.isoformat(),
-                        "recent_direction_count": len(idle_snap.recent_directions),
-                    },
-                    software_factory_root=_FACTORY_ROOT,
-                )
-                scheduled_results.append(("idle_detector", "idle", 0, 0))
-        except Exception as exc:  # noqa: BLE001 - never fail the tick
-            scheduled_results.append(("idle_detector", f"errored:{exc!r}"[:60], 0, 0))
 
     if scheduled_results:
         sched_table = Table(title="scheduled personas fired this tick")
