@@ -39,6 +39,7 @@ from factory.chain.state_machine import (
     StoryState,
     advance,
 )
+from factory.chain.step_events import emit_chain_step
 from factory.directions.parser import Direction
 from factory.settings.enforcer import can_dispatch
 from factory.settings.loader import load_settings
@@ -1624,6 +1625,17 @@ def tick(
                         software_factory_root=root,
                         slug_hint=story.slug,
                     )
+                    # WS4.2: record the failed dispatch as a chain_step too, so
+                    # the replayable stream captures crashes, not just advances.
+                    emit_chain_step(
+                        story,
+                        handler=handler_name,
+                        from_state=from_state,
+                        to_state=story.state,
+                        outcome="exception",
+                        software_factory_root=root,
+                        extra={"exception": repr(exc)},
+                    )
                     break
                 # WS1.1 breaker accumulator: refresh this story's aggregate
                 # spend from the D003 per-run ledger (authoritative — no
@@ -1671,6 +1683,17 @@ def tick(
                     },
                     software_factory_root=root,
                     slug_hint=story.slug,
+                )
+                # WS4.2: append a typed, replayable chain_step record for this
+                # dispatch (append-only per-app stream; content hash/ref of the
+                # step's persisted artifact). Best-effort — never crashes a tick.
+                emit_chain_step(
+                    story,
+                    handler=handler_name,
+                    from_state=from_state,
+                    to_state=story.state,
+                    outcome="error" if result.error else "advanced",
+                    software_factory_root=root,
                 )
                 if result.error or story.state == StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value:
                     summary.stories_blocked += 1

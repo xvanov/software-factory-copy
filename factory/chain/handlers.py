@@ -191,6 +191,9 @@ _MIGRATION_COLUMNS: dict[str, str] = {
     # Fed forward into the next dev invocation's initial message so the LLM
     # sees what it already tried and what failed.
     "dev_attempts_json": "TEXT",
+    # WS4.2 resume-from-checkpoint marker (see StoryRecord.dev_step_checkpoint).
+    # Nullable TEXT; pre-existing stories gain it as NULL and are unaffected.
+    "dev_step_checkpoint": "TEXT",
     # Item 4 — harness precheck flag. Bool, default 0 (False). SQLite
     # stores bool as 0/1 INTEGER; the SQLModel layer coerces on read.
     "harness_precheck_passed": "INTEGER NOT NULL DEFAULT 0",
@@ -1318,6 +1321,69 @@ def _dry_run_dev(story: StoryRecord) -> tuple[bool, dict[str, Any]]:
     }
 
 
+def _try_resume_dev_from_checkpoint(
+    story: StoryRecord,
+    software_factory_root: Path,
+    *,
+    db_path: Path | None = None,
+) -> HandlerResult | None:
+    """WS4.2 resume-from-checkpoint: skip re-running the dev LLM when a prior
+    sandbox already completed GREEN but the tick died before the DB advanced
+    out of ``dev_in_progress``.
+
+    Returns a ``HandlerResult`` (advanced to ``tests_green``) when a valid
+    green checkpoint is present, otherwise ``None`` (the caller proceeds with a
+    normal dev run). Correctness rests on two facts: (1) the dev sandbox writes
+    its changes into the per-story worktree, which is REUSED across ticks — so
+    the green code survives the interruption and re-running the LLM would only
+    reproduce it; (2) the checkpoint is written green then cleared within a
+    single ``handle_dev`` call, so a lingering one is unambiguous evidence of an
+    interruption (never the review-feedback re-entry path, which reaches dev
+    only after the checkpoint was already cleared). Idempotent: a second call
+    finds no checkpoint and returns ``None``.
+    """
+    cp_raw = story.dev_step_checkpoint
+    if not cp_raw:
+        return None
+    db = db_path or (software_factory_root / "state" / "factory.db")
+    try:
+        cp = json.loads(cp_raw)
+    except (json.JSONDecodeError, TypeError):
+        cp = None
+    if not isinstance(cp, dict) or cp.get("outcome") != "green":
+        # Malformed / non-green marker — clear it and fall through to a normal
+        # dev run. Never skip the LLM on an ambiguous checkpoint.
+        story.dev_step_checkpoint = None
+        persist_story(story, db)
+        return None
+
+    from_state = story.state
+    # Drive the pure state machine exactly as a real green run would:
+    # dispatch-state -> DEV_IN_PROGRESS -> TESTS_GREEN. ``advance`` is pure and
+    # validates the transition, so an unexpected dispatch state raises loudly
+    # rather than silently skipping into an illegal state.
+    story.state = advance(story, EVENT_DEV_STARTED).value
+    story.state = advance(story, EVENT_DEV_TESTS_GREEN).value
+    story.dev_step_checkpoint = None
+    persist_story(story, db)
+    log_story_event(
+        story.id,
+        "dev_resume_from_checkpoint",
+        {
+            "from_state": from_state,
+            "to_state": story.state,
+            "checkpoint_attempt": cp.get("attempt"),
+            "checkpoint_ts": cp.get("ts"),
+        },
+        software_factory_root=software_factory_root,
+        slug_hint=story.slug,
+    )
+    return HandlerResult(
+        next_state=StoryState(story.state),
+        payload={"resumed_from_checkpoint": True, "test_run_passed": True},
+    )
+
+
 def handle_dev(
     story: StoryRecord,
     app_config: AppConfig,
@@ -1348,6 +1414,22 @@ def handle_dev(
 
     from factory.settings.loader import load_settings
 
+    _settings = load_settings(software_factory_root)
+
+    # WS4.2 resume-from-checkpoint. Before spending anything, check whether a
+    # prior dev sandbox already completed GREEN and only the state advance was
+    # lost to an interruption. If so, resume from the persisted result WITHOUT
+    # re-running the expensive dev LLM (the green code already lives in the
+    # reused per-story worktree). Real-run only and gated by a default-on flag.
+    if not dry_run and getattr(
+        _settings.dev_convergence, "resume_from_checkpoint", True
+    ):
+        _resumed = _try_resume_dev_from_checkpoint(
+            story, software_factory_root, db_path=db_path
+        )
+        if _resumed is not None:
+            return _resumed
+
     result = _handle_dev_once(
         story,
         app_config,
@@ -1356,7 +1438,7 @@ def handle_dev(
         db_path=db_path,
         force_red=force_red,
     )
-    conv = load_settings(software_factory_root).dev_convergence
+    conv = _settings.dev_convergence
     if dry_run or not conv.enabled:
         return result
 
@@ -1753,7 +1835,22 @@ def _handle_dev_once(
                 prior_green = []
             prior_green.append(green_record)
             story.dev_attempts_json = json.dumps(prior_green[-5:])
+            # WS4.2 resume checkpoint: persist the completed green artifact +
+            # marker BEFORE the state advance. If the tick dies between here and
+            # the advance below, the next dev dispatch reads this marker and
+            # resumes to TESTS_GREEN without re-running the dev LLM (the green
+            # code already lives in the reused worktree). The advance below
+            # clears it, so it survives only a genuine interruption.
+            story.dev_step_checkpoint = json.dumps(
+                {
+                    "outcome": "green",
+                    "attempt": story.dev_retries,
+                    "ts": datetime.now(UTC).isoformat(),
+                }
+            )
+            persist_story(story, db)
         story.state = advance(story, EVENT_DEV_TESTS_GREEN).value
+        story.dev_step_checkpoint = None
         persist_story(story, db)
         return HandlerResult(next_state=StoryState(story.state), payload=payload)
 

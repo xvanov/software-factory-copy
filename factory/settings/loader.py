@@ -131,6 +131,16 @@ class DevConvergenceConfig(BaseModel):
     # Per-sandbox wall-clock passed to ``sandbox_run`` for dev; the module
     # default (1800s) stays in force when this matches it.
     dev_sandbox_timeout_s: int = 1800
+    # WS4.2 resume-from-checkpoint. When True (default), a dev dispatch that
+    # finds a persisted GREEN checkpoint (a prior sandbox completed green but
+    # the tick died before the DB advanced out of ``dev_in_progress``) resumes
+    # to ``tests_green`` from the persisted result INSTEAD of re-running the
+    # (already-complete, already-in-the-worktree) dev LLM. Default-on is safe:
+    # the skip fires ONLY when an unambiguous green checkpoint is present, which
+    # is written and then cleared within a single normal ``handle_dev`` call, so
+    # it survives only a genuine interruption. Set False to force the historical
+    # always-re-run behaviour.
+    resume_from_checkpoint: bool = True
 
 
 class AutoPMSyncConfig(BaseModel):

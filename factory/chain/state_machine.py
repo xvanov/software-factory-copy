@@ -144,6 +144,16 @@ class StoryRecord(SQLModel, table=True):
     # the next dev sandbox's initial message so the LLM sees what it tried
     # and what failed instead of re-discovering dead ends from scratch.
     dev_attempts_json: str | None = None
+    # WS4.2 resume-from-checkpoint marker. Set to a small JSON blob
+    # (``{"outcome": "green", "attempt": N, "ts": ...}``) by the dev handler the
+    # instant a sandbox returns GREEN — persisted BEFORE the state advances out
+    # of ``dev_in_progress`` and cleared the instant the advance is persisted.
+    # It therefore survives ONLY a tick that died in the tiny window between
+    # "sandbox finished green" and "state advanced". On the next dev dispatch the
+    # handler reads this marker and resumes to ``tests_green`` WITHOUT re-running
+    # the (already-complete, already-in-the-worktree) dev LLM. None in steady
+    # state. See ``handlers._try_resume_dev_from_checkpoint``.
+    dev_step_checkpoint: str | None = None
     # Hard convergence guard counter: incremented each time the reviewer
     # returns a request-changes verdict in handle_review. When it reaches
     # ``_MAX_REVIEW_CYCLES`` the story is routed to
