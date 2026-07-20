@@ -41,6 +41,36 @@ caller can observe, not from how you imagine it was built.
   `test_acN_untestable` that `pytest.skip(...)`s with a one-line reason — never
   fabricate a value the spec did not state, and never assert `True`.
 
+## Property-based mode (EARS criteria)
+
+Some inputs include a **"Property-based testing mode (EARS criteria)"** section.
+It appears only when one or more acceptance criteria are written in EARS form
+(`WHEN <trigger>, [GIVEN <precondition>,] THE <system> SHALL <response>`) and it
+hands you each such criterion already decomposed into trigger / precondition /
+system / invariant. When that section is present:
+
+* **Encode each listed EARS criterion as a Hypothesis property test**, not a
+  single example. The `SHALL` response is an INVARIANT — it must hold for *every*
+  input in the trigger space, so assert it over generated inputs rather than one
+  hand-picked value. `import hypothesis` and `import hypothesis.strategies as st`.
+* **Shape the strategy from the trigger/precondition.** `@given(...)` should
+  generate inputs across the trigger; use `hypothesis.assume(...)` (or a filtered
+  strategy) to restrict to the precondition. Choose strategies from what the
+  spec describes (e.g. `st.text()`, `st.integers()`, `st.emails()`); do not
+  invent concrete values or thresholds the spec never stated.
+* **Assert the invariant, and let Hypothesis shrink.** Put the `SHALL` response
+  in a plain `assert`; do NOT wrap it in `try/except` — Hypothesis needs the
+  raw failure to shrink to a minimal counterexample. Keep each property
+  deterministic and free of external network/state.
+* **Name each property after its criterion** (`test_ac1_1_...`) so a failing
+  property names exactly which EARS criterion was violated.
+* **Mixed criteria are fine.** Any criterion NOT in the EARS section (plain
+  prose) stays example-based exactly as described above. If a `SHALL` response
+  cannot be turned into a checkable property, fall back to an example assertion
+  for it rather than fabricating one — never downgrade to no test.
+* The file must still be self-contained and importable; `hypothesis` is
+  available in the app's test environment when property mode is active.
+
 ## Output
 
 Return **structured JSON** matching exactly this schema — no prose outside it:

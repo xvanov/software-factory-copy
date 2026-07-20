@@ -98,12 +98,73 @@ def _read_artifact(direction: Direction, name: str, present: bool) -> str:
         return ""
 
 
+def _property_mode_block(acceptance_lines: list[str]) -> list[str]:
+    """Structured EARS decomposition for the property-mode section, or [].
+
+    When one or more acceptance criteria are EARS-shaped (``WHEN ... THE SYSTEM
+    SHALL ...``), each ``SHALL`` names an INVARIANT rather than a single example,
+    so the author should encode it as a Hypothesis property asserted over many
+    generated inputs. This block hands the author the already-split
+    trigger / precondition / system / response for each such criterion; non-EARS
+    criteria are omitted here and remain in example-mode (the criteria block
+    above still lists them verbatim). Returns [] when no AC is EARS-shaped, in
+    which case the author sees no property-mode instructions and writes example
+    tests exactly as before — the conservative, opt-in fallback.
+    """
+    from factory.chain.ears import split_acs
+
+    pairs = split_acs(acceptance_lines)
+    if not any(clause is not None for _, clause in pairs):
+        return []
+
+    lines = [
+        "## Property-based testing mode (EARS criteria)",
+        "",
+        "One or more acceptance criteria are written in EARS form",
+        "(`WHEN <trigger>, [GIVEN <precondition>,] THE <system> SHALL <response>`).",
+        "In EARS the `SHALL` response is an INVARIANT, not one example — so for",
+        "EACH criterion below, write a **Hypothesis property test**: decorate a",
+        "property with `@given(...)` over `hypothesis.strategies` inputs that",
+        "cover the trigger space, and assert the `SHALL` response holds for every",
+        "generated input. Import `hypothesis` and `hypothesis.strategies as st`.",
+        "Let Hypothesis shrink to a minimal counterexample on failure — do not",
+        "wrap the assertion in try/except. Name each property `test_<ac_id>_...`",
+        "so a failure names the criterion. For any criterion NOT listed here",
+        "(not EARS-shaped), fall back to a normal example-based assertion.",
+        "",
+        "Structured decomposition of the EARS criteria:",
+        "",
+    ]
+    n = 0
+    for raw, clause in pairs:
+        if clause is None:
+            continue
+        n += 1
+        label = clause.ac_id or f"AC{n}"
+        lines.append(f"{n}. [{label}] (EARS/{clause.kind}) — {raw}")
+        if clause.trigger:
+            lines.append(f"   - trigger (generate inputs across this): {clause.trigger}")
+        if clause.precondition:
+            lines.append(f"   - precondition (assume/filter to this): {clause.precondition}")
+        if clause.system:
+            lines.append(f"   - system under test: {clause.system}")
+        lines.append(f"   - invariant to assert (the SHALL response): {clause.response}")
+    return lines
+
+
 def build_spec_prompt(story: StoryRecord, direction: Direction) -> str:
     """Assemble the SPEC-ONLY prompt handed to the acceptance author.
 
     Contains the acceptance criteria verbatim plus any flow.md / api_spec.md the
     direction provides, and the story's title/scope. Deliberately contains NO
     implementation and NO dev tests — the author must write blind to the code.
+
+    When any acceptance criterion is EARS-shaped, a property-mode block is
+    appended (see :func:`_property_mode_block`) that decomposes each such
+    criterion and instructs the author to encode its ``SHALL`` invariant as a
+    Hypothesis property test. This is additive and spec-derived only — the block
+    is built entirely from the acceptance criteria, so independence from the dev
+    is preserved, and it is absent (example-mode) whenever no AC is EARS-shaped.
     """
     acceptance_lines = list(direction.acceptance)
     ac_block = (
@@ -128,6 +189,9 @@ def build_spec_prompt(story: StoryRecord, direction: Direction) -> str:
         parts += ["", "## Flow (verbatim from the direction)", "", flow_text]
     if api_text:
         parts += ["", "## API spec (verbatim from the direction)", "", api_text]
+    property_block = _property_mode_block(acceptance_lines)
+    if property_block:
+        parts += ["", *property_block]
     return "\n".join(parts)
 
 

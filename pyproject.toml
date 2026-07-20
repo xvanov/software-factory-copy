@@ -35,6 +35,12 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.10",
   "types-PyYAML>=6",
+  # WS4.3: the acceptance oracle authors Hypothesis PROPERTY tests from
+  # EARS-form acceptance criteria; the factory's own tests generate + run
+  # such a property test through the gate, so hypothesis must be importable
+  # in the factory test env. Apps that opt into property-mode acceptance must
+  # likewise carry hypothesis in the env their acceptance_test_command runs in.
+  "hypothesis>=6",
 ]
 
 [project.scripts]
