@@ -181,6 +181,41 @@ def test_deploy_disabled_in_config_skips(tmp_path: Path) -> None:
     assert _status_from_action(action) == "skipped"
 
 
+def test_deploy_disabled_by_runtime_override_skips(tmp_path: Path) -> None:
+    """config.yaml says enabled=true, but a machine runtime override disables
+    it. The effective value wins (skip), and the reason is observable as a
+    distinct error so config-authored vs machine-flipped is distinguishable."""
+    from factory import runtime_state
+
+    root = _write_root(tmp_path, None)  # config default: enabled=True
+    runtime_state.set_deploy_enabled_override(root, "sacrifice", False)
+
+    action = deploy_post_merge(
+        "sacrifice",
+        47,
+        "abc" * 14,
+        root,
+        dry_run=True,
+        fixture_step_outputs=[(0, "", "")] * 10,
+    )
+    assert action.success is False
+    assert action.error == "deploy_disabled_by_runtime_override"
+    assert _status_from_action(action) == "skipped"
+
+    # Clearing the override restores the config default (enabled=true), so the
+    # deploy proceeds — proof the config default was never mutated.
+    assert runtime_state.clear_deploy_enabled_override(root, "sacrifice") is True
+    action2 = deploy_post_merge(
+        "sacrifice",
+        48,
+        "abc" * 14,
+        root,
+        dry_run=True,
+        fixture_step_outputs=[(0, "", "")] * 10,
+    )
+    assert action2.error != "deploy_disabled_by_runtime_override"
+
+
 def test_deploy_tick_with_explicit_sha_returns_one_action(tmp_path: Path) -> None:
     """``deploy_tick(sha=...)`` is the spec-facing wrapper; deploys exactly that SHA."""
     root = _write_root(tmp_path, None)

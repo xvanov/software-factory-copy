@@ -42,6 +42,12 @@ state/context-refresh/
 # artifacts kept OUT of the app repo AND the dev worktree so the dev never sees
 # them; the durable record is the merge gate result, not git.
 state/acceptance/
+# Per-app machine-writable runtime overrides (factory.runtime_state). Holds
+# machine flips like deploy_enabled that used to be written into config.yaml
+# in-place — split out so operator-authored config.yaml is never machine-
+# mutated and the two never drift. Runtime-only; config.yaml is the durable
+# operator default.
+state/runtime/
 # Halt/apply audit trails — runtime bookkeeping mutated by every
 # halt/resume/apply cycle; ``factory resume`` archives into them.
 state/.halt_history.json

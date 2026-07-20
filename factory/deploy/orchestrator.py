@@ -40,6 +40,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from factory.app_config import DeployConfig, load_app_config
 from factory.deploy.models import DeployActionRecord, DeployQueueEntry
 from factory.deploy.runner import run_command
+from factory.runtime_state import effective_deploy_enabled, get_deploy_enabled_override
 from factory.settings.enforcer import can_dispatch
 from factory.settings.loader import load_settings
 from factory.settings.modes import get_mode, set_mode
@@ -118,6 +119,7 @@ def _status_from_action(action: DeployAction) -> str:
     skip_reasons = {
         "mode_blocks_deploy",
         "deploy_disabled_in_config",
+        "deploy_disabled_by_runtime_override",
         "app_config_missing",
     }
     if action.error and (
@@ -488,8 +490,18 @@ def deploy_post_merge(  # noqa: C901 - top-level orchestration; refactor when ph
         return action
 
     dcfg = cfg.deploy
-    if not dcfg.enabled:
-        action.error = "deploy_disabled_in_config"
+    # Effective deploy.enabled merges the operator-authored config default
+    # with an optional machine runtime override (state/runtime/<app>.json),
+    # so a recovery flip and an operator edit no longer collide in the same
+    # file. When the override is what disabled it, record a distinct reason
+    # so config-authored vs machine-flipped is observable in the action row.
+    if not effective_deploy_enabled(cfg, root):
+        override = get_deploy_enabled_override(root, app)
+        action.error = (
+            "deploy_disabled_by_runtime_override"
+            if override is False and dcfg.enabled
+            else "deploy_disabled_in_config"
+        )
         action.completed_at = datetime.now(UTC).isoformat()
         _record_deploy(action, db)
         return action

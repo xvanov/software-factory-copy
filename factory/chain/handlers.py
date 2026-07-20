@@ -58,6 +58,7 @@ from factory.context.enforcer import format_violation_comment, scan_pr_diff
 from factory.context.updater import ContextUpdate, apply_context_updates
 from factory.directions.parser import Direction, list_direction_dirs, parse_direction_dir
 from factory.model_router import max_output_tokens_for, route
+from factory.runtime_state import effective_deploy_enabled
 
 _logger = logging.getLogger(__name__)
 
@@ -3734,7 +3735,7 @@ def handle_deploy(
     # orchestrator's deploy_post_merge already records the action row with
     # status="skipped"; we just observe the result here and short-circuit
     # the state.
-    if not app_config.deploy.enabled:
+    if not effective_deploy_enabled(app_config, software_factory_root):
         story.state = advance(story, EVENT_DEPLOY_SKIPPED).value
         persist_story(story, db)
         # This early-return short-circuits before the ``deploy_post_merge``

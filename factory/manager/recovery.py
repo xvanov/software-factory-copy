@@ -38,8 +38,10 @@ Safety rails
 ------------
 * Every mutation is REVERSIBLE: playbooks 1/2 only move a story between
   states already reachable by the normal chain (a re-block or a fresh
-  dispatch just re-runs the existing pipeline); playbook 3 only flips a
-  boolean the operator can flip back; playbook 5 only flips the factory mode
+  dispatch just re-runs the existing pipeline); playbook 3 only sets a
+  machine ``deploy_enabled=false`` OVERRIDE in the app's runtime-state file
+  (``state/runtime/<app>.json``) that the operator can clear — the
+  operator-authored ``config.yaml`` is never touched; playbook 5 only flips the factory mode
   back to ``normal``, which the operator or the deploy-failure/rollback path
   can re-set to ``fix-only`` at any time.
 * Every action (including dry-run intents and escalations) is appended to
@@ -55,8 +57,9 @@ Safety rails
   escalate-to-human path untouched.
 * Scope discipline: no playbook here ever touches a direction's content,
   title, scope, or body — only pipeline bookkeeping fields on
-  ``StoryRecord`` (state/error/PR identifiers), the ``deploy.enabled``
-  boolean in an app's ``config.yaml``, or the global factory mode. Whatever
+  ``StoryRecord`` (state/error/PR identifiers), the machine
+  ``deploy_enabled`` override in an app's runtime-state file, or the global
+  factory mode. Whatever
   a human (operator or end-user, e.g. via the auto-intake GitHub-issue flow)
   actually asked for is defined by the direction/story content, which this
   module never edits
@@ -83,6 +86,7 @@ from sqlmodel import Session, create_engine, select
 from factory.app_config import AppConfig, load_app_config, resolve_app_repo_path
 from factory.chain.state_machine import StoryRecord, StoryState
 from factory.manager.signals import write_event
+from factory.runtime_state import effective_deploy_enabled, set_deploy_enabled_override
 from factory.settings.loader import FactorySettings
 from factory.settings.modes import get_mode, set_mode
 
@@ -547,7 +551,10 @@ def detect_premature_deploy_enabled(
             cfg = load_app_config(app, root)
         except Exception:  # noqa: BLE001
             continue
-        if not cfg.deploy.enabled:
+        # Use the EFFECTIVE value (config default merged with any machine
+        # runtime override) so an app already disabled via a prior override
+        # is skipped — no re-thrash re-writing an override that's already set.
+        if not effective_deploy_enabled(cfg, root):
             continue
         artifact = _extract_pre_deploy_artifact(cfg)
         if not artifact:
@@ -577,59 +584,49 @@ def detect_premature_deploy_enabled(
     return targets
 
 
-def _set_deploy_enabled_false(text: str) -> tuple[str, bool]:
-    """Flip ``enabled: true`` -> ``enabled: false`` inside the top-level
-    ``deploy:`` block, preserving every other line (including comments)
-    verbatim. Returns ``(new_text, changed)``; ``changed`` is False when no
-    ``deploy:`` block or no ``enabled: true`` line was found (nothing to do
-    — the caller treats this as stale/no-op, never as an error)."""
-    lines = text.splitlines(keepends=True)
-    in_deploy_block = False
-    for i, line in enumerate(lines):
-        stripped = line.rstrip("\r\n")
-        if not in_deploy_block:
-            if re.match(r"^deploy:\s*(#.*)?$", stripped):
-                in_deploy_block = True
-            continue
-        # Inside deploy:. The block ends at the first non-indented,
-        # non-blank line (a new top-level key) or EOF.
-        if stripped and not stripped[0].isspace():
-            break
-        m = re.match(r"^(\s*enabled:\s*)true(\s*(?:#.*)?)$", stripped)
-        if m:
-            newline = "\n" if line.endswith("\n") else ""
-            lines[i] = m.group(1) + "false" + m.group(2) + newline
-            return "".join(lines), True
-    return text, False
-
-
 def execute_revert_premature_deploy_enable(
-    root: Path,  # noqa: ARG001 - kept for signature symmetry with other executors
+    root: Path,
     target: RecoveryTarget,
     *,
     dry_run: bool,
 ) -> RecoveryOutcome:
-    """ACTION: set deploy.enabled: false in the app's config.yaml.
+    """ACTION: set a machine ``deploy_enabled=false`` OVERRIDE in the app's
+    runtime-state file (``state/runtime/<app>.json``) — the operator-authored
+    ``config.yaml`` is NEVER touched.
 
-    Reversible: the operator flips it back once the deploy artifacts land;
-    nothing about the app's source tree is touched.
+    This is the config/runtime split: ``config.yaml`` holds the operator
+    DEFAULT, the runtime-state file holds this machine OVERRIDE, and the
+    effective value is override-if-present else the default. So a machine flip
+    and an operator edit no longer collide over the same bytes, and a settings
+    deploy of ``config.yaml`` can't silently revert this flip.
+
+    Reversible: the operator (or a re-enable recovery path) clears the
+    override via ``factory.runtime_state.clear_deploy_enabled_override`` once
+    the deploy artifacts land; nothing about the app's source tree or its
+    config.yaml is touched.
     """
-    config_path = Path(target.extra["config_path"])
-    action_desc = f"set deploy.enabled: false in {config_path}"
+    app = target.app
+    action_desc = f"set runtime override deploy_enabled=false for app {app!r} (config.yaml untouched)"
     if dry_run:
         return RecoveryOutcome(target.playbook, target, "dry_run", action_desc)
+    if not app:
+        return RecoveryOutcome(
+            target.playbook, target, "error", action_desc, error="target.app missing"
+        )
 
     try:
-        text = config_path.read_text(encoding="utf-8")
-        new_text, changed = _set_deploy_enabled_false(text)
-        if not changed:
+        # Re-check the precondition at execute time — the effective value
+        # could have changed (an operator edit, or a prior override) between
+        # detection and execution.
+        cfg = load_app_config(app, root)
+        if not effective_deploy_enabled(cfg, root):
             return RecoveryOutcome(
                 target.playbook,
                 target,
                 "skipped_stale",
-                "deploy.enabled was no longer true (or unparseable) at execute time",
+                "deploy already disabled (config default or runtime override) at execute time",
             )
-        config_path.write_text(new_text, encoding="utf-8")
+        set_deploy_enabled_override(root, app, False)
     except Exception as exc:  # noqa: BLE001
         return RecoveryOutcome(target.playbook, target, "error", action_desc, error=repr(exc))
     return RecoveryOutcome(target.playbook, target, "recovered", action_desc)
@@ -757,15 +754,16 @@ def detect_stuck_fixonly_mode(
         app = cfg_path.parent.name
         try:
             cfg = load_app_config(app, root)
+            effective = effective_deploy_enabled(cfg, root)
         except Exception:  # noqa: BLE001
             # Can't determine this app's deploy.enabled — uncertain. A real
             # deploy could be live for it; do not guess it's safe.
             return []
-        if cfg.deploy.enabled:
+        if effective:
             # A real deploy is live for this app — fix-only may legitimately
             # be protecting it. Do not auto-recover.
             return []
-        deploy_enabled_by_app[app] = cfg.deploy.enabled
+        deploy_enabled_by_app[app] = effective
 
     return [
         RecoveryTarget(
@@ -818,6 +816,7 @@ def execute_recover_stuck_fixonly_mode(
     for app in target.extra.get("deploy_enabled_by_app", {}):
         try:
             cfg = load_app_config(app, root)
+            app_effective = effective_deploy_enabled(cfg, root)
         except Exception:  # noqa: BLE001
             return RecoveryOutcome(
                 target.playbook,
@@ -825,7 +824,7 @@ def execute_recover_stuck_fixonly_mode(
                 "skipped_stale",
                 f"could not re-verify deploy.enabled for app {app!r} at execute time",
             )
-        if cfg.deploy.enabled:
+        if app_effective:
             return RecoveryOutcome(
                 target.playbook,
                 target,

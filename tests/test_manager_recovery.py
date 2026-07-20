@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from sqlmodel import Session, create_engine
 
+from factory import runtime_state
+from factory.app_config import load_app_config
 from factory.chain.state_machine import StoryRecord, StoryState
 from factory.manager import recovery
 from factory.settings.modes import get_mode, set_mode
@@ -348,9 +350,12 @@ class TestRedispatchPhantomPr:
 
 
 class TestRevertPrematureDeployEnable:
-    def test_precondition_matches_and_action_taken(self, root: Path) -> None:
-        _write_app_config(root, "sacrifice", deploy_enabled=True)
+    def test_precondition_matches_and_writes_runtime_override_not_config(
+        self, root: Path
+    ) -> None:
+        cfg_path = _write_app_config(root, "sacrifice", deploy_enabled=True)
         # app_repo/docker-compose.prod.yml deliberately absent.
+        config_bytes_before = cfg_path.read_bytes()
         targets = recovery.detect_premature_deploy_enabled(root)
         assert len(targets) == 1
         target = targets[0]
@@ -360,10 +365,16 @@ class TestRevertPrematureDeployEnable:
         outcome = recovery.execute_revert_premature_deploy_enable(root, target, dry_run=False)
         assert outcome.status == "recovered"
 
-        text = (root / "apps" / "sacrifice" / "config.yaml").read_text()
-        assert "enabled: false" in text
-        # pre_deploy_commands untouched.
-        assert "docker-compose.prod.yml" in text
+        # config.yaml (operator-authored) is byte-for-byte untouched.
+        assert cfg_path.read_bytes() == config_bytes_before
+        assert "enabled: true" in cfg_path.read_text()
+
+        # The machine override lives in the gitignored runtime-state file, and
+        # the EFFECTIVE value is now False.
+        assert runtime_state.get_deploy_enabled_override(root, "sacrifice") is False
+        cfg = load_app_config("sacrifice", root)
+        assert cfg.deploy.enabled is True  # config default unchanged
+        assert runtime_state.effective_deploy_enabled(cfg, root) is False
 
     def test_precondition_fails_when_artifact_present(self, root: Path) -> None:
         _write_app_config(root, "sacrifice", deploy_enabled=True)
@@ -376,6 +387,14 @@ class TestRevertPrematureDeployEnable:
 
     def test_precondition_fails_when_already_disabled(self, root: Path) -> None:
         _write_app_config(root, "sacrifice", deploy_enabled=False)
+        targets = recovery.detect_premature_deploy_enabled(root)
+        assert targets == []
+
+    def test_precondition_fails_when_override_already_disabled(self, root: Path) -> None:
+        """If a prior machine override already disabled deploy, the detector
+        must skip (effective value False) rather than re-thrashing."""
+        _write_app_config(root, "sacrifice", deploy_enabled=True)
+        runtime_state.set_deploy_enabled_override(root, "sacrifice", False)
         targets = recovery.detect_premature_deploy_enabled(root)
         assert targets == []
 
@@ -402,7 +421,7 @@ class TestRevertPrematureDeployEnable:
 
     def test_dry_run_makes_no_mutation(self, root: Path) -> None:
         cfg_path = _write_app_config(root, "sacrifice", deploy_enabled=True)
-        original = cfg_path.read_text()
+        original = cfg_path.read_bytes()
         target = recovery.RecoveryTarget(
             playbook=recovery.PLAYBOOK_REVERT_PREMATURE_DEPLOY,
             key="app:sacrifice",
@@ -412,32 +431,25 @@ class TestRevertPrematureDeployEnable:
         )
         outcome = recovery.execute_revert_premature_deploy_enable(root, target, dry_run=True)
         assert outcome.status == "dry_run"
-        assert cfg_path.read_text() == original
+        # Neither config.yaml nor the runtime-state file is written.
+        assert cfg_path.read_bytes() == original
+        assert not runtime_state.runtime_state_path(root, "sacrifice").exists()
 
-    def test_preserves_comments_and_other_keys(self, root: Path) -> None:
-        cfg_path = root / "apps" / "myapp" / "config.yaml"
-        cfg_path.parent.mkdir(parents=True)
-        cfg_path.write_text(
-            "name: myapp\n"
-            "repo: o/r\n"
-            "app_repo_path: \"app_repo\"\n"
-            "# Phase 5 deploy block, hand-written comment.\n"
-            "deploy:\n"
-            "  enabled: true\n"
-            "  pre_deploy_commands:\n"
-            '    - "docker compose -f docker-compose.prod.yml build"\n'
-            "  deploy_command: \"docker compose -f docker-compose.prod.yml up -d\"\n"
-            "gates:\n"
-            "  lint_command: \"ruff check .\"\n",
-            encoding="utf-8",
+    def test_execute_skipped_stale_when_effective_already_false(self, root: Path) -> None:
+        """Re-check at execute time: if the effective value is already False
+        (e.g. an operator edit disabled it between detect and execute), the
+        executor is a no-op, not an error."""
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        target = recovery.RecoveryTarget(
+            playbook=recovery.PLAYBOOK_REVERT_PREMATURE_DEPLOY,
+            key="app:sacrifice",
+            description="x",
+            app="sacrifice",
+            extra={},
         )
-        text = cfg_path.read_text(encoding="utf-8")
-        new_text, changed = recovery._set_deploy_enabled_false(text)
-        assert changed
-        assert "# Phase 5 deploy block, hand-written comment." in new_text
-        assert "enabled: false" in new_text
-        assert "deploy_command:" in new_text
-        assert "lint_command:" in new_text
+        outcome = recovery.execute_revert_premature_deploy_enable(root, target, dry_run=False)
+        assert outcome.status == "skipped_stale"
+        assert not runtime_state.runtime_state_path(root, "sacrifice").exists()
 
 
 # --------------------------------------------------------------------------- #
