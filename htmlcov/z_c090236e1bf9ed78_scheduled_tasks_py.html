@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Coverage for factory/chain/scheduled_tasks.py: 77%</title>
+    <title>Coverage for factory/chain/scheduled_tasks.py: 80%</title>
     <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
     <link rel="stylesheet" href="style_cb_4667309f.css" type="text/css">
     <script src="coverage_html_cb_dd2e7eb5.js" defer></script>
@@ -12,7 +12,7 @@
     <div class="content">
         <h1>
             <span class="text">Coverage for </span><b>factory<span class="sep">/</span>chain<span class="sep">/</span>scheduled_tasks.py</b>:
-            <span class="pc_cov">77%</span>
+            <span class="pc_cov">80%</span>
         </h1>
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
@@ -55,8 +55,8 @@
         </aside>
         <h2>
             <span class="text">196 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">151<span class="text"> run</span></button>
-            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">45<span class="text"> missing</span></button>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">156<span class="text"> run</span></button>
+            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">40<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
         </h2>
         <p class="text">
@@ -65,7 +65,7 @@
             <a id="nextFileLink" class="nav" href="z_c090236e1bf9ed78_security_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-20 03:08 +0000
+            created at 2026-07-20 03:28 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -734,18 +734,18 @@
     <p class="pln"><span class="n"><a id="t652" href="#t652">652</a></span><span class="t">    <span class="com"># dry-run path. Otherwise an operator probing with --dry-run could</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t653" href="#t653">653</a></span><span class="t">    <span class="com"># cause the real cron loop to think a slot already fired and skip it.</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t654" href="#t654">654</a></span><span class="t">    <span class="key">if</span> <span class="key">not</span> <span class="nam">dry_run</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t655" href="#t655">655</a></span><span class="t">        <span class="key">try</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t656" href="#t656">656</a></span><span class="t">            <span class="key">from</span> <span class="nam">factory</span><span class="op">.</span><span class="nam">scheduler</span><span class="op">.</span><span class="nam">cron</span> <span class="key">import</span> <span class="nam">load_schedules</span><span class="op">,</span> <span class="nam">upsert_schedule_row</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t655" href="#t655">655</a></span><span class="t">        <span class="key">try</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t656" href="#t656">656</a></span><span class="t">            <span class="key">from</span> <span class="nam">factory</span><span class="op">.</span><span class="nam">scheduler</span><span class="op">.</span><span class="nam">cron</span> <span class="key">import</span> <span class="nam">load_schedules</span><span class="op">,</span> <span class="nam">upsert_schedule_row</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t657" href="#t657">657</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t658" href="#t658">658</a></span><span class="t">            <span class="key">for</span> <span class="nam">sched</span> <span class="key">in</span> <span class="nam">load_schedules</span><span class="op">(</span><span class="nam">Path</span><span class="op">(</span><span class="nam">db_path</span><span class="op">)</span><span class="op">.</span><span class="nam">parent</span><span class="op">.</span><span class="nam">parent</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t659" href="#t659">659</a></span><span class="t">                <span class="key">if</span> <span class="nam">sched</span><span class="op">.</span><span class="nam">persona</span> <span class="op">==</span> <span class="nam">persona</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t660" href="#t660">660</a></span><span class="t">                    <span class="nam">upsert_schedule_row</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t661" href="#t661">661</a></span><span class="t">                        <span class="nam">name</span><span class="op">=</span><span class="nam">sched</span><span class="op">.</span><span class="nam">name</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t662" href="#t662">662</a></span><span class="t">                        <span class="nam">cron_expr</span><span class="op">=</span><span class="nam">sched</span><span class="op">.</span><span class="nam">cron_expr</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t663" href="#t663">663</a></span><span class="t">                        <span class="nam">last_run</span><span class="op">=</span><span class="nam">datetime</span><span class="op">.</span><span class="nam">now</span><span class="op">(</span><span class="nam">UTC</span><span class="op">)</span><span class="op">.</span><span class="nam">isoformat</span><span class="op">(</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t664" href="#t664">664</a></span><span class="t">                        <span class="nam">last_status</span><span class="op">=</span><span class="nam">status</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t665" href="#t665">665</a></span><span class="t">                        <span class="nam">db_path</span><span class="op">=</span><span class="nam">db_path</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t666" href="#t666">666</a></span><span class="t">                    <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t658" href="#t658">658</a></span><span class="t">            <span class="key">for</span> <span class="nam">sched</span> <span class="key">in</span> <span class="nam">load_schedules</span><span class="op">(</span><span class="nam">Path</span><span class="op">(</span><span class="nam">db_path</span><span class="op">)</span><span class="op">.</span><span class="nam">parent</span><span class="op">.</span><span class="nam">parent</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t659" href="#t659">659</a></span><span class="t">                <span class="key">if</span> <span class="nam">sched</span><span class="op">.</span><span class="nam">persona</span> <span class="op">==</span> <span class="nam">persona</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t660" href="#t660">660</a></span><span class="t">                    <span class="nam">upsert_schedule_row</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t661" href="#t661">661</a></span><span class="t">                        <span class="nam">name</span><span class="op">=</span><span class="nam">sched</span><span class="op">.</span><span class="nam">name</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t662" href="#t662">662</a></span><span class="t">                        <span class="nam">cron_expr</span><span class="op">=</span><span class="nam">sched</span><span class="op">.</span><span class="nam">cron_expr</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t663" href="#t663">663</a></span><span class="t">                        <span class="nam">last_run</span><span class="op">=</span><span class="nam">datetime</span><span class="op">.</span><span class="nam">now</span><span class="op">(</span><span class="nam">UTC</span><span class="op">)</span><span class="op">.</span><span class="nam">isoformat</span><span class="op">(</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t664" href="#t664">664</a></span><span class="t">                        <span class="nam">last_status</span><span class="op">=</span><span class="nam">status</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t665" href="#t665">665</a></span><span class="t">                        <span class="nam">db_path</span><span class="op">=</span><span class="nam">db_path</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t666" href="#t666">666</a></span><span class="t">                    <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t667" href="#t667">667</a></span><span class="t">        <span class="key">except</span> <span class="nam">Exception</span><span class="op">:</span>  <span class="com"># noqa: BLE001 - schedule update is best-effort</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t668" href="#t668">668</a></span><span class="t">            <span class="key">pass</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t669" href="#t669">669</a></span><span class="t">    <span class="key">return</span> <span class="nam">ScheduledRunOutput</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
@@ -815,7 +815,7 @@
             <a class="nav" href="z_c090236e1bf9ed78_security_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-20 03:08 +0000
+            created at 2026-07-20 03:28 +0000
         </p>
     </div>
 </footer>
