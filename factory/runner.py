@@ -299,6 +299,7 @@ def _record_run(
     started_at: str | None = None,
 ) -> None:
     ended_at = datetime.now(UTC).isoformat()
+    redacted_error = redact_secrets(error) if error is not None else None
     engine = _engine(db_path)
     with Session(engine) as session:
         row = Run(
@@ -312,7 +313,7 @@ def _record_run(
             success=success,
             story_path=story_path,
             repo_path=repo_path,
-            error=error,
+            error=redacted_error,
             duration_s=duration_s,
             story_id=story_id,
             model_tier=model_tier,
@@ -372,6 +373,51 @@ def _record_run(
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+_REDACTION_TOKEN = "[REDACTED]"
+
+# Pattern for hex-encoded secrets (≥32 hex chars, case-insensitive), e.g.
+# ``0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef``.
+# Matched with word-boundary anchors to avoid clipping legitimate hex data
+# (git SHAs, SHA-256 digests, etc.) unless the run is absurdly long.
+_HEX_SECRET_RE = r"\b[A-Fa-f0-9]{64,}\b"
+
+# Pattern for base64-encoded secrets (≥32 base64 characters). The alphabet
+# is [A-Za-z0-9+/=]; we require the chunk to be at least 32 chars of the
+# non-padding alphabet before allowing optional trailing padding, which
+# captures real API key material like ``sk-helper-<b64>`` after the prefix.
+_B64_SECRET_RE = r"[A-Za-z0-9+/]{32,}=*"
+
+
+def redact_secrets(text: str) -> str:
+    """Return *text* with common provider-secret substrings replaced by ``[REDACTED]``.
+
+    Covers:
+    * OpenAI ``sk-...`` and Anthropic ``sk-ant-...`` tokens
+    * ``Bearer <token>`` and ``Authorization: ...`` header values
+    * Long hex and base64 runs that match known key shapes
+    * Already-redacted text is left unchanged (idempotent).
+    """
+    import re
+
+    patterns: list[str] = [
+        # sk-ant-... (Anthropic) — must precede sk-... so the longer
+        # ``sk-ant-api03-...`` form is fully consumed.
+        r"sk-ant-[A-Za-z0-9_\-]{20,}",
+        # sk-... (OpenAI project keys are sk-proj-... but many are sk-<random>)
+        r"sk-[A-Za-z0-9_\-]{20,}",
+        # Bearer <token> — captured until whitespace/end-of-string
+        r"Bearer\s+[A-Za-z0-9+\-/=]{20,}",
+        # Authorization: ... — captures the full header value up to newline
+        r"Authorization:\s*[^\n]*",
+        # Long hex runs (≥64 hex chars)
+        _HEX_SECRET_RE,
+        # Long base64 runs (≥32 base64 chars)
+        _B64_SECRET_RE,
+    ]
+
+    combined = "|".join(patterns)
+    return re.sub(combined, _REDACTION_TOKEN, text)
 
 
 def _read_persona_prompt(persona: str) -> str:
