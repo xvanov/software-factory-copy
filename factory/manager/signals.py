@@ -38,6 +38,29 @@ from typing import Any
 
 SCHEMA_VERSION: int = 1
 
+# Name of the append-only stream that records control-plane anomalies and
+# fail-safe events (halt/circuit-breaker read failures, control-plane write
+# failures). The FMS L1 watcher can read this stream to SEE when the factory
+# failed to record or read its own control state — the whole point of making
+# these failures observable rather than swallowing them to /dev/null.
+ALERT_STREAM: str = "alerts"
+
+# Process-local counter of write_event failures. Telemetry appends stay
+# best-effort (a disk glitch must not crash a tick), but a swallowed failure
+# is invisible; this counter + the loud stderr line below make the failure
+# observable to anything that samples it (tests, a future health probe).
+_write_failure_count: int = 0
+
+
+def get_write_failure_count() -> int:
+    """Return the number of ``write_event`` failures seen this process.
+
+    Used to make best-effort telemetry-append failures observable without
+    crashing the caller: a rising count means the factory is failing to
+    record its own signals.
+    """
+    return _write_failure_count
+
 
 # --------------------------------------------------------------------------- #
 # Core helper
@@ -120,7 +143,64 @@ def write_event(
         with path.open("a", encoding="utf-8") as fh:
             fh.write(line)
     except Exception as exc:  # noqa: BLE001
-        print(f"[signals] write_event stream={stream!r} failed: {exc}", file=sys.stderr)
+        # Best-effort: never crash a tick on a telemetry-append failure. But
+        # never swallow it silently either — bump an observable counter and log
+        # loudly at error level so the failure to record a signal is itself a
+        # visible anomaly. We deliberately do NOT recurse into write_alert_event
+        # here: if the events dir is unwritable, the alert write would fail too.
+        global _write_failure_count
+        _write_failure_count += 1
+        print(
+            f"[signals] ANOMALY write_event stream={stream!r} failed "
+            f"(total_failures={_write_failure_count}): {exc}",
+            file=sys.stderr,
+        )
+
+
+def write_alert_event(
+    kind: str,
+    detail: str,
+    *,
+    severity: str = "critical",
+    software_factory_root: Path | None = None,
+    **fields: Any,
+) -> None:
+    """Emit a loud, visible control-plane alert.
+
+    Writes an ``event="alert"`` record to ``state/events/alerts.ndjson`` AND
+    prints an unmistakable line to stderr. Used by the fail-safe paths in
+    ``halt`` and ``circuit_breaker`` (and by control-plane write-failure
+    handlers) so that an operator and the FMS watcher can SEE when the factory
+    could not determine or record its own control state.
+
+    Best-effort like every other signal writer: the stderr line is emitted
+    FIRST so it is guaranteed even if the event write itself fails.
+
+    Parameters
+    ----------
+    kind:
+        Short discriminator, e.g. ``"halt_unreadable"`` or
+        ``"circuit_breaker_state_corrupt"``.
+    detail:
+        Human-readable description of what went wrong.
+    severity:
+        ``"critical"`` (default), ``"error"``, or ``"warning"``.
+    **fields:
+        Extra structured fields merged into the alert record.
+    """
+    # Loud stderr first — guaranteed even if the disk is gone.
+    print(
+        f"[ALERT:{severity.upper()}] {kind}: {detail}",
+        file=sys.stderr,
+    )
+    payload: dict[str, Any] = {
+        "event": "alert",
+        "kind": kind,
+        "severity": severity,
+        "detail": detail,
+    }
+    payload.update(fields)
+    write_event(ALERT_STREAM, payload, software_factory_root=software_factory_root)
 
 
 # --------------------------------------------------------------------------- #

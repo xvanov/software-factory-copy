@@ -1057,16 +1057,28 @@ def run_recovery_cycle(
                 forced_dry_run = True
         except Exception as _halt_exc:  # noqa: BLE001
             # Fail-open (mirrors factory/chain/orchestrator.py's halt-check
-            # guard): a broken halt module must not block recovery, but a
-            # silent except here would hide that the halt module is broken.
-            import sys as _sys
+            # guard): a broken halt module must not block recovery. The
+            # dangerous corrupt-halt-FILE path fails safe inside is_halted; this
+            # only fires on a broken halt MODULE. Make it a visible CRITICAL
+            # alert rather than a stderr line the FMS cannot see.
+            try:
+                from factory.manager.signals import write_alert_event
 
-            print(
-                f"[recovery] WARNING: halt-check raised an exception: {_halt_exc!r}; "
-                "continuing without forcing dry-run (fail-open). This may "
-                "indicate a broken halt module.",
-                file=_sys.stderr,
-            )
+                write_alert_event(
+                    "halt_check_module_error",
+                    f"[recovery] halt-check raised {_halt_exc!r}; continuing "
+                    "without forcing dry-run (fail-open).",
+                    severity="critical",
+                    software_factory_root=root,
+                )
+            except Exception:  # noqa: BLE001 - alerting is best-effort
+                import sys as _sys
+
+                print(
+                    f"[recovery] CRITICAL: halt-check raised {_halt_exc!r}; "
+                    "continuing (fail-open) and alert emit failed.",
+                    file=_sys.stderr,
+                )
     effective_dry_run = dry_run or forced_dry_run
 
     summary: dict[str, Any] = {

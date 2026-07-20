@@ -874,15 +874,30 @@ def tick(
                 halt_reason=_halt_reason,
             )
     except Exception as _halt_exc:  # noqa: BLE001
-        # Phase 8 (Phase 7 reviewer note): log the exception to stderr so an
-        # operator notices the broken halt module.  Continue with halt=False
-        # (fail-open: a broken halt module must not silently prevent all ticks).
-        import sys as _sys
-        print(
-            f"[orchestrator] WARNING: halt-check raised an exception: {_halt_exc!r}; "
-            "continuing with tick (fail-open). This may indicate a broken halt module.",
-            file=_sys.stderr,
-        )
+        # The dangerous data path (a corrupt/unreadable halt FILE) now fails
+        # SAFE inside halt.is_halted itself. This guard only fires when the halt
+        # MODULE is broken (e.g. ImportError). We keep fail-open here — halting
+        # all ticks on an import error would wedge the factory with no recovery
+        # path — but we make it a CRITICAL, visible alert (not a stderr line the
+        # FMS can't see) so the broken module gets fixed.
+        try:
+            from factory.manager.signals import write_alert_event
+
+            write_alert_event(
+                "halt_check_module_error",
+                f"halt-check raised {_halt_exc!r}; continuing with tick "
+                "(fail-open). Indicates a broken halt module, not a corrupt "
+                "halt file (that path fails safe).",
+                severity="critical",
+                software_factory_root=root,
+            )
+        except Exception:  # noqa: BLE001 - alerting is best-effort
+            import sys as _sys
+            print(
+                f"[orchestrator] CRITICAL: halt-check raised {_halt_exc!r} "
+                "(fail-open) and alert emit failed.",
+                file=_sys.stderr,
+            )
 
     settings = load_settings(root)
     summary = TickSummary(app=app, dry_run=dry_run)

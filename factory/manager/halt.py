@@ -15,11 +15,19 @@ by the L4 pipeline.  ``clear_halt`` in particular must only be called by
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path  # noqa: E402
 
 # Schema version for the halt state file.
 _SCHEMA_VERSION = 1
+
+# Bounded retry for reading the halt file. A halt exists precisely to STOP the
+# factory, so a read/parse failure must not silently be treated as "not
+# halted". We retry a few times with a tiny backoff to ride out a transient FS
+# glitch (a half-written file mid-flush, a momentary EIO) before concluding.
+_HALT_READ_RETRIES = 3
+_HALT_READ_BACKOFF_S = 0.05
 
 # Standard filename for the halt mode state.
 _HALT_FILE = "factory_mode.json"
@@ -109,31 +117,76 @@ def request_halt(
 
 
 def is_halted(*, root: Path) -> bool:
-    """Return True if the halt mode file exists and mode == "halted"."""
+    """Return True if the factory should be treated as halted.
+
+    Fail-SAFE semantics
+    -------------------
+    * No halt file          → not halted (normal running state).
+    * Valid file, mode set  → honour ``mode == "halted"``.
+    * File present but the contents cannot be read/parsed after a bounded
+      retry → **treat as halted** and emit a CRITICAL alert.
+
+    The last rule is the important one. Historically this path returned
+    ``False`` (fail-OPEN): a corrupt/unreadable halt file made the factory
+    treat itself as NOT halted and keep dispatching — silently ignoring the
+    very halt that was meant to stop it. That is the single most dangerous
+    failure this module can have.
+
+    Tradeoff: a *persistent* read error over-halts the factory. That is
+    acceptable because a visible over-halt is fully recoverable — an operator
+    sees the alert and clears it with ``factory resume`` (``clear_halt`` is
+    tolerant of a corrupt file for exactly this reason) — whereas a silently
+    ignored halt is not recoverable and defeats the control plane. The bounded
+    retry keeps a mere transient FS blip from wedging the factory.
+    """
     root = Path(root)
     p = _halt_path(root)
     if not p.exists():
         return False
-    try:
-        state = json.loads(p.read_text(encoding="utf-8"))
-        return state.get("mode") == "halted"
-    except (OSError, json.JSONDecodeError):
-        return False
+    last_exc: Exception | None = None
+    for attempt in range(_HALT_READ_RETRIES):
+        try:
+            state = json.loads(p.read_text(encoding="utf-8"))
+            return state.get("mode") == "halted"
+        except (OSError, json.JSONDecodeError) as exc:
+            last_exc = exc
+            if attempt < _HALT_READ_RETRIES - 1:
+                time.sleep(_HALT_READ_BACKOFF_S)
+    # Every read failed. Fail SAFE (halted) and make it unmistakable.
+    _alert_halt_unreadable(root, p, last_exc)
+    return True
 
 
 def get_halt_state(*, root: Path) -> dict | None:
-    """Return the halt state dict or None if not halted."""
+    """Return the halt state dict or None if not halted.
+
+    Uses the same bounded retry as :func:`is_halted`. Returns ``None`` only
+    when the file is genuinely absent or a valid file has a non-halted mode.
+    If the file is present but unreadable after retries, returns a synthetic
+    ``mode="halted"`` state so callers that display the halt reason stay
+    consistent with :func:`is_halted` (which fail-safes to halted).
+    """
     root = Path(root)
     p = _halt_path(root)
     if not p.exists():
         return None
-    try:
-        state = json.loads(p.read_text(encoding="utf-8"))
-        if state.get("mode") == "halted":
-            return state
-        return None
-    except (OSError, json.JSONDecodeError):
-        return None
+    last_exc: Exception | None = None
+    for attempt in range(_HALT_READ_RETRIES):
+        try:
+            state = json.loads(p.read_text(encoding="utf-8"))
+            if state.get("mode") == "halted":
+                return state
+            return None
+        except (OSError, json.JSONDecodeError) as exc:
+            last_exc = exc
+            if attempt < _HALT_READ_RETRIES - 1:
+                time.sleep(_HALT_READ_BACKOFF_S)
+    _alert_halt_unreadable(root, p, last_exc)
+    return {
+        "mode": "halted",
+        "reason": "halt file present but unreadable/corrupt (fail-safe halt)",
+        "set_by": "fail_safe",
+    }
 
 
 def clear_halt(
@@ -177,7 +230,21 @@ def clear_halt(
             f"No halt state file found at {halt_path}; nothing to clear."
         )
 
-    state = json.loads(halt_path.read_text(encoding="utf-8"))
+    # Read the current halt state, tolerating a corrupt/unreadable file. This
+    # is essential: is_halted() fail-safes to *halted* on a corrupt file, so an
+    # operator MUST still be able to clear that halt with `factory resume`. If
+    # we raised here on a parse error, a corrupt halt file would wedge the
+    # factory permanently — the exact deadlock the fail-safe posture must avoid.
+    try:
+        state = json.loads(halt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        state = {
+            "mode": "halted",
+            "reason": "halt file unreadable/corrupt at clear time",
+            "corrupt_read_error": repr(exc),
+        }
+    if not isinstance(state, dict):
+        state = {"mode": "halted", "reason": "halt file had non-object contents"}
     if state.get("mode") != "halted":
         raise ValueError(
             f"factory_mode.json exists but mode={state.get('mode')!r} (not 'halted'); "
@@ -202,6 +269,34 @@ def clear_halt(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _alert_halt_unreadable(root: Path, path: Path, exc: Exception | None) -> None:
+    """Emit a CRITICAL, visible alert that the halt file could not be read.
+
+    Best-effort: alerting must never itself raise out of the halt check. The
+    fail-safe decision (treat as halted) does not depend on this succeeding.
+    """
+    try:
+        from factory.manager.signals import write_alert_event
+
+        write_alert_event(
+            "halt_unreadable",
+            f"halt file present but unreadable/corrupt after "
+            f"{_HALT_READ_RETRIES} attempts; failing SAFE (treating factory as "
+            f"HALTED). Clear with `factory resume` once the file is fixed.",
+            severity="critical",
+            software_factory_root=root,
+            halt_path=str(path),
+            read_error=repr(exc) if exc is not None else None,
+        )
+    except Exception:  # noqa: BLE001 - alerting is best-effort; never raise here
+        import sys as _sys
+
+        print(
+            f"[halt] CRITICAL: halt file {path} unreadable and alert emit failed: {exc!r}",
+            file=_sys.stderr,
+        )
 
 
 def _last_operator_clear_at(root: Path) -> datetime | None:

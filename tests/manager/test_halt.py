@@ -151,11 +151,14 @@ class TestIsHalted:
         p.write_text(json.dumps({"mode": "normal"}), encoding="utf-8")
         assert is_halted(root=tmp_path) is False
 
-    def test_false_when_file_is_corrupt(self, tmp_path: Path) -> None:
+    def test_fail_safe_halted_when_file_is_corrupt(self, tmp_path: Path) -> None:
+        # Fail-SAFE: a present-but-corrupt halt file must NOT read as "not
+        # halted" (that silently ignores the halt meant to stop the factory).
+        # It now reads as halted. (Previously this returned False — fail-open.)
         p = tmp_path / "state" / "factory_mode.json"
         p.parent.mkdir(parents=True)
         p.write_text("this is not json {{{", encoding="utf-8")
-        assert is_halted(root=tmp_path) is False
+        assert is_halted(root=tmp_path) is True
 
 
 class TestGetHaltState:

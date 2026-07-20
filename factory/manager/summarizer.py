@@ -877,10 +877,22 @@ def run_summarizer_daemon(
                     time.sleep(interval_s)
                     continue
             except Exception as _halt_exc:  # noqa: BLE001
-                print(
-                    f"[summarizer] WARNING: halt-check failed: {_halt_exc!r}; continuing (fail-open)",
-                    file=sys.stderr,
-                )
+                # Corrupt halt FILEs fail safe inside is_halted; this only fires
+                # on a broken halt MODULE. Fail-open but make it a visible alert.
+                try:
+                    from factory.manager.signals import write_alert_event
+
+                    write_alert_event(
+                        "halt_check_module_error",
+                        f"[summarizer] halt-check raised {_halt_exc!r}; continuing (fail-open)",
+                        severity="critical",
+                        software_factory_root=root,
+                    )
+                except Exception:  # noqa: BLE001 - alerting is best-effort
+                    print(
+                        f"[summarizer] CRITICAL: halt-check failed: {_halt_exc!r}; continuing (fail-open)",
+                        file=sys.stderr,
+                    )
 
             try:
                 from factory.manager.circuit_breaker import is_tripped as _cb_is_tripped

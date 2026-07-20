@@ -370,9 +370,15 @@ def check_and_trip(
         cb_file.parent.mkdir(parents=True, exist_ok=True)
         cb_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
-        print(
-            f"[circuit_breaker] WARNING: failed to write circuit_breaker.json: {exc!r}",
-            file=sys.stderr,
+        # A control-plane write failure must be visible, not swallowed to
+        # stderr alone: if we cannot persist the tripped state, the breaker
+        # will not block the next apply cycle. Surface it as an anomaly alert.
+        _alert_cb_unreadable(
+            root,
+            cb_file,
+            f"failed to WRITE circuit_breaker.json after tripping "
+            f"(regression_commit={tip_sha[:12]!r}): {exc!r}. The breaker may "
+            "not block the next apply cycle.",
         )
 
     print(
@@ -394,12 +400,36 @@ def is_tripped(*, root: Path, now: datetime | None = None) -> bool:
 
     A tripped breaker blocks the L4 apply pipeline from auto-applying
     safe proposals until the operator resets it.
+
+    Fail-CLOSED semantics (consistent with :func:`factory.manager.halt.is_halted`):
+    * No state file            → not tripped (normal state).
+    * State file present but unreadable/corrupt → **stay tripped** + CRITICAL
+      alert. A breaker exists to block risky auto-apply; if we cannot read it
+      we must not silently reopen the gate.
+    * Valid state, unparseable ``halt_until`` → stay tripped + alert.
+    * Valid state, valid ``halt_until``       → tripped iff now < halt_until.
     """
+    path = _cb_path(root)
+    if not path.exists():
+        return False
+
     state = get_state(root=root)
     if state is None:
-        return False
+        # File exists but get_state could not parse it → fail-closed + alert.
+        _alert_cb_unreadable(
+            root,
+            path,
+            "circuit_breaker.json present but unreadable/corrupt; staying TRIPPED "
+            "(fail-closed). Reset with `factory manager circuit-breaker reset` "
+            "once the file is fixed.",
+        )
+        return True
+
     halt_until_str = state.get("halt_until")
     if not halt_until_str:
+        _alert_cb_unreadable(
+            root, path, "circuit_breaker.json has no halt_until; staying TRIPPED."
+        )
         return True  # state exists but no halt_until → treat as tripped
     try:
         halt_until = datetime.fromisoformat(halt_until_str)
@@ -410,7 +440,32 @@ def is_tripped(*, root: Path, now: datetime | None = None) -> bool:
             ts_now = ts_now.replace(tzinfo=UTC)
         return ts_now < halt_until
     except (ValueError, TypeError):
+        _alert_cb_unreadable(
+            root,
+            path,
+            f"circuit_breaker.json halt_until={halt_until_str!r} unparseable; "
+            "staying TRIPPED (fail-closed).",
+        )
         return True  # unparseable → fail-closed (stay tripped)
+
+
+def _alert_cb_unreadable(root: Path, path: Path, detail: str) -> None:
+    """Emit a CRITICAL, visible alert for a corrupt/ambiguous breaker state.
+
+    Best-effort — alerting must never raise out of ``is_tripped``.
+    """
+    try:
+        from factory.manager.signals import write_alert_event
+
+        write_alert_event(
+            "circuit_breaker_state_corrupt",
+            detail,
+            severity="critical",
+            software_factory_root=root,
+            cb_path=str(path),
+        )
+    except Exception:  # noqa: BLE001 - alerting is best-effort; never raise here
+        print(f"[circuit_breaker] CRITICAL: {detail}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
