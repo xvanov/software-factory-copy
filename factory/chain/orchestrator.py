@@ -1340,7 +1340,14 @@ def tick(
                 from factory.app_config import resolve_app_repo_path
                 from factory.chain.worktree import prune_stale_worktrees
 
-                active_ids: set[int] = {s.id for s in stories if s.id is not None}
+                # Worktree identity MUST match handlers._writing_worktree:
+                # ensure_worktree_for_story keys by github_issue_number
+                # (fallback to row id only when no issue exists, e.g. dry-run).
+                active_ids: set[int] = {
+                    int(s.github_issue_number if s.github_issue_number is not None else s.id)
+                    for s in stories
+                    if (s.github_issue_number is not None or s.id is not None)
+                }
                 # KEEP worktrees of blocked stories: blocked states mean
                 # "awaiting operator resolution or auto-recovery", and both
                 # use the worktree — the operator resolves merge conflicts in
@@ -1362,7 +1369,12 @@ def tick(
                             ),
                         )
                     ).all()
-                active_ids |= {r.id for r in blocked_rows if r.id is not None}
+                active_ids |= {
+                    int(r.github_issue_number if r.github_issue_number is not None else r.id)
+                    for r in blocked_rows
+                    if (r.github_issue_number is not None or r.id is not None)
+                }
+
                 source_repo = resolve_app_repo_path(cfg, root)
                 if source_repo.exists():
                     prune_stale_worktrees(
