@@ -423,6 +423,11 @@ def test_sm_overflow_full_chain_l1_l2_l3_l4(
         runner=mocked_runner,
         repo="x/y",
         push=True,
+        # This test exercises the L4 promotion mechanics (branch/apply/PR).
+        # The self-edit staging gate (WS3.5) is covered in tests/manager/
+        # test_staging.py; disable it here so the mocked runner isn't asked to
+        # reach the throwaway COPY repo.
+        stage_self_edits=False,
     )
 
     # Classification must be safe.

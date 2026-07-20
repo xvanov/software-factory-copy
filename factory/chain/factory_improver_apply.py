@@ -134,24 +134,31 @@ def _diff_target_paths(patch: str) -> list[str]:
     """
     paths: list[str] = []
     seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        p = raw
+        if p.startswith("a/") or p.startswith("b/"):
+            p = p[2:]
+        if p and p != "/dev/null" and p not in seen:
+            seen.add(p)
+            paths.append(p)
+
     for line in patch.splitlines():
         if line.startswith("diff --git "):
             # ``diff --git a/path/to/file b/path/to/file``
+            # Extract BOTH the a/ (source) AND b/ (destination) sides. A pure
+            # 100%-similarity rename carries NO ``+++`` hunk header, so the
+            # destination path lives ONLY on this line — e.g. a rename INTO
+            # factory/ (``diff --git a/apps/x.py b/factory/evil.py``) would
+            # otherwise be seen only as ``apps/x.py`` and evade the self-edit /
+            # forbidden-path detection that both the staging gate and the
+            # forbidden guard rely on.
             parts = line.split()
             if len(parts) >= 4:
-                p = parts[2]
-                if p.startswith("a/"):
-                    p = p[2:]
-                if p not in seen:
-                    seen.add(p)
-                    paths.append(p)
+                _add(parts[2])  # a/ (source)
+                _add(parts[3])  # b/ (destination — the rename/copy target)
         elif line.startswith("+++ ") and not line.startswith("+++ /dev/null"):
-            p = line[4:].strip()
-            if p.startswith("b/"):
-                p = p[2:]
-            if p not in seen:
-                seen.add(p)
-                paths.append(p)
+            _add(line[4:].strip())
     return paths
 
 

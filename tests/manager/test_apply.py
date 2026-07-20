@@ -554,6 +554,7 @@ def test_apply_safe_proposal_writes_branch_and_history(tmp_path: Path) -> None:
         runner=runner,
         repo="owner/repo",
         push=True,
+        stage_self_edits=False,  # promotion-mechanics test; staging covered separately
     )
 
     assert result["processed"] == 1
@@ -614,6 +615,7 @@ def test_apply_risky_proposal_no_auto_merge(tmp_path: Path) -> None:
         runner=runner,
         repo="owner/repo",
         push=True,
+        stage_self_edits=False,  # promotion-mechanics test; staging covered separately
     )
 
     assert result["processed"] == 1
@@ -691,6 +693,7 @@ def test_apply_test_failure_abandons_branch(tmp_path: Path) -> None:
         dry_run=False,
         runner=runner,
         repo="owner/repo",
+        stage_self_edits=False,  # promotion-mechanics test; staging covered separately
     )
 
     assert result["processed"] == 1
@@ -888,6 +891,7 @@ def test_sm_overflow_end_to_end(tmp_path: Path) -> None:
         runner=_runner,
         repo="owner/repo",
         push=True,
+        stage_self_edits=False,  # promotion-mechanics test; staging covered separately
     )
 
     # (b) Branch was created — verify via result and history.
@@ -1066,6 +1070,7 @@ def test_apply_branch_cleaned_up_on_unexpected_exception(tmp_path: Path) -> None
             dry_run=False,
             runner=_raising_runner,
             push=False,
+            stage_self_edits=False,  # promotion-mechanics test; staging covered separately
         )
 
     # (b) No factory-manager/* branches should remain.

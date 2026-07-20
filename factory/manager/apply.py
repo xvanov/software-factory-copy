@@ -616,11 +616,25 @@ def _apply_one_manager_proposal(
     repo: str | None = None,
     open_prs: bool = True,
     push: bool = True,
+    stage_self_edits: bool = True,
+    staging_gate: Callable[..., Any] | None = None,
+    staging_validator: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Apply a single classified manager proposal.
 
     Returns a result dict with keys:
       proposal_path, classification, status, branch, pr_url, pr_number, error
+
+    Self-edit safety (Tier 3 WS3.5)
+    -------------------------------
+    When ``stage_self_edits`` is True (default) and the proposal's patch touches
+    the factory's OWN code (paths under ``factory/``), the change is first staged
+    and validated on a throwaway COPY repo — the cloned factory is ACTUALLY RUN
+    (deps, full suite, import/CLI smoke, dry-run tick) before we PROMOTE it to
+    the live factory. Only a healthy clone proceeds to the existing PR/auto-merge
+    path; an unhealthy clone or a staging infra failure is recorded and the real
+    factory is never touched (fail-safe). ``staging_gate`` / ``staging_validator``
+    are injectable for tests.
     """
     runner = runner or subprocess.run  # type: ignore[assignment]
     assert runner is not None
@@ -654,11 +668,49 @@ def _apply_one_manager_proposal(
     inner = proposal.get("proposal", {})
     patch = inner.get("suggested_patch", "") if isinstance(inner, dict) else ""
 
+    # ------------------------------------------------------------------
+    # Self-edit staging gate (Tier 3 WS3.5).
+    # ------------------------------------------------------------------
+    # If this proposal touches the factory's OWN code (paths under factory/),
+    # do NOT apply it to the live factory yet. First validate it on a throwaway
+    # COPY repo by ACTUALLY RUNNING the cloned factory there (canary/shadow
+    # deploy). A fatal self-edit fails on the clone and never touches the live
+    # self. Reuses the same target-path detection as the forbidden-path guard
+    # (``_diff_target_paths``). App-repo changes (not under factory/) bypass
+    # staging unchanged. Fail-safe: any non-healthy outcome => not promoted.
+    if stage_self_edits and isinstance(patch, str) and patch.strip():
+        from factory.manager.staging import gate_self_edit as _default_gate
+        from factory.manager.staging import is_self_edit as _is_self_edit
+
+        _paths_for_staging = _diff_target_paths(patch)
+        if _is_self_edit(_paths_for_staging):
+            _gate = staging_gate or _default_gate
+            decision = _gate(
+                proposal,
+                str(proposal_path),
+                root=root,
+                runner=runner,
+                validator=staging_validator,
+            )
+            result["staging"] = {
+                "status": getattr(decision, "status", None),
+                "stage_failed": getattr(decision, "stage_failed", None),
+                "branch": getattr(decision, "branch", None),
+            }
+            if not getattr(decision, "promote", False):
+                # Uncertainty or a real validation failure — never touch the
+                # live factory. Record the outcome and stop here.
+                result["status"] = getattr(decision, "status", "staging_rejected")
+                result["error"] = (
+                    f"staging_not_promoted:{decision.stage_failed}"
+                    if getattr(decision, "stage_failed", None)
+                    else getattr(decision, "status", "staging_rejected")
+                )
+                result["branch"] = None
+                return result
+
     # Get repo root for git operations.
-    from factory.chain.factory_improver_apply import (
-        _current_branch,
-        _diff_target_paths,
-    )
+    from factory.chain.factory_improver_apply import _current_branch
 
     starting_branch: str | None = None
     try:
@@ -884,6 +936,9 @@ def apply_manager_proposals(
     open_prs: bool = True,
     push: bool = True,
     now: datetime | None = None,
+    stage_self_edits: bool = True,
+    staging_gate: Callable[..., Any] | None = None,
+    staging_validator: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Apply manager proposals from ``state/manager_proposals/*.json``.
 
@@ -951,6 +1006,8 @@ def apply_manager_proposals(
         "risky_opened": 0,
         "forbidden": 0,
         "escalated_human": 0,
+        "staging_rejected": 0,
+        "staging_infra_failed": 0,
         "errors": [],
         "results": [],
     }
@@ -998,6 +1055,9 @@ def apply_manager_proposals(
             repo=repo,
             open_prs=open_prs,
             push=push,
+            stage_self_edits=stage_self_edits,
+            staging_gate=staging_gate,
+            staging_validator=staging_validator,
         )
 
         summary["processed"] += 1
@@ -1012,6 +1072,12 @@ def apply_manager_proposals(
             summary["forbidden"] += 1
         elif classification == "escalate_to_human":
             summary["escalated_human"] += 1
+
+        # Self-edit staging outcomes (independent of classification).
+        if result.get("status") == "staging_rejected":
+            summary["staging_rejected"] += 1
+        elif result.get("status") == "staging_infra_failed":
+            summary["staging_infra_failed"] += 1
 
         if result.get("error"):
             summary["errors"].append(f"{p.name}: {result['error']}")
