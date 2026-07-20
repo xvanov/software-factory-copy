@@ -25,7 +25,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from factory.app_config import AppConfig, load_app_config, resolve_app_repo_path
+from factory.app_config import (
+    AppConfig,
+    load_app_config,
+    resolve_app_repo_path,
+    targets_factory_repo,
+)
 from factory.backpressure.validator import ValidationResult, validate_direction
 from factory.context.loader import compose_context_prelude
 from factory.directions.parser import Direction, MissingDirection, resolve_direction_chain
@@ -497,6 +502,22 @@ def pm_sync(
         raise RuntimeError(
             "github_client is required for real pm-sync; pass --dry-run for offline use"
         )
+
+    # Self-tick guard (Tier 3 — FACTORY-SELF-TICK). The factory building its OWN
+    # repo (apps/factory) is OFF by default: while ``self_tick_enabled`` is
+    # False we do NOT turn apps/factory directions into chain stories, so merely
+    # bootstrapping apps/factory (config + directions on disk) never silently
+    # starts the factory ticking on itself. The orchestrator flips the flag to
+    # enable self-improvement deliberately. Non-factory apps are unaffected
+    # (the guard only triggers for the factory's own repo). The chain-side
+    # staging gate is a SEPARATE, always-on protection — this guard only decides
+    # whether self-improvement work enters the chain at all.
+    if (
+        app_config is not None
+        and targets_factory_repo(app_config.repo)
+        and not app_config.self_tick_enabled
+    ):
+        return PMSyncSummary()
 
     summary = PMSyncSummary()
     pending = [

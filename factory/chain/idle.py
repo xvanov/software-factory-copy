@@ -134,6 +134,21 @@ def maybe_generate_idle_work(
     root = Path(software_factory_root)
     moment = now or datetime.now(UTC)
 
+    # Self-tick guard (Tier 3 — FACTORY-SELF-TICK). When ``app`` builds the
+    # factory's own repo, idle-generation only fires if self-tick is explicitly
+    # enabled. Otherwise the factory would burn generator budget filing
+    # factory-improvement directions that pm-sync (also self-tick-gated) refuses
+    # to decompose into stories. Best-effort: if the config can't be read we
+    # fall through (a non-factory app is never affected).
+    try:
+        from factory.app_config import load_app_config, targets_factory_repo
+
+        _cfg = load_app_config(app, root)
+        if targets_factory_repo(_cfg.repo) and not _cfg.self_tick_enabled:
+            return IdleWorkResult(fired=False, reason="self_tick_disabled")
+    except Exception:  # noqa: BLE001 - missing/broken config → not a gated factory app
+        pass
+
     if idle_snapshot is _UNSET:
         idle_snapshot = detect_idle(app, root, since_hours=since_hours)
     if idle_snapshot is None:

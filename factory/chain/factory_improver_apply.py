@@ -812,6 +812,54 @@ def close_pr_with_comment(
 # ---------------------------------------------------------------------------
 
 
+def _improver_self_edit_promotes(
+    gate: Callable[..., Any],
+    *,
+    proposal: dict[str, Any],
+    factory_root: Path,
+    patch: str,
+    proposal_index: int,
+    log_event: Callable[[str, dict[str, Any]], None] | None,
+) -> bool:
+    """Validate a self-edit on a cloned factory before it may AUTO-MERGE.
+
+    Wraps the improver's flat proposal dict into the shape
+    ``staging.gate_self_edit`` expects (``proposal["proposal"]["suggested_patch"]``)
+    and returns True ONLY when the clone ran healthy (``decision.promote``).
+
+    Fail-safe: any exception (staging harness error) or a non-promote decision
+    returns False, so the caller downgrades the PR to review-only (never
+    auto-merges an unvalidated self-edit).
+    """
+    wrapped = {
+        "proposal_id": f"improver-self-edit-{proposal_index}",
+        "concern_title": str(
+            proposal.get("rationale", "") or f"improver self-edit {proposal_index}"
+        )[:80],
+        "proposal": {"suggested_patch": patch},
+    }
+    proposal_path = f"improver:proposal-{proposal_index}"
+    try:
+        decision = gate(wrapped, proposal_path, root=factory_root)
+    except Exception as exc:  # noqa: BLE001 - fail-safe: staging error → do not auto-merge
+        if log_event:
+            log_event(
+                "factory_improver_staging_infra_failed",
+                {"proposal_index": proposal_index, "error": repr(exc)[:200]},
+            )
+        return False
+    promoted = bool(getattr(decision, "promote", False))
+    if not promoted and log_event:
+        log_event(
+            "factory_improver_staging_blocked",
+            {
+                "proposal_index": proposal_index,
+                "status": getattr(decision, "status", "staging_rejected"),
+            },
+        )
+    return promoted
+
+
 def run_apply_pass(
     proposals_json_path: Path,
     factory_root: Path,
@@ -823,6 +871,7 @@ def run_apply_pass(
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     test_command: list[str] | None = None,
     log_event: Callable[[str, dict[str, Any]], None] | None = None,
+    staging_gate: Callable[..., Any] | None = None,
 ) -> ApplyPassSummary:
     """Iterate over proposals in ``proposals_json_path``, classify +
     apply each, and return a summary.
@@ -830,6 +879,16 @@ def run_apply_pass(
     ``repo`` is the ``owner/name`` slug the PRs land in. When ``None``
     or ``open_prs=False``, the function still classifies and applies
     (useful for local dry-runs and tests).
+
+    ``staging_gate`` is the self-edit staging validator (defaults to
+    ``factory.manager.staging.gate_self_edit``). A ``"safe"`` proposal that
+    edits the factory's OWN code (a self-edit, e.g. ``factory/personas/*.md``)
+    is AUTO-MERGED (``gh pr merge --auto``) — so, exactly like the manager
+    apply path, it must first be validated on a cloned factory. Without this,
+    the L2 self-improver was a SECOND, ungated self-edit auto-merge surface. A
+    non-self-edit safe proposal (``README.md`` / ``CLAUDE.md``) skips staging;
+    a ``"risky"`` proposal was never auto-merged. Fail-safe: any non-promote
+    outcome DOWNGRADES the PR to review-only (no ``--auto``).
     """
     summary = ApplyPassSummary()
     if not proposals_json_path.exists():
@@ -908,8 +967,43 @@ def run_apply_pass(
                 )
             continue
 
+        # Would this proposal auto-merge? Only "safe" ones do. A "safe" proposal
+        # that is a SELF-EDIT (touches factory/**) must pass the staging gate on
+        # a cloned factory before it may auto-merge — the same protection the
+        # manager apply path has. This closes the second, previously-ungated
+        # self-edit auto-merge surface. On any non-promote outcome we DOWNGRADE
+        # to a review-only PR (auto_merge=False) so an unvalidated self-edit can
+        # never auto-merge to the live factory. Non-self-edits (README/CLAUDE)
+        # and risky proposals are unaffected.
+        auto_merge = result.classification == "safe"
+        staging_blocked = False
+        if auto_merge:
+            patch = proposal.get("suggested_patch", "")
+            patch = patch if isinstance(patch, str) else ""
+            paths = _diff_target_paths(patch)
+            # Lazy import: staging imports _diff_target_paths from THIS module,
+            # so a top-level import would be circular.
+            from factory.manager.staging import gate_self_edit as _default_gate
+            from factory.manager.staging import is_self_edit as _is_self_edit
+
+            if _is_self_edit(paths):
+                gate = staging_gate or _default_gate
+                if not _improver_self_edit_promotes(
+                    gate,
+                    proposal=proposal,
+                    factory_root=factory_root,
+                    patch=patch,
+                    proposal_index=idx,
+                    log_event=log_event,
+                ):
+                    auto_merge = False
+                    staging_blocked = True
+
         if open_prs and repo and result.branch:
-            pr = open_pr_for_proposal(proposal, result, repo, runner=runner)
+            label = REVIEW_LABEL if staging_blocked else result.label
+            pr = open_pr_for_proposal(
+                proposal, result, repo, label=label, runner=runner, auto_merge=auto_merge
+            )
             if pr is None:
                 result.status = "abandoned"
                 result.error = (result.error or "") + "; pr_create_failed"
@@ -917,10 +1011,14 @@ def run_apply_pass(
                 summary.per_proposal.append(result)
                 continue
 
-        if result.classification == "safe":
+        # A staging-blocked self-edit is queued for human review, NOT applied —
+        # even though it classified "safe" it was not (auto-)merged.
+        if result.classification == "safe" and not staging_blocked:
             summary.applied += 1
         else:
             summary.queued_for_review += 1
+        if staging_blocked:
+            result.status = "queued_for_review"
         summary.per_proposal.append(result)
 
     return summary

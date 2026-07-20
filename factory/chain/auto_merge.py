@@ -30,7 +30,12 @@ from typing import Any
 
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
-from factory.app_config import AppConfig, load_app_config
+from factory.app_config import (
+    FACTORY_REPO,  # noqa: F401 - re-exported for callers/tests
+    AppConfig,
+    load_app_config,
+    targets_factory_repo,
+)
 from factory.chain.gates.evaluator import (  # noqa: F401 - ALL_GATE_LABELS re-exported
     ALL_GATE_LABELS,
     LOOP4_REQUIRED_GATE_LABELS,
@@ -76,6 +81,15 @@ _MAX_CI_FIX_CYCLES = 3
 # ``chain_kind`` without re-checking the TDD list.
 _DOCS_CHAIN_GATE_LABELS: frozenset[str] = frozenset({"canonical-paths-only"})
 
+def _story_targets_factory_repo(app_config: AppConfig) -> bool:
+    """True when ``app_config`` builds the factory's own repo (a self-edit app).
+
+    Scoping guard for the chain-side staging gate: only factory-repo stories are
+    ever routed through staging. Every other app (sacrifice, ...) targets a
+    different repo and bypasses the gate entirely.
+    """
+    return targets_factory_repo(app_config.repo)
+
 
 class MergeActionRecord(SQLModel, table=True):
     """One row per auto-merge decision (merged or no-op)."""
@@ -103,6 +117,16 @@ class MergeAction:
     reason: str
     gates_passed: list[str] = field(default_factory=list)
     blocking_labels: list[str] = field(default_factory=list)
+    # Set True when a factory self-edit was refused by the chain-side staging
+    # gate (``_evaluate_self_edit_gate``): the live factory was NOT touched and
+    # the story should be sunk to a blocked/attention state by the caller.
+    staging_blocked: bool = False
+    # The staging-gate status when blocked: ``"staging_rejected"`` (a stage
+    # failed on the clone), ``"staging_infra_failed"`` (harness could not
+    # determine health), ``"forbidden"`` (touched factory/manager/** or
+    # bench/**), or ``"diff_unavailable"`` (could not fetch the diff to
+    # validate). ``None`` when the merge was not staging-blocked.
+    staging_status: str | None = None
 
 
 @dataclass
@@ -157,6 +181,263 @@ def _is_docs_chain(story: StoryRecord | None) -> bool:
     return story is not None and story.chain_kind == "docs"
 
 
+# ---------------------------------------------------------------------------
+# Chain-side staging gate for factory self-edits (Tier 3 — self-tick safety)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _SelfEditDecision:
+    """Outcome of the chain-side staging gate for one factory-repo story.
+
+    ``allow=True`` means the change is safe to merge (either it is not a factory
+    self-edit, or the staging clone validated it healthy). Every other outcome
+    is ``allow=False`` — the live factory is NEVER touched on uncertainty.
+    """
+
+    allow: bool
+    status: str
+    logs_tail: str = ""
+    forbidden: bool = False
+
+
+def _default_patch_provider(
+    app_config: AppConfig, pr_number: int
+) -> str | None:  # pragma: no cover - real-run gh shell-out
+    """Fetch a PR's unified diff via ``gh pr diff``. ``None`` on any failure.
+
+    A ``None`` return is treated as fail-safe by the caller (a factory self-edit
+    whose diff cannot be read is never merged).
+    """
+    import subprocess
+
+    if pr_number <= 0:
+        return None
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "diff", str(pr_number), "--repo", app_config.repo],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout or ""
+
+
+def _escalate_self_edit(
+    escalate: Any,
+    *,
+    story: StoryRecord | None,
+    app_config: AppConfig,
+    root: Path,
+    pr_number: int,
+    classification: str,
+    detail: str,
+    patch: str = "",
+) -> None:
+    """Best-effort escalation for a refused factory self-edit. Never raises.
+
+    Reuses the WS3.1 ``escalation.notify_escalation`` channel (the same one the
+    manager proposal path uses) so a chain-built self-edit that fails staging or
+    hits a forbidden path is surfaced to a human exactly like a manager-proposed
+    one.
+    """
+    proposal = {
+        "proposal_id": (
+            f"chain-selfedit-story-{getattr(story, 'id', None)}-pr-{pr_number}"
+        ),
+        "concern_title": f"chain factory self-edit PR #{pr_number}",
+        "proposal": {"suggested_patch": patch},
+        "detail": detail,
+    }
+    try:
+        escalate(
+            proposal,
+            root=root,
+            repo=app_config.repo,
+            classification=classification,
+            result={"detail": detail, "pr_number": pr_number},
+        )
+    except Exception:  # noqa: BLE001 - escalation is best-effort; never block the tick
+        pass
+
+
+def _evaluate_self_edit_gate(
+    *,
+    app_config: AppConfig,
+    story: StoryRecord | None,
+    pr_number: int,
+    root: Path | None,
+    patch_provider: Any = None,
+    self_edit_gate: Any = None,
+    escalate: Any = None,
+) -> _SelfEditDecision:
+    """Decide whether a factory-repo story is safe to merge.
+
+    This is the chain analogue of the manager proposal path's staging gate: a
+    story that modifies the factory's OWN code must be validated by ACTUALLY
+    RUNNING a cloned factory (``staging.gate_self_edit``) before it can land on
+    the live factory. The manager path had this protection; the chain
+    (pm-sync → dev → review → auto_merge) did not — this closes that gap.
+
+    Fail-safe contract (never merge an unvalidated factory self-edit):
+      * app does not target the factory repo → ``allow=True`` (app-repo stories
+        bypass staging entirely — unchanged path).
+      * diff cannot be obtained → ``allow=False`` (cannot validate → refuse).
+      * touches a forbidden path (``factory/manager/**`` or ``bench/**``) →
+        ``allow=False`` (the chain can never edit the safety mechanism or the
+        grader, staging-validated or not).
+      * not a runtime self-edit (e.g. only ``apps/factory/directions`` docs) →
+        ``allow=True`` (staging validates "does the factory run"; a non-code
+        change can't change that, so no staging is required).
+      * runtime self-edit → routed through the staging gate; ``allow`` mirrors
+        ``decision.promote`` (healthy → merge, unhealthy/infra → refuse).
+
+    Any uncertainty — a missing diff, a staging harness exception, a
+    non-promote decision — resolves to ``allow=False``.
+    """
+    if not _story_targets_factory_repo(app_config):
+        return _SelfEditDecision(allow=True, status="not_factory_repo")
+
+    root = Path(root) if root is not None else Path.cwd()
+
+    from factory.chain.factory_improver_apply import _diff_target_paths
+    from factory.manager import staging
+    from factory.manager.apply import _any_path_is_forbidden_in_patch
+
+    if patch_provider is None:
+        patch_provider = _default_patch_provider
+    if self_edit_gate is None:
+        self_edit_gate = staging.gate_self_edit
+    if escalate is None:
+        from factory.manager.escalation import notify_escalation as escalate
+
+    try:
+        patch = patch_provider(app_config, pr_number)
+    except Exception:  # noqa: BLE001 - fail-safe: cannot read diff → do not merge
+        patch = None
+
+    if not patch or not patch.strip():
+        reason = (
+            f"factory self-edit PR #{pr_number}: could not obtain the diff to "
+            f"validate; refusing to merge an unvalidated factory change."
+        )
+        _escalate_self_edit(
+            escalate,
+            story=story,
+            app_config=app_config,
+            root=root,
+            pr_number=pr_number,
+            classification="escalate_to_human",
+            detail=reason,
+        )
+        return _SelfEditDecision(allow=False, status="diff_unavailable", logs_tail=reason)
+
+    paths = _diff_target_paths(patch)
+
+    # Fail-safe: a NON-empty diff that parses to NO target paths is
+    # unparseable. For a factory-repo story we cannot determine what it
+    # touches, so we cannot rule out a self-edit or a forbidden path — refuse
+    # rather than fall through to the "not a self-edit → merge" branch below
+    # (which would be a fail-OPEN on an unreadable factory diff).
+    if not paths:
+        reason = (
+            f"factory self-edit PR #{pr_number}: diff is non-empty but no target "
+            f"paths could be parsed; refusing to merge a factory change whose "
+            f"scope cannot be determined."
+        )
+        _escalate_self_edit(
+            escalate,
+            story=story,
+            app_config=app_config,
+            root=root,
+            pr_number=pr_number,
+            classification="escalate_to_human",
+            detail=reason,
+            patch=patch,
+        )
+        return _SelfEditDecision(allow=False, status="unparseable_diff", logs_tail=reason)
+
+    # Forbidden-path guard FIRST — the chain must never edit the safety
+    # mechanism (factory/manager/**) or the grader (bench/**), regardless of
+    # whether staging would pass. Reuses the exact classifier the manager
+    # apply path uses so the two paths can never diverge.
+    if _any_path_is_forbidden_in_patch(paths, patch):
+        reason = (
+            f"factory self-edit PR #{pr_number} touches a forbidden path "
+            f"(factory/manager/** or bench/**); the chain may not edit the "
+            f"safety mechanism or the grader. Refusing to merge."
+        )
+        _escalate_self_edit(
+            escalate,
+            story=story,
+            app_config=app_config,
+            root=root,
+            pr_number=pr_number,
+            classification="forbidden",
+            detail=reason,
+            patch=patch,
+        )
+        return _SelfEditDecision(
+            allow=False, status="forbidden", forbidden=True, logs_tail=reason
+        )
+
+    # Not a runtime self-edit (touches no factory/ code) → nothing for staging
+    # to validate; safe to merge like any other content/docs change.
+    if not staging.is_self_edit(paths):
+        return _SelfEditDecision(allow=True, status="not_self_edit")
+
+    # Runtime self-edit → validate by actually running the cloned factory.
+    proposal = {
+        "proposal_id": f"chain-selfedit-story-{getattr(story, 'id', None)}-pr-{pr_number}",
+        "concern_title": (
+            getattr(story, "title", None) or f"chain factory self-edit PR #{pr_number}"
+        ),
+        "proposal": {"suggested_patch": patch},
+    }
+    proposal_path = f"chain:{app_config.repo}:pr-{pr_number}"
+    try:
+        decision = self_edit_gate(proposal, proposal_path, root=root)
+    except Exception as exc:  # noqa: BLE001 - fail-safe: harness error → do not merge
+        reason = f"factory self-edit staging harness errored: {exc!r}"
+        _escalate_self_edit(
+            escalate,
+            story=story,
+            app_config=app_config,
+            root=root,
+            pr_number=pr_number,
+            classification="escalate_to_human",
+            detail=reason,
+            patch=patch,
+        )
+        return _SelfEditDecision(
+            allow=False, status="staging_infra_failed", logs_tail=reason
+        )
+
+    if getattr(decision, "promote", False):
+        return _SelfEditDecision(allow=True, status="staging_validated")
+
+    # Not promoted (unhealthy validation or infra failure). gate_self_edit
+    # already emitted its own alert/event; add the chain escalation so the
+    # blocked story is visible on the same channel as manager escalations.
+    status = getattr(decision, "status", "staging_rejected") or "staging_rejected"
+    logs_tail = getattr(decision, "logs_tail", "") or ""
+    _escalate_self_edit(
+        escalate,
+        story=story,
+        app_config=app_config,
+        root=root,
+        pr_number=pr_number,
+        classification="escalate_to_human",
+        detail=f"factory self-edit failed staging ({status}): {logs_tail[:500]}",
+        patch=patch,
+    )
+    return _SelfEditDecision(allow=False, status=status, logs_tail=logs_tail)
+
+
 def _evaluate_one_pr(
     *,
     app: str,
@@ -168,6 +449,9 @@ def _evaluate_one_pr(
     wait_for_ci: bool = True,
     delete_branch_after_merge: bool = True,
     software_factory_root: Path | None = None,
+    self_edit_gate: Any = None,
+    patch_provider: Any = None,
+    escalate: Any = None,
 ) -> MergeAction:
     """Decide if a PR should be merged; merge it in real-run.
 
@@ -272,6 +556,38 @@ def _evaluate_one_pr(
             gates_passed=gates_passed,
             blocking_labels=blocking_present,
         )
+
+    # Chain-side staging gate for factory self-edits. A story that modifies the
+    # factory's OWN code must be validated by running a cloned factory before it
+    # can land on the live factory — the same protection the manager proposal
+    # path has (WS3.5). App-repo stories (sacrifice, ...) short-circuit to
+    # allow=True inside the helper, so this is a no-op for them. Skipped in
+    # dry-run UNLESS a gate is injected (tests): a dry-run merges nothing, so
+    # there is nothing to protect, and we avoid the network/clone cost.
+    if (not dry_run) or (self_edit_gate is not None):
+        se_decision = _evaluate_self_edit_gate(
+            app_config=app_config,
+            story=story,
+            pr_number=fixture.pr_number,
+            root=software_factory_root,
+            patch_provider=patch_provider,
+            self_edit_gate=self_edit_gate,
+            escalate=escalate,
+        )
+        if not se_decision.allow:
+            return MergeAction(
+                app=app,
+                pr_number=fixture.pr_number,
+                merged=False,
+                reason=(
+                    f"factory self-edit refused by chain-side staging gate "
+                    f"({se_decision.status}); live factory not touched"
+                ),
+                gates_passed=gates_passed,
+                blocking_labels=blocking_present,
+                staging_blocked=True,
+                staging_status=se_decision.status,
+            )
 
     # Gates passed + no blockers. Merge.
     if not dry_run:
@@ -769,8 +1085,18 @@ def auto_merge_tick(
     merge_method: str = "squash",
     wait_for_ci: bool = True,
     delete_branch_after_merge: bool = True,
+    self_edit_gate: Any = None,
+    patch_provider: Any = None,
+    escalate: Any = None,
 ) -> list[MergeAction]:
     """Single pass of the auto-merge worker against ``app``.
+
+    ``self_edit_gate`` / ``patch_provider`` / ``escalate`` are injection seams
+    for the chain-side factory self-edit staging gate (``_evaluate_self_edit_gate``);
+    they default to the real ``staging.gate_self_edit`` / ``gh pr diff`` /
+    ``escalation.notify_escalation`` implementations. Tests pass fakes to drive
+    the healthy / unhealthy / infra-failure / forbidden branches without cloning
+    the factory or touching GitHub.
 
     Returns a ``MergeAction`` per PR evaluated. Tests pass
     ``fixture_prs`` to drive the decision logic without GitHub.
@@ -973,8 +1299,36 @@ def auto_merge_tick(
             wait_for_ci=wait_for_ci,
             delete_branch_after_merge=delete_branch_after_merge,
             software_factory_root=root,
+            self_edit_gate=self_edit_gate,
+            patch_provider=patch_provider,
+            escalate=escalate,
         )
         _record_merge_action(action, f.head_sha, db)
+        # A factory self-edit refused by the chain-side staging gate: the live
+        # factory was never touched. Sink the story to a blocked/attention state
+        # so the worker stops retrying it and an operator (or the FMS) picks it
+        # up. The escalation was already emitted inside the gate.
+        if action.staging_blocked and f.story is not None and f.story.state in _MERGEABLE_STATES:
+            from factory.chain.state_machine import EVENT_PR_UNMERGEABLE, advance
+
+            try:
+                f.story.state = advance(f.story, EVENT_PR_UNMERGEABLE).value
+                f.story.error = (
+                    f"auto-merge refused a factory self-edit: PR #{action.pr_number} "
+                    f"did not pass the chain-side staging gate "
+                    f"({action.staging_status}). The live factory was NOT touched; "
+                    f"escalated for human review."
+                )
+                eng = _engine(db)
+                with Session(eng) as session:
+                    session.add(f.story)
+                    session.commit()
+                    # Refresh while the session is open so the caller can still
+                    # read ``f.story``'s attributes afterwards (commit() expires
+                    # them → DetachedInstanceError once the session closes).
+                    session.refresh(f.story)
+            except Exception:  # noqa: BLE001 - state sink is best-effort
+                pass
         # On a successful merge, enqueue a deploy candidate for the
         # post-merge deploy worker. The deploy itself runs in a separate
         # tick so the merge step stays focused.

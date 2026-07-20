@@ -13,6 +13,21 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
+#: The factory's OWN GitHub repo. An app whose ``config.yaml::repo`` matches
+#: this is building the factory itself (``apps/factory``); its merges are
+#: self-edits gated by the chain-side staging gate, and its pm-sync is gated by
+#: the ``self_tick_enabled`` flag. Every other app targets a different repo.
+FACTORY_REPO = "xvanov/software-factory"
+
+
+def targets_factory_repo(repo: str | None) -> bool:
+    """True when ``repo`` (an app's ``config.yaml::repo``) is the factory itself.
+
+    Case-insensitive so a casing typo in the owner/name can't silently disable
+    the self-edit safety gate or the self-tick guard.
+    """
+    return (repo or "").strip().lower() == FACTORY_REPO.lower()
+
 
 class DeployConfig(BaseModel):
     """Per-app deploy block consumed by ``factory/deploy/orchestrator.py``.
@@ -135,6 +150,18 @@ class AppConfig(BaseModel):
     deploy: DeployConfig = Field(default_factory=DeployConfig)
     gates: AppGatesConfig = Field(default_factory=AppGatesConfig)
     models: dict[str, str] = Field(default_factory=dict)  # persona overrides
+
+    # Self-tick guard (Tier 3 — FACTORY-SELF-TICK). When this app builds the
+    # factory's OWN repo (``apps/factory``), pm-sync will NOT turn its pending
+    # directions into chain stories unless this flag is True. OFF by default so
+    # merely bootstrapping ``apps/factory`` (config + directions on disk) never
+    # silently starts the factory ticking on itself — the orchestrator enables
+    # self-tick deliberately by flipping this to True. It is inert for every
+    # non-factory app (their merges are not self-edits; see
+    # ``auto_merge._story_targets_factory_repo``). The chain-side staging gate
+    # is independent of this flag: even when self-tick is enabled, a self-edit
+    # still must pass staging before it can touch the live factory.
+    self_tick_enabled: bool = False
 
     @property
     def repo_owner(self) -> str:

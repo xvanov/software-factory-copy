@@ -53,6 +53,25 @@ class _Completed:
     stderr: str = ""
 
 
+@dataclass
+class _StagingStub:
+    """Stand-in for ``staging.StagingDecision`` in staging-gate tests."""
+
+    promote: bool
+    status: str = "staging_validated"
+    logs_tail: str = ""
+
+
+def _promote_gate(proposal: Any, proposal_path: str, *, root: Any) -> _StagingStub:
+    """Fake self-edit staging gate that always PROMOTES (clone ran healthy)."""
+    return _StagingStub(promote=True)
+
+
+def _reject_gate(proposal: Any, proposal_path: str, *, root: Any) -> _StagingStub:
+    """Fake self-edit staging gate that REJECTS (a stage failed on the clone)."""
+    return _StagingStub(promote=False, status="staging_rejected")
+
+
 def _persona_diff_safe(rel_path: str = "factory/personas/dev.md") -> str:
     """Smallest realistic safe unified diff — adds one bullet line
     under an existing persona file."""
@@ -722,6 +741,10 @@ def test_run_apply_pass_counts_match(tmp_path: Path) -> None:
         repo,
         repo="owner/repo",
         runner=_runner,
+        # The safe proposal edits factory/personas/dev.md (a self-edit); inject
+        # a promoting staging gate so it still auto-merges (applied) without
+        # cloning a real factory.
+        staging_gate=_promote_gate,
     )
     assert isinstance(summary, ApplyPassSummary)
     assert summary.applied == 1
@@ -736,6 +759,151 @@ def test_run_apply_pass_counts_match(tmp_path: Path) -> None:
     assert summary.per_proposal[0].pr_number == 101
     assert summary.per_proposal[1].pr_number == 102
     assert summary.per_proposal[2].pr_number is None
+
+
+def _readme_diff_safe(rel_path: str = "README.md") -> str:
+    return (
+        f"diff --git a/{rel_path} b/{rel_path}\n"
+        f"--- a/{rel_path}\n"
+        f"+++ b/{rel_path}\n"
+        "@@ -1,2 +1,3 @@\n"
+        " # Readme\n"
+        " body\n"
+        "+new line\n"
+    )
+
+
+def _init_repo(tmp_path: Path, files: dict[str, str]) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for rel, content in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(content, encoding="utf-8")
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@e.com"],
+        ["git", "config", "user.name", "T"],
+        ["git", "config", "commit.gpgsign", "false"],
+        ["git", "add", "."],
+        ["git", "commit", "-q", "-m", "init"],
+    ):
+        subprocess.run(args, cwd=str(repo), check=True, capture_output=True)
+    return repo
+
+
+def _recording_runner(merge_calls: list[list[str]]) -> Callable[..., Any]:
+    """A runner that succeeds for the improver's shell-outs and records every
+    ``gh pr merge`` invocation so tests can assert whether auto-merge fired."""
+
+    def _runner(args: list[str], **kwargs: Any) -> Any:
+        if args[:1] == ["uv"] and "pytest" in args:
+            return _Completed(returncode=0)
+        if args[:2] == ["git", "push"] or args[:3] == ["git", "push", "-u"]:
+            return _Completed(returncode=0)
+        if args[:3] == ["gh", "pr", "create"]:
+            return _Completed(returncode=0, stdout="https://github.com/o/r/pull/7\n")
+        if args[:3] == ["gh", "pr", "merge"]:
+            merge_calls.append(args)
+            return _Completed(returncode=0)
+        if args[:3] == ["gh", "label", "create"]:
+            return _Completed(returncode=0)
+        kwargs.pop("check", None)
+        return subprocess.run(args, **kwargs)
+
+    return _runner
+
+
+def _one_proposal(repo: Path, kind: str, target: str, patch: str) -> Path:
+    proposals = repo / "state" / "improvements" / "9.json"
+    proposals.parent.mkdir(parents=True, exist_ok=True)
+    proposals.write_text(
+        json.dumps(
+            {"improvements": [{"kind": kind, "target": target, "rationale": "r", "suggested_patch": patch}]}
+        ),
+        encoding="utf-8",
+    )
+    return proposals
+
+
+def test_run_apply_pass_self_edit_staging_promote_auto_merges(tmp_path: Path) -> None:
+    """A safe self-edit (persona) whose staging clone runs healthy auto-merges."""
+    rel = "factory/personas/dev.md"
+    repo = _init_repo(tmp_path, {rel: "# Persona\nbody line\n"})
+    proposals = _one_proposal(repo, "prompt_edit", rel, _persona_diff_safe(rel))
+    merge_calls: list[list[str]] = []
+    summary = run_apply_pass(
+        proposals, repo, repo="o/r", runner=_recording_runner(merge_calls),
+        staging_gate=_promote_gate,
+    )
+    assert summary.applied == 1
+    assert summary.queued_for_review == 0
+    # gh pr merge --auto DID fire (staging promoted the self-edit).
+    assert any("--auto" in c for c in merge_calls)
+
+
+def test_run_apply_pass_self_edit_staging_reject_blocks_auto_merge(tmp_path: Path) -> None:
+    """A safe self-edit whose staging clone is unhealthy is DOWNGRADED to a
+    review-only PR — never auto-merged to the live factory."""
+    rel = "factory/personas/dev.md"
+    repo = _init_repo(tmp_path, {rel: "# Persona\nbody line\n"})
+    proposals = _one_proposal(repo, "prompt_edit", rel, _persona_diff_safe(rel))
+    merge_calls: list[list[str]] = []
+    events: list[tuple[str, dict[str, Any]]] = []
+    summary = run_apply_pass(
+        proposals, repo, repo="o/r", runner=_recording_runner(merge_calls),
+        staging_gate=_reject_gate,
+        log_event=lambda k, p: events.append((k, p)),
+    )
+    # Not applied — queued for human review instead.
+    assert summary.applied == 0
+    assert summary.queued_for_review == 1
+    # No auto-merge fired.
+    assert not any("--auto" in c for c in merge_calls)
+    # Staging block was surfaced as an event.
+    assert any(k == "factory_improver_staging_blocked" for k, _ in events)
+
+
+def test_run_apply_pass_self_edit_staging_infra_failure_blocks_auto_merge(tmp_path: Path) -> None:
+    """A staging harness error is fail-safe: the self-edit is NOT auto-merged."""
+    rel = "factory/personas/dev.md"
+    repo = _init_repo(tmp_path, {rel: "# Persona\nbody line\n"})
+    proposals = _one_proposal(repo, "prompt_edit", rel, _persona_diff_safe(rel))
+    merge_calls: list[list[str]] = []
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    def _boom_gate(proposal: Any, proposal_path: str, *, root: Any) -> Any:
+        raise RuntimeError("copy repo unreachable")
+
+    summary = run_apply_pass(
+        proposals, repo, repo="o/r", runner=_recording_runner(merge_calls),
+        staging_gate=_boom_gate,
+        log_event=lambda k, p: events.append((k, p)),
+    )
+    assert summary.applied == 0
+    assert summary.queued_for_review == 1
+    assert not any("--auto" in c for c in merge_calls)
+    assert any(k == "factory_improver_staging_infra_failed" for k, _ in events)
+
+
+def test_run_apply_pass_non_self_edit_skips_staging(tmp_path: Path) -> None:
+    """A safe NON-self-edit (README.md) auto-merges without consulting staging."""
+    repo = _init_repo(tmp_path, {"README.md": "# Readme\nbody\n"})
+    proposals = _one_proposal(repo, "doc_update", "README.md", _readme_diff_safe())
+    merge_calls: list[list[str]] = []
+    gate_calls = {"n": 0}
+
+    def _counting_gate(proposal: Any, proposal_path: str, *, root: Any) -> _StagingStub:
+        gate_calls["n"] += 1
+        return _StagingStub(promote=True)
+
+    summary = run_apply_pass(
+        proposals, repo, repo="o/r", runner=_recording_runner(merge_calls),
+        staging_gate=_counting_gate,
+    )
+    assert summary.applied == 1
+    # README is not under factory/ → not a self-edit → staging never consulted.
+    assert gate_calls["n"] == 0
+    assert any("--auto" in c for c in merge_calls)
 
 
 def test_run_apply_pass_missing_file_returns_empty(tmp_path: Path) -> None:
