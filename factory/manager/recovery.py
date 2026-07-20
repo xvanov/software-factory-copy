@@ -1013,6 +1013,162 @@ def _apply_playbook(
 
 
 # --------------------------------------------------------------------------- #
+# Escalate-only playbook seam (no mutation, never counts against the cap)
+# --------------------------------------------------------------------------- #
+
+
+def _apply_escalate_only_playbook(
+    root: Path,
+    targets: list[RecoveryTarget],
+    *,
+    now: datetime,
+    cooldown: timedelta,
+    summary: dict[str, Any],
+) -> None:
+    """Escalate each target once per cooldown window (never mutates, never
+    counts against the per-cycle action cap). Deduped via the SAME cooldown
+    mechanism the mutating playbooks use, so an unresolved condition is
+    escalated once per window rather than every cycle. Extracted verbatim from
+    the former inline Playbook-4 block so behavior is identical."""
+    for target in targets:
+        if _recently_escalated(root, target.playbook, target.key, now=now, cooldown=cooldown):
+            outcome = RecoveryOutcome(
+                target.playbook,
+                target,
+                "skipped_cooldown",
+                "cooldown active — this conflict was already escalated recently; "
+                "suppressing the duplicate escalation",
+            )
+            _log_recovery(root, outcome, precondition_snapshot=target.extra)
+            summary["skipped_cooldown"].append({"playbook": target.playbook, "key": target.key})
+            continue
+
+        recommendation = target.extra.get("recommendation", "manual rebase required")
+        outcome = RecoveryOutcome(target.playbook, target, "escalated", recommendation)
+        _log_recovery(root, outcome, precondition_snapshot=target.extra)
+        summary["escalated"].append(
+            {
+                "playbook": target.playbook,
+                "key": target.key,
+                "reason": "conflict_needs_human_judgment",
+                "recommendation": recommendation,
+            }
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Playbook registry — declarative descriptors so adding a playbook is additive
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class _RecoveryContext:
+    """Everything the detectors/executors need for one recovery cycle. Bundled
+    so a playbook descriptor's ``detect`` closure can be a zero-arg call."""
+
+    root: Path
+    now: datetime
+    cooldown: timedelta
+    max_actions: int
+    phantom_pr_age_threshold: timedelta
+    db_path: Path | None
+    apps: list[str] | None
+    gh_pr_view: Callable[..., dict[str, Any] | None] | None
+    gh_branch_exists: Callable[..., bool | None] | None
+    runner: CommandRunner | None
+
+
+@dataclass
+class PlaybookSpec:
+    """One recovery playbook, declared once.
+
+    ``kind`` is ``"mutating"`` (runs through ``_apply_playbook`` with the
+    cooldown + per-cycle-cap guards) or ``"escalate_only"`` (runs through
+    ``_apply_escalate_only_playbook`` — never mutates, never counts against the
+    cap). ``detect`` is a zero-arg closure bound to the cycle context;
+    ``execute`` + ``execute_kwargs`` are only used by mutating playbooks.
+    """
+
+    name: str
+    kind: str
+    detect: Callable[[], list[RecoveryTarget]]
+    execute: Callable[..., RecoveryOutcome] | None = None
+    execute_kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+def build_recovery_registry(ctx: _RecoveryContext) -> list[PlaybookSpec]:
+    """Return the ordered list of recovery playbooks for this cycle.
+
+    This is the single place a playbook is registered: adding one is a new
+    ``PlaybookSpec`` entry, not a copy-paste of an inline detect+guard+execute
+    block. Order is preserved (1→5) so behavior is identical to the former
+    hand-wired sequence.
+    """
+    return [
+        # Playbook 1: retry-mergeable-blocked-story
+        PlaybookSpec(
+            name=PLAYBOOK_RETRY_MERGEABLE_BLOCKED,
+            kind="mutating",
+            detect=lambda: detect_retry_mergeable_blocked_stories(
+                ctx.root,
+                db_path=ctx.db_path,
+                apps=ctx.apps,
+                gh_pr_view=ctx.gh_pr_view,
+                runner=ctx.runner,
+            ),
+            execute=execute_retry_mergeable_blocked_story,
+            execute_kwargs={"db_path": ctx.db_path},
+        ),
+        # Playbook 2: redispatch-phantom-pr-open
+        PlaybookSpec(
+            name=PLAYBOOK_REDISPATCH_PHANTOM_PR,
+            kind="mutating",
+            detect=lambda: detect_phantom_pr_open_stories(
+                ctx.root,
+                now=ctx.now,
+                age_threshold=ctx.phantom_pr_age_threshold,
+                db_path=ctx.db_path,
+                apps=ctx.apps,
+                gh_branch_exists=ctx.gh_branch_exists,
+                runner=ctx.runner,
+            ),
+            execute=execute_redispatch_phantom_pr,
+            execute_kwargs={"db_path": ctx.db_path},
+        ),
+        # Playbook 3: revert-premature-deploy-enable
+        PlaybookSpec(
+            name=PLAYBOOK_REVERT_PREMATURE_DEPLOY,
+            kind="mutating",
+            detect=lambda: detect_premature_deploy_enabled(ctx.root, apps=ctx.apps),
+            execute=execute_revert_premature_deploy_enable,
+            execute_kwargs={},
+        ),
+        # Playbook 4: conflicting-gated-pr — escalate-only, never mutates.
+        PlaybookSpec(
+            name=PLAYBOOK_CONFLICTING_GATED_PR,
+            kind="escalate_only",
+            detect=lambda: detect_conflicting_gated_prs(
+                ctx.root,
+                db_path=ctx.db_path,
+                apps=ctx.apps,
+                gh_pr_view=ctx.gh_pr_view,
+                runner=ctx.runner,
+            ),
+        ),
+        # Playbook 5: recover-stuck-fixonly-mode
+        PlaybookSpec(
+            name=PLAYBOOK_RECOVER_STUCK_FIXONLY,
+            kind="mutating",
+            detect=lambda: detect_stuck_fixonly_mode(
+                ctx.root, db_path=ctx.db_path, apps=ctx.apps
+            ),
+            execute=execute_recover_stuck_fixonly_mode,
+            execute_kwargs={"db_path": ctx.db_path},
+        ),
+    ]
+
+
+# --------------------------------------------------------------------------- #
 # Main entry point
 # --------------------------------------------------------------------------- #
 
@@ -1092,107 +1248,43 @@ def run_recovery_cycle(
 
     actions_taken = 0
 
-    # Playbook 1: retry-mergeable-blocked-story
-    targets_1 = detect_retry_mergeable_blocked_stories(
-        root, db_path=db_path, apps=apps, gh_pr_view=gh_pr_view, runner=runner
-    )
-    actions_taken = _apply_playbook(
-        root,
-        targets_1,
-        execute_retry_mergeable_blocked_story,
-        dry_run=effective_dry_run,
+    # Drive every playbook from the registry (see build_recovery_registry).
+    # Registry order == the former hand-wired order (1→5); mutating playbooks go
+    # through the shared cooldown+cap guard, escalate-only ones through their own
+    # never-mutates seam. Adding a playbook is a new registry entry, not another
+    # inline detect+guard+execute block here.
+    ctx = _RecoveryContext(
+        root=root,
         now=now,
         cooldown=cooldown,
         max_actions=max_actions,
-        actions_taken=actions_taken,
-        summary=summary,
-        execute_kwargs={"db_path": db_path},
-    )
-
-    # Playbook 2: redispatch-phantom-pr-open
-    targets_2 = detect_phantom_pr_open_stories(
-        root,
-        now=now,
-        age_threshold=phantom_pr_age_threshold,
+        phantom_pr_age_threshold=phantom_pr_age_threshold,
         db_path=db_path,
         apps=apps,
+        gh_pr_view=gh_pr_view,
         gh_branch_exists=gh_branch_exists,
         runner=runner,
     )
-    actions_taken = _apply_playbook(
-        root,
-        targets_2,
-        execute_redispatch_phantom_pr,
-        dry_run=effective_dry_run,
-        now=now,
-        cooldown=cooldown,
-        max_actions=max_actions,
-        actions_taken=actions_taken,
-        summary=summary,
-        execute_kwargs={"db_path": db_path},
-    )
-
-    # Playbook 3: revert-premature-deploy-enable
-    targets_3 = detect_premature_deploy_enabled(root, apps=apps)
-    actions_taken = _apply_playbook(
-        root,
-        targets_3,
-        execute_revert_premature_deploy_enable,
-        dry_run=effective_dry_run,
-        now=now,
-        cooldown=cooldown,
-        max_actions=max_actions,
-        actions_taken=actions_taken,
-        summary=summary,
-        execute_kwargs={},
-    )
-
-    # Playbook 4: conflicting-gated-pr — escalate-only, never mutates and
-    # never counts against the action cap (it never acts). Still deduped via
-    # the same cooldown mechanism the mutating playbooks use above: an
-    # unresolved conflict is escalated once per cooldown window, not every
-    # cycle, so it doesn't drown real signal with duplicate escalations.
-    for target in detect_conflicting_gated_prs(
-        root, db_path=db_path, apps=apps, gh_pr_view=gh_pr_view, runner=runner
-    ):
-        if _recently_escalated(root, target.playbook, target.key, now=now, cooldown=cooldown):
-            outcome = RecoveryOutcome(
-                target.playbook,
-                target,
-                "skipped_cooldown",
-                "cooldown active — this conflict was already escalated recently; "
-                "suppressing the duplicate escalation",
+    for spec in build_recovery_registry(ctx):
+        targets = spec.detect()
+        if spec.kind == "escalate_only":
+            _apply_escalate_only_playbook(
+                root, targets, now=now, cooldown=cooldown, summary=summary
             )
-            _log_recovery(root, outcome, precondition_snapshot=target.extra)
-            summary["skipped_cooldown"].append({"playbook": target.playbook, "key": target.key})
-            continue
-
-        recommendation = target.extra.get("recommendation", "manual rebase required")
-        outcome = RecoveryOutcome(target.playbook, target, "escalated", recommendation)
-        _log_recovery(root, outcome, precondition_snapshot=target.extra)
-        summary["escalated"].append(
-            {
-                "playbook": target.playbook,
-                "key": target.key,
-                "reason": "conflict_needs_human_judgment",
-                "recommendation": recommendation,
-            }
-        )
-
-    # Playbook 5: recover-stuck-fixonly-mode
-    targets_5 = detect_stuck_fixonly_mode(root, db_path=db_path, apps=apps)
-    actions_taken = _apply_playbook(
-        root,
-        targets_5,
-        execute_recover_stuck_fixonly_mode,
-        dry_run=effective_dry_run,
-        now=now,
-        cooldown=cooldown,
-        max_actions=max_actions,
-        actions_taken=actions_taken,
-        summary=summary,
-        execute_kwargs={"db_path": db_path},
-    )
+        else:
+            assert spec.execute is not None  # mutating playbooks always have one
+            actions_taken = _apply_playbook(
+                root,
+                targets,
+                spec.execute,
+                dry_run=effective_dry_run,
+                now=now,
+                cooldown=cooldown,
+                max_actions=max_actions,
+                actions_taken=actions_taken,
+                summary=summary,
+                execute_kwargs=spec.execute_kwargs,
+            )
 
     return summary
 
@@ -1200,6 +1292,8 @@ def run_recovery_cycle(
 __all__ = [
     "RecoveryTarget",
     "RecoveryOutcome",
+    "PlaybookSpec",
+    "build_recovery_registry",
     "PLAYBOOK_RETRY_MERGEABLE_BLOCKED",
     "PLAYBOOK_REDISPATCH_PHANTOM_PR",
     "PLAYBOOK_REVERT_PREMATURE_DEPLOY",

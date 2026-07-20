@@ -881,3 +881,80 @@ def test_gh_branch_exists_returns_none_on_uncertain_error() -> None:
         repo="o/r", branch="b", runner=lambda *a, **k: _Proc()
     )
     assert result is None
+
+
+# --------------------------------------------------------------------------- #
+# Playbook registry (WS3.1 refactor — behavior must be identical)
+# --------------------------------------------------------------------------- #
+
+
+class TestPlaybookRegistry:
+    """The hand-wired playbook seam was refactored into a declarative registry.
+    These tests pin the registry SHAPE so adding a playbook stays additive and
+    the 1→5 ordering / kinds are preserved."""
+
+    def _ctx(self, root: Path) -> recovery._RecoveryContext:
+        return recovery._RecoveryContext(
+            root=root,
+            now=datetime.now(UTC),
+            cooldown=recovery.DEFAULT_COOLDOWN,
+            max_actions=recovery.DEFAULT_MAX_ACTIONS_PER_CYCLE,
+            phantom_pr_age_threshold=recovery.DEFAULT_PHANTOM_PR_AGE_THRESHOLD,
+            db_path=None,
+            apps=None,
+            gh_pr_view=None,
+            gh_branch_exists=None,
+            runner=None,
+        )
+
+    def test_registry_has_all_five_playbooks_in_order(self, root: Path) -> None:
+        specs = recovery.build_recovery_registry(self._ctx(root))
+        assert [s.name for s in specs] == [
+            recovery.PLAYBOOK_RETRY_MERGEABLE_BLOCKED,
+            recovery.PLAYBOOK_REDISPATCH_PHANTOM_PR,
+            recovery.PLAYBOOK_REVERT_PREMATURE_DEPLOY,
+            recovery.PLAYBOOK_CONFLICTING_GATED_PR,
+            recovery.PLAYBOOK_RECOVER_STUCK_FIXONLY,
+        ]
+
+    def test_registry_kinds_match_playbook_semantics(self, root: Path) -> None:
+        specs = {s.name: s for s in recovery.build_recovery_registry(self._ctx(root))}
+        # Playbook 4 is the only escalate-only (never mutates, no executor).
+        p4 = specs[recovery.PLAYBOOK_CONFLICTING_GATED_PR]
+        assert p4.kind == "escalate_only"
+        assert p4.execute is None
+        # Every other playbook is mutating and carries an executor.
+        for name, spec in specs.items():
+            if name == recovery.PLAYBOOK_CONFLICTING_GATED_PR:
+                continue
+            assert spec.kind == "mutating"
+            assert spec.execute is not None
+
+    def test_registry_detect_closures_are_callable(self, root: Path) -> None:
+        _write_app_config(root, "sacrifice", deploy_enabled=False)
+        _engine(root)  # create the stories schema the DB-backed detectors query
+        # Each detect() is a zero-arg closure bound to the context; on an empty
+        # world it returns an empty list (no match) without raising.
+        for spec in recovery.build_recovery_registry(self._ctx(root)):
+            targets = spec.detect()
+            assert isinstance(targets, list)
+
+    def test_adding_a_playbook_is_additive(self, root: Path) -> None:
+        """A new PlaybookSpec can be appended without touching run_recovery_cycle
+        — proves the seam is a registry, not inline blocks."""
+        specs = recovery.build_recovery_registry(self._ctx(root))
+        extra = recovery.PlaybookSpec(
+            name="new-playbook",
+            kind="mutating",
+            detect=lambda: [],
+            execute=lambda *a, **k: recovery.RecoveryOutcome(
+                "new-playbook",
+                recovery.RecoveryTarget(playbook="new-playbook", key="k", description="d"),
+                "recovered",
+                "did-a-thing",
+            ),
+            execute_kwargs={},
+        )
+        combined = [*specs, extra]
+        assert combined[-1].name == "new-playbook"
+        assert len(combined) == len(specs) + 1

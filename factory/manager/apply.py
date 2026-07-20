@@ -37,24 +37,47 @@ Classification rules (deterministic, no LLM)
 ---------------------------------------------
 
 ``"safe"``
-  ``target_class ∈ {prompt_edit, persona_settings, detector_tool}``
-  AND the patch passes class-specific validation:
+  A well-scoped self-edit whose patch touches ONLY factory-owned Python source
+  (``factory/**/*.py``, none forbidden) — WS3.1 broadened class. This now covers
+  ``dispatch_code`` and broader factory/ code edits that were previously forced
+  to "risky".
+  OR ``target_class ∈ {prompt_edit, persona_settings, detector_tool}`` AND the
+  patch passes class-specific validation:
   - prompt_edit: only factory/personas/*.md; no heading removal; ≤50+/≤30- lines
   - persona_settings: only routes.yaml or factory/personas/*.md; numeric clamp checks
   - detector_tool: only adds new factory/manager/detectors/*.py files or touches
     factory/manager/detectors/__init__.py; new files are valid Python
 
+  Why this is safe to broaden (WS3.1): the safety net is now RUNTIME, not this
+  static classifier. Every "safe" self-edit is routed through
+  ``factory.manager.staging.gate_self_edit`` in ``apply``, which clones the
+  factory, applies the patch, and ACTUALLY RUNS the changed code (deps + full
+  suite + import/CLI smoke + dry-run tick) before promoting it to the live
+  factory. A fatal self-edit fails on the clone and is never promoted. Static
+  classification no longer has to be narrow because a bad edit cannot reach the
+  running factory.
+
 ``"risky"``
-  ``target_class == "dispatch_code"``  (always risky)
+  ``target_class == "dispatch_code"`` whose patch is NOT a pure factory/*.py
+  self-edit (e.g. touches app code or non-Python files — no staging net applies)
   OR any safe class whose patch fails class-specific validation
+  OR an unknown target_class that isn't a pure factory/*.py self-edit
 
 ``"forbidden"``
-  patch touches factory/manager/*.py (the manager editing itself)
+  patch touches factory/manager/**/*.py (the manager editing itself)
   OR patch touches factory/chain/factory_improver_apply.py or this module
+  OR patch touches bench/** (the held-out grader — the loop must never edit the
+     bench that judges it; forbidden regardless of the staging gate)
+  OR the patch is not a valid unified diff / has no target paths
   OR escalate_to_human=true in the proposal
 
 ``"escalate_to_human"``
   proposal target_class == "escalate_to_human"
+
+Escalation is not a dead end (WS3.1): a ``forbidden`` or ``escalate_to_human``
+proposal is surfaced to a human via ``factory.manager.escalation`` — an
+idempotent GitHub issue plus a loud alert event — instead of dying silently in
+the apply-history file.
 """
 
 from __future__ import annotations
@@ -112,6 +135,12 @@ _FORBIDDEN_PATH_PATTERNS = (
     re.compile(r"^factory/manager/.+\.py$"),           # manager/**/*.py (any depth)
     re.compile(r"^factory/chain/factory_improver_apply\.py$"),  # the old apply module
     re.compile(r"^factory/manager/apply\.py$"),        # this module itself (redundant with above, explicit)
+    # WS3.1: the held-out benchmark harness that JUDGES the factory must stay
+    # forbidden — the self-improvement loop must never edit the bench that
+    # scores it (a loop that can rewrite its own grader is unfalsifiable). This
+    # is forbidden regardless of the staging gate: staging validates "does the
+    # factory run", not "is the bench still honest".
+    re.compile(r"^bench/.+$"),                         # bench/** (the grader)
 )
 
 # Sub-pattern that matches *only* manager sub-directory .py files (not the
@@ -262,6 +291,33 @@ def _any_path_is_forbidden(paths: list[str]) -> bool:
 def _any_path_is_forbidden_in_patch(paths: list[str], patch: str) -> bool:
     """Check forbidden with patch context (supports new-detector carve-out)."""
     return any(_path_is_forbidden_in_patch(p, patch) for p in paths)
+
+
+# Matches a factory-owned Python source file (a self-edit that the staging gate
+# validates by ACTUALLY RUNNING the cloned factory before promotion).
+_FACTORY_PYTHON_PATH = re.compile(r"^factory/.+\.py$")
+
+
+def _all_paths_are_factory_python_self_edit(paths: list[str]) -> bool:
+    """True when EVERY target path is a factory-owned Python source file.
+
+    This is the gate for the WS3.1 broadened "safe" class: a well-scoped
+    self-edit that touches only ``factory/**/*.py`` can auto-apply because the
+    staging clone (``factory.manager.staging``) will run the changed code —
+    deps + full suite + import/CLI smoke + a dry-run tick — before it is ever
+    promoted to the live factory. A fatal self-edit fails on the clone and is
+    never promoted, so the safety is RUNTIME (staging), not a narrow static
+    rule here.
+
+    Deliberately NOT covered:
+      * app-repo code (``apps/**``) — staging validates "does the factory run",
+        not an app's own suite, so those stay risky.
+      * non-Python factory files (``.md``/``.yaml``) — not meaningfully
+        exercised by "does it run"; they keep their existing specific
+        validators (prompt_edit / persona_settings) or fall through to risky.
+      * anything under a forbidden path — already rejected before this runs.
+    """
+    return bool(paths) and all(_FACTORY_PYTHON_PATH.match(p) for p in paths)
 
 
 # ---------------------------------------------------------------------------
@@ -558,15 +614,34 @@ def _classify_manager_proposal(proposal: dict[str, Any], repo_root: Path) -> str
     if _any_path_is_forbidden_in_patch(paths, patch):
         return "forbidden"
 
-    # dispatch_code is always risky — operator must review any chain changes.
-    if target_class == "dispatch_code":
-        return "risky"
-
     # Phase 8: Manager persona file edits are risky (not safe), even when the
     # proposal claims a safe target_class.  The manager modifying its own persona
     # prompts is recursion bait — an operator should review these changes.
     # Pattern: factory/personas/manager_*.md
+    # Checked BEFORE the broadened self-edit rule so a manager-persona edit can
+    # never be captured as "safe" (it is a .md, so the .py rule below would miss
+    # it anyway — this is belt-and-suspenders).
     if any(re.match(r"^factory/personas/manager_[^/]+\.md$", p) for p in paths):
+        return "risky"
+
+    # WS3.1 — broadened safe class, gated by the staging validator.
+    # A well-scoped self-edit whose patch touches ONLY factory-owned Python
+    # source (``factory/**/*.py``, none forbidden — already guaranteed above) is
+    # now SAFE. This covers dispatch_code and broader factory/ code edits that
+    # were previously forced to "risky". The safety net is RUNTIME, not this
+    # static rule: every such proposal is a self-edit, so ``apply`` routes it
+    # through ``factory.manager.staging.gate_self_edit`` which clones the
+    # factory, applies the patch, and ACTUALLY RUNS it (deps + full suite +
+    # import/CLI smoke + dry-run tick) before promotion. A fatal edit fails on
+    # the clone and never reaches the live factory. Forbidden paths
+    # (factory/manager/**, bench/**, the apply modules) are rejected above and
+    # stay forbidden; app code (apps/**) is intentionally NOT covered.
+    if _all_paths_are_factory_python_self_edit(paths):
+        return "safe"
+
+    # dispatch_code that is NOT a pure factory/*.py self-edit (e.g. touches
+    # app code or non-Python files) is still risky — no staging net applies.
+    if target_class == "dispatch_code":
         return "risky"
 
     # Safe-class validation.
@@ -662,6 +737,28 @@ def _apply_one_manager_proposal(
         # Record but do not apply.
         result["status"] = "forbidden" if classification == "forbidden" else "escalation_acknowledged"
         result["branch"] = None
+        # WS3.1: an escalation must never die silently in the history file. Open
+        # (idempotently) a GitHub issue + emit a loud alert so a human actually
+        # sees it. Best-effort: a gh failure must NOT crash L4 (the alert still
+        # makes it visible), so the whole call is wrapped.
+        try:
+            from factory.manager.escalation import notify_escalation
+
+            result["escalation"] = notify_escalation(
+                proposal,
+                root=root,
+                repo=repo,
+                classification=classification,
+                result=result,
+                runner=runner,
+            )
+        except Exception as _esc_exc:  # noqa: BLE001 - notification is best-effort
+            import sys
+            print(
+                f"[manager.apply] WARNING: escalation notification failed: {_esc_exc!r}",
+                file=sys.stderr,
+            )
+            result["escalation"] = {"notified": False, "error": repr(_esc_exc)}
         return result
 
     # Extract patch from inner proposal.

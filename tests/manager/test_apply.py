@@ -153,6 +153,15 @@ def _make_runner(
         # Mock gh label create.
         if args[:3] == ["gh", "label", "create"]:
             return _Completed(returncode=0)
+        # Mock gh issue list (escalation dedup search) — no existing issues.
+        if args[:3] == ["gh", "issue", "list"]:
+            return _Completed(returncode=0, stdout="[]")
+        # Mock gh issue create (escalation channel).
+        if args[:3] == ["gh", "issue", "create"]:
+            return _Completed(
+                returncode=0,
+                stdout="https://github.com/owner/repo/issues/501\n",
+            )
         # Real git for everything else.
         kwargs.pop("check", None)
         return subprocess.run(args, **kwargs)
@@ -176,21 +185,27 @@ def test_classify_prompt_edit_safe(tmp_path: Path) -> None:
 
 
 def test_classify_prompt_edit_risky_wrong_path(tmp_path: Path) -> None:
-    """prompt_edit touching a chain file → risky."""
+    """prompt_edit touching a non-persona factory doc → risky.
+
+    A mislabeled prompt_edit whose patch targets a factory file that is neither
+    a persona ``.md`` (its validator's allowed path) nor factory ``.py`` source
+    (the WS3.1 staging-gated safe class) fails the prompt_edit validator and is
+    NOT captured by the broadened self-edit rule → risky.
+    """
     repo = _make_repo(
         tmp_path,
         {
             "factory/personas/sm.md": "# SM Persona\nbody line\n",
-            "factory/chain/handlers.py": "x\n",
+            "factory/context/modules/orchestrator.md": "x\n",
         },
     )
     patch = (
-        "diff --git a/factory/chain/handlers.py b/factory/chain/handlers.py\n"
-        "--- a/factory/chain/handlers.py\n"
-        "+++ b/factory/chain/handlers.py\n"
+        "diff --git a/factory/context/modules/orchestrator.md b/factory/context/modules/orchestrator.md\n"
+        "--- a/factory/context/modules/orchestrator.md\n"
+        "+++ b/factory/context/modules/orchestrator.md\n"
         "@@ -1,1 +1,2 @@\n"
         " x\n"
-        "+# new comment\n"
+        "+more docs\n"
     )
     proposal = _minimal_proposal(target_class="prompt_edit", patch=patch)
     assert _classify_manager_proposal(proposal, repo) == "risky"
@@ -402,12 +417,18 @@ def test_classify_detector_tool_modifying_existing_forbidden(tmp_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
-# classify: dispatch_code (always risky)
+# classify: dispatch_code / broadened factory-python self-edit (WS3.1)
 # ---------------------------------------------------------------------------
 
 
-def test_classify_dispatch_code_risky(tmp_path: Path) -> None:
-    """dispatch_code target_class is always risky."""
+def test_classify_dispatch_code_factory_python_now_safe(tmp_path: Path) -> None:
+    """WS3.1: dispatch_code touching ONLY factory/*.py is now SAFE.
+
+    Previously "always risky"; broadened to safe because the apply pipeline
+    routes every factory/ self-edit through the staging gate, which runs the
+    cloned factory before promotion — a bad edit fails on the clone, never on
+    the live factory. The runtime net makes narrow static gating unnecessary.
+    """
     repo = _make_repo(
         tmp_path,
         {"factory/chain/orchestrator.py": "# orchestrator\n"},
@@ -423,7 +444,86 @@ def test_classify_dispatch_code_risky(tmp_path: Path) -> None:
     proposal = _minimal_proposal(
         target_class="dispatch_code", patch=patch, kind="dispatch_code"
     )
+    assert _classify_manager_proposal(proposal, repo) == "safe"
+
+
+def test_classify_dispatch_code_app_code_still_risky(tmp_path: Path) -> None:
+    """A dispatch_code patch touching app code (apps/**) stays risky — the
+    staging gate validates "does the factory run", not an app's own suite, so
+    the WS3.1 broadening deliberately does NOT cover app-repo code."""
+    repo = _make_repo(tmp_path, {"apps/sacrifice/app.py": "# app\n"})
+    patch = (
+        "diff --git a/apps/sacrifice/app.py b/apps/sacrifice/app.py\n"
+        "--- a/apps/sacrifice/app.py\n"
+        "+++ b/apps/sacrifice/app.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " # app\n"
+        "+# new line\n"
+    )
+    proposal = _minimal_proposal(
+        target_class="dispatch_code", patch=patch, kind="dispatch_code"
+    )
     assert _classify_manager_proposal(proposal, repo) == "risky"
+
+
+def test_classify_mixed_factory_and_app_python_risky(tmp_path: Path) -> None:
+    """A patch mixing factory/*.py and app code is NOT a pure factory self-edit
+    → risky (the broadened safe class requires ALL paths under factory/*.py)."""
+    repo = _make_repo(
+        tmp_path,
+        {"factory/chain/orchestrator.py": "# o\n", "apps/sacrifice/app.py": "# a\n"},
+    )
+    patch = (
+        "diff --git a/factory/chain/orchestrator.py b/factory/chain/orchestrator.py\n"
+        "--- a/factory/chain/orchestrator.py\n"
+        "+++ b/factory/chain/orchestrator.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " # o\n"
+        "+# new\n"
+        "diff --git a/apps/sacrifice/app.py b/apps/sacrifice/app.py\n"
+        "--- a/apps/sacrifice/app.py\n"
+        "+++ b/apps/sacrifice/app.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " # a\n"
+        "+# new\n"
+    )
+    proposal = _minimal_proposal(
+        target_class="dispatch_code", patch=patch, kind="dispatch_code"
+    )
+    assert _classify_manager_proposal(proposal, repo) == "risky"
+
+
+def test_classify_bench_edit_forbidden(tmp_path: Path) -> None:
+    """WS3.1: the held-out benchmark harness (bench/**) is forbidden — the loop
+    must never edit the grader that scores it, staging gate notwithstanding."""
+    repo = _make_repo(tmp_path, {"bench/bench.py": "# bench\n"})
+    patch = (
+        "diff --git a/bench/bench.py b/bench/bench.py\n"
+        "--- a/bench/bench.py\n"
+        "+++ b/bench/bench.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " # bench\n"
+        "+# tamper\n"
+    )
+    proposal = _minimal_proposal(
+        target_class="dispatch_code", patch=patch, kind="dispatch_code"
+    )
+    assert _classify_manager_proposal(proposal, repo) == "forbidden"
+
+
+def test_classify_unparseable_patch_not_safe(tmp_path: Path) -> None:
+    """WS3.1 guardrail: a non-diff / unparseable patch is NEVER safe, even if it
+    mentions factory/*.py paths — the broadening must not let a malformed patch
+    slip into the safe class. No valid unified diff → forbidden."""
+    repo = _make_repo(tmp_path, {"factory/chain/orchestrator.py": "# o\n"})
+    proposal = _minimal_proposal(
+        target_class="dispatch_code",
+        patch="please edit factory/chain/orchestrator.py to add a comment",
+        kind="dispatch_code",
+    )
+    result = _classify_manager_proposal(proposal, repo)
+    assert result == "forbidden"
+    assert result != "safe"
 
 
 # ---------------------------------------------------------------------------
@@ -585,21 +685,26 @@ def test_apply_safe_proposal_writes_branch_and_history(tmp_path: Path) -> None:
 
 
 def test_apply_risky_proposal_no_auto_merge(tmp_path: Path) -> None:
-    """A risky proposal opens a PR with the review label but no auto-merge."""
+    """A risky proposal opens a PR with the review label but no auto-merge.
+
+    Uses a dispatch_code patch on APP code (apps/**), which stays risky under
+    WS3.1 — the staging net validates the factory, not an app's own suite, so
+    app-code edits are not auto-safe.
+    """
     repo = _make_repo(
         tmp_path,
         {
             "factory/personas/sm.md": "# SM Persona\nbody line\n",
-            "factory/chain/orchestrator.py": "# orchestrator\n",
+            "apps/sacrifice/app.py": "# app\n",
         },
     )
     proposals_dir = repo / "state" / "manager_proposals"
     patch = (
-        "diff --git a/factory/chain/orchestrator.py b/factory/chain/orchestrator.py\n"
-        "--- a/factory/chain/orchestrator.py\n"
-        "+++ b/factory/chain/orchestrator.py\n"
+        "diff --git a/apps/sacrifice/app.py b/apps/sacrifice/app.py\n"
+        "--- a/apps/sacrifice/app.py\n"
+        "+++ b/apps/sacrifice/app.py\n"
         "@@ -1,1 +1,2 @@\n"
-        " # orchestrator\n"
+        " # app\n"
         "+# new comment\n"
     )
     proposal = _minimal_proposal(

@@ -515,6 +515,44 @@ def test_apply_self_edit_healthy_promotes(tmp_path: Path) -> None:
     assert any(c[:3] == ["gh", "pr", "create"] for c in calls)
 
 
+def test_apply_broadened_factory_py_self_edit_routes_through_staging(tmp_path: Path) -> None:
+    """WS3.1: a dispatch_code patch on factory/*.py — previously RISKY — is now
+    classified SAFE and, because it is a self-edit, routes through the staging
+    gate. On a healthy (mocked) gate it auto-applies (safe → PR + auto-merge)."""
+    repo = _make_repo(tmp_path, {"factory/chain/orchestrator.py": "# orchestrator\n"})
+    patch = (
+        "diff --git a/factory/chain/orchestrator.py b/factory/chain/orchestrator.py\n"
+        "--- a/factory/chain/orchestrator.py\n"
+        "+++ b/factory/chain/orchestrator.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " # orchestrator\n"
+        "+# WS3.1 self-fix\n"
+    )
+    _plant(repo, _proposal(patch, target_class="dispatch_code", pid="disp-1"), "p.json")
+    runner, calls = _make_apply_runner(pr_number=94)
+
+    gate_invoked = {"n": 0}
+
+    def _healthy_gate(proposal: dict[str, Any], proposal_path: str, **kwargs: Any) -> Any:
+        gate_invoked["n"] += 1
+        from factory.manager.staging import StagingDecision
+
+        return StagingDecision(promote=True, status="staging_validated", branch="staging/disp-1")
+
+    result = apply_manager_proposals(
+        root=repo,
+        dry_run=False,
+        runner=runner,
+        repo="owner/repo",
+        push=True,
+        staging_gate=_healthy_gate,
+    )
+    assert gate_invoked["n"] == 1, "factory/*.py self-edit must route through staging"
+    assert result["safe_applied"] == 1
+    # Auto-merge attempted (safe class).
+    assert any(c[:3] == ["gh", "pr", "merge"] for c in calls)
+
+
 def test_apply_self_edit_unhealthy_not_promoted(tmp_path: Path) -> None:
     """An unhealthy self-edit is NOT promoted: no branch, no PR on real factory."""
     repo = _make_repo(tmp_path, {"factory/personas/sm.md": "# SM Persona\nbody line\n"})
