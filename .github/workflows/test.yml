@@ -7,6 +7,14 @@ on:
   pull_request:
     branches:
       - main
+  # GitHub merge queue: re-test each PR against the ACTUAL post-merge base
+  # (main + everything ahead of it in the queue) before the merge lands. The
+  # SAME job names (lint / typecheck / pytest) run here as on pull_request, so
+  # the branch-protection required checks are real on the queue — a required
+  # check that never triggered on merge_group would silently pass the queue
+  # (the vacuous-required-check false-green). Kills "passed in isolation,
+  # broke main".
+  merge_group:
 
 permissions:
   contents: read

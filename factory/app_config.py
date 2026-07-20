@@ -103,6 +103,23 @@ class AppGatesConfig(BaseModel):
     # oracle runs against the app's real python env.
     acceptance_test_command: str | None = None
 
+    # Flaky-test quarantine (WS4.4). When True, the ``tests-green`` real-run gate
+    # routes a RED ``test_command`` through flake detection: any failing test is
+    # re-run in isolation; a test that flaps (fails then passes) is QUARANTINED
+    # (recorded to ``state/flake_quarantine.json`` + surfaced as an event/direction)
+    # and no longer blocks the merge, while a test that fails CONSISTENTLY is a
+    # real regression and still blocks. Off by default so the rollout is per-app
+    # opt-in and never widens what passes the gate without an explicit choice — a
+    # bug in flake classification could otherwise let a real red through, the
+    # exact false-green this whole tier fights.
+    flake_quarantine: bool = False
+    # How many times a failing test is re-run in isolation before it is declared a
+    # consistent (real) failure. A test that passes on ANY of these reruns flapped
+    # and is quarantined. This is NOT retry-until-green (which manufactures
+    # false-greens): a pass only ever DOWNGRADES a red to quarantined-non-blocking,
+    # never upgrades it to a clean pass, and the flake stays surfaced as debt.
+    flake_rerun_count: int = 3
+
 
 class AppConfig(BaseModel):
     name: str
