@@ -93,28 +93,32 @@ def test_pm_sync_dry_run_two_complete_one_vague(tmp_path: Path) -> None:
     assert summary.needs_direction == 1
     assert summary.errors == []
 
-    # Verify each direction's state.yaml was actually updated.
+    # Dry-run is a PURE PREVIEW: the summary reflects exactly what the real
+    # run would decide (2 validated, 1 needs-direction) but NOTHING on disk is
+    # mutated. Every direction must remain exactly as created — no status flip,
+    # no pm_result blob, no status-transition audit entry. Regression guard for
+    # the 2026-07-20 self-tick incident, where a dry-run that mutated state let
+    # a "safe" preview spawn live dispatchable rebuild-stories.
     directions_dir = tmp_path / "apps" / "sacrifice" / "directions"
-    by_status: dict[str, list[str]] = {}
     for entry in sorted(directions_dir.iterdir()):
         if not entry.is_dir():
             continue
         state = yaml.safe_load((entry / "state.yaml").read_text(encoding="utf-8"))
-        by_status.setdefault(state["status"], []).append(entry.name)
-        # Every direction must have a pm_result blob now.
-        assert "pm_result" in state
-        assert isinstance(state["pm_result"], dict)
-        # Audit trail recorded the status transition.
-        assert any(
-            entry.get("event", "").startswith("status -> ") for entry in state.get("audit", [])
-        )
+        assert state["status"] == "created", f"{entry.name} status mutated by dry-run"
+        assert "pm_result" not in state, f"{entry.name} got a pm_result in dry-run"
+        assert not any(
+            e.get("event", "").startswith("status -> ") for e in state.get("audit", [])
+        ), f"{entry.name} recorded a status transition in dry-run"
 
-    assert "pm-validated" in by_status
-    assert "needs-direction" in by_status
-    assert len(by_status["pm-validated"]) == 2
-    assert len(by_status["needs-direction"]) == 1
-    # The vague one is the needs-direction one.
-    assert by_status["needs-direction"][0].endswith("-vague-thought")
+    # And no StoryRecord rows leaked into the DB from the preview.
+    import sqlite3
+
+    conn = sqlite3.connect(str(state_db))
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM stories").fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 0, f"dry-run persisted {n} dispatchable stories — must be a pure preview"
 
 
 def test_pm_sync_gc_pass_closes_stale_scheduled_direction(tmp_path: Path) -> None:
@@ -162,10 +166,12 @@ def test_pm_sync_gc_pass_closes_stale_scheduled_direction(tmp_path: Path) -> Non
         pending_statuses=frozenset({"created"}),
     )
 
+    # Dry-run PREVIEWS which directions would be GC-closed (via the returned
+    # gc_closed list) but must not mutate state.yaml on disk.
     assert summary.gc_closed == [created.direction.id]
     final_state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
-    assert final_state["status"] == "closed"
-    assert final_state["audit"][-1]["by"] == GC_BY
+    assert final_state["status"] == "needs-direction", "dry-run must not close on disk"
+    assert not any(e.get("by") == GC_BY for e in final_state.get("audit", []))
 
 
 def test_pm_sync_gc_pass_leaves_fresh_directions_alone(tmp_path: Path) -> None:
@@ -194,6 +200,39 @@ def test_pm_sync_gc_pass_leaves_fresh_directions_alone(tmp_path: Path) -> None:
         state_db_path=tmp_path / "state" / "factory.db",
     )
     assert summary.gc_closed == []
+
+
+def test_pm_sync_dry_run_is_idempotent(tmp_path: Path) -> None:
+    """Two consecutive dry-runs return the IDENTICAL summary, because a pure
+    preview never consumes the direction it previews. Before the 2026-07-20
+    fix the first dry-run flipped the direction to ``pm-validated`` and spawned
+    dispatchable stories, so the second dry-run reported ``validated=0`` — a
+    dry-run!=real-run divergence that made a "safe" preview into a live action.
+    """
+    _seed_app_config(tmp_path)
+    create_direction(
+        app="sacrifice",
+        title="Add healthz endpoint",
+        type_tag="feature",
+        why="Smoke test wants a stable endpoint.",
+        has_ui=False,
+        flow_steps=None,
+        has_api=True,
+        api_spec_lines=['- `POST /healthz` -> 200 {"status":"ok"}'],
+        acceptance=["Returns 200", "JSON body has status"],
+        explore=False,
+        attach_files=None,
+        software_factory_root=tmp_path,
+    )
+    state_db = tmp_path / "state" / "factory.db"
+    first = pm_sync(
+        app="sacrifice", software_factory_root=tmp_path, dry_run=True, state_db_path=state_db
+    )
+    second = pm_sync(
+        app="sacrifice", software_factory_root=tmp_path, dry_run=True, state_db_path=state_db
+    )
+    assert first.validated == second.validated == 1
+    assert first.processed == second.processed == 1
 
 
 def test_pm_sync_dry_run_no_directions_empty_summary(tmp_path: Path) -> None:

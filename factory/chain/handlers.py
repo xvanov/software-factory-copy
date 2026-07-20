@@ -456,11 +456,17 @@ def handle_stories_spawned(
                 points=dd_points,
                 estimated_seconds=dd_estimated_seconds,
             )
-            persist_story(story, db)
-            _author_acceptance_oracle(
-                story, direction, app_config, software_factory_root,
-                dry_run=dry_run, db_path=db,
-            )
+            # Dry-run is a pure preview: build the would-be StoryRecord for
+            # the returned list but never persist it or author its oracle —
+            # a persisted dry-run story is a live dispatchable artifact (the
+            # 2026-07-20 self-tick incident: a "safe" preview spawned rebuild
+            # stories that the tick then executed).
+            if not dry_run:
+                persist_story(story, db)
+                _author_acceptance_oracle(
+                    story, direction, app_config, software_factory_root,
+                    dry_run=dry_run, db_path=db,
+                )
             out.append(story)
 
         # Post the comparison comment on the tracker (real-run only).
@@ -536,11 +542,14 @@ def handle_stories_spawned(
             points=points,
             estimated_seconds=estimated_seconds,
         )
-        persist_story(story, db)
-        _author_acceptance_oracle(
-            story, direction, app_config, software_factory_root,
-            dry_run=dry_run, db_path=db,
-        )
+        # Dry-run is a pure preview: never persist the story or author its
+        # oracle (see the dual-draft branch above and the 2026-07-20 incident).
+        if not dry_run:
+            persist_story(story, db)
+            _author_acceptance_oracle(
+                story, direction, app_config, software_factory_root,
+                dry_run=dry_run, db_path=db,
+            )
         out.append(story)
     return out
 

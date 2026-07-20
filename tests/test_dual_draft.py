@@ -167,9 +167,11 @@ def test_handle_stories_spawned_explore_spawns_two_stories(tmp_path: Path) -> No
     assert any("alt-a" in s for s in slugs), f"alt-a missing in slugs={slugs}"
     assert any("alt-b" in s for s in slugs), f"alt-b missing in slugs={slugs}"
 
-    # DB persistence: both rows present.
+    # Dry-run is a pure preview: the two dual-draft stories are RETURNED for
+    # inspection but never persisted to the DB (a persisted dry-run story is a
+    # live dispatchable artifact — the 2026-07-20 self-tick incident).
     persisted = _stories_for("sacrifice", root / "state" / "factory.db")
-    assert len(persisted) == 2
+    assert len(persisted) == 0
 
 
 def test_handle_stories_spawned_low_confidence_spawns_two_stories(tmp_path: Path) -> None:

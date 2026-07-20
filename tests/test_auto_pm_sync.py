@@ -92,11 +92,21 @@ def test_pending_direction_is_triaged(tmp_path: Path) -> None:
     assert reason == "synced"
     assert summary is not None and summary.processed == 1
 
-    # A second pass finds nothing left to triage.
+    # Dry-run is a pure preview: it does NOT consume the direction, so a second
+    # pass previews the very same pending direction (identical result). A real
+    # (non-dry) run is what actually advances the direction out of "created".
     summary2, reason2 = maybe_auto_pm_sync(
         "sacrifice", tmp_path, dry_run=True, state_db_path=db
     )
-    assert summary2 is None and reason2 == "no_pending"
+    assert reason2 == "synced"
+    assert summary2 is not None and summary2.processed == 1
+
+    # The direction on disk is untouched by the preview.
+    directions_dir = tmp_path / "apps" / "sacrifice" / "directions"
+    for entry in directions_dir.iterdir():
+        if entry.is_dir():
+            state = yaml.safe_load((entry / "state.yaml").read_text(encoding="utf-8"))
+            assert state["status"] == "created"
 
 
 def test_hourly_pm_budget_blocks_sync(tmp_path: Path) -> None:
@@ -178,8 +188,12 @@ def test_gc_runs_on_tick_with_only_stale_needs_direction_pending(tmp_path: Path)
     state_path.write_text(yaml.safe_dump(state, sort_keys=False), encoding="utf-8")
 
     # No ``created`` direction pending anywhere — the previously-broken case.
+    # Runs REAL (dry_run=False) with no GitHub client: the GC pass mutates
+    # state.yaml locally (its GitHub issue-close is skipped when no client is
+    # available). A dry-run here would only PREVIEW the close, so it could not
+    # observe the on-disk mutation this regression is about.
     summary, reason = maybe_auto_pm_sync(
-        "sacrifice", tmp_path, dry_run=True, state_db_path=db
+        "sacrifice", tmp_path, dry_run=False, state_db_path=db
     )
     assert summary is None and reason == "no_pending"
 

@@ -256,7 +256,11 @@ def test_gc_closes_stale_scheduled_direction_on_disk_and_github(tmp_path: Path) 
     assert issue.comments  # explanatory comment posted
 
 
-def test_gc_dry_run_updates_disk_but_not_github(tmp_path: Path) -> None:
+def test_gc_dry_run_previews_without_touching_disk_or_github(tmp_path: Path) -> None:
+    """Dry-run is a pure preview: it reports which directions WOULD be closed
+    (via the returned list) but mutates neither state.yaml on disk nor GitHub.
+    (Before 2026-07-20 the dry-run wrote the on-disk close — a preview with a
+    real side effect.)"""
     dir_path = _stale_scheduled_direction_dir(tmp_path, tracker_issue=211)
     issue = _Issue(211)
     client = _Client(_Repo({211: issue}))
@@ -265,9 +269,9 @@ def test_gc_dry_run_updates_disk_but_not_github(tmp_path: Path) -> None:
         "sacrifice", tmp_path, _AppConfig(), client, dry_run=True, now=NOW
     )
 
-    assert len(closed) == 1
+    assert len(closed) == 1  # previewed
     state = yaml.safe_load((dir_path / "state.yaml").read_text(encoding="utf-8"))
-    assert state["status"] == "closed"
+    assert state["status"] == "needs-direction", "dry-run must not close on disk"
     # No GitHub calls happened in dry-run.
     assert issue.state == "open"
     assert issue.comments == []

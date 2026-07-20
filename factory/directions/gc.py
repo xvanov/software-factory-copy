@@ -138,12 +138,15 @@ def gc_stale_scheduled_directions(
         if not is_gc_eligible(direction, now=resolved_now):
             continue
 
-        mark_direction_status(
-            direction,
-            "closed",
-            by=GC_BY,
-            details={"reason": GC_REASON},
-        )
+        # Dry-run is a pure preview: report which directions WOULD be closed
+        # (via the returned list) without mutating any state.yaml on disk.
+        if not dry_run:
+            mark_direction_status(
+                direction,
+                "closed",
+                by=GC_BY,
+                details={"reason": GC_REASON},
+            )
 
         if not dry_run and github_client is not None and app_config is not None:
             tracker = (direction.state or {}).get("tracker_issue")
