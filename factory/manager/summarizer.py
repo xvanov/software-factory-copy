@@ -253,6 +253,30 @@ def _concern_signature(concern: dict[str, Any]) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def concern_id_for(concern: dict[str, Any]) -> str:
+    """Return the canonical stable ``concern_id`` for a concern.
+
+    The concern_id IS the WS0.1 content signature (:func:`_concern_signature`),
+    promoted to the canonical cross-layer identity used by L3/L4 dedup. The
+    lookup order lets legacy docs (written before concern_id existed) resolve to
+    the same value:
+
+      1. an already-stamped ``concern_id`` field, else
+      2. the WS0.1 ``signature`` field (same value, older field name), else
+      3. re-derive the signature from content.
+
+    It therefore never returns "" for a concern that carries any real content,
+    so a genuinely-new concern always yields a distinct, matchable id.
+    """
+    cid = concern.get("concern_id")
+    if isinstance(cid, str) and cid:
+        return cid
+    sig = concern.get("signature")
+    if isinstance(sig, str) and sig:
+        return sig
+    return _concern_signature(concern)
+
+
 def _recent_concern_with_signature(
     root: Path,
     signature: str,
@@ -635,6 +659,7 @@ def _write_concern(root: Path, concern: dict[str, Any], now: datetime) -> Path:
         "escalate_to_l3": concern.get("escalate_to_l3", False),
         "concern_path": str(concern_path),
         "signature": concern.get("signature", ""),
+        "concern_id": concern.get("concern_id", concern.get("signature", "")),
     }
     try:
         event_path.parent.mkdir(parents=True, exist_ok=True)
@@ -798,6 +823,10 @@ def run_summarizer_once(
     # future cycles (and L3) can match it.
     signature = _concern_signature(concern)
     concern["signature"] = signature
+    # The concern_id IS the signature, promoted to the canonical cross-layer
+    # identity that L3/L4 dedup on. Stamp it explicitly so downstream layers
+    # read a stable field name rather than re-deriving.
+    concern["concern_id"] = signature
 
     # Dedup + cooldown. A persistent condition re-fires the SAME concern every
     # cycle; suppress re-emission when an in-cooldown concern with this exact

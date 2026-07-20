@@ -166,11 +166,36 @@ def _append_history(
         print(f"[manager.apply] WARNING: failed to write history: {exc}", file=sys.stderr)
 
 
-def _is_already_processed(root: Path, proposal_path: Path) -> bool:
-    """Return True if this proposal_path already appears in the history."""
+def _is_already_processed(
+    root: Path,
+    proposal_path: Path,
+    proposal: dict[str, Any] | None = None,
+) -> bool:
+    """Return True if this proposal has already been processed.
+
+    Dedup keys, in priority order:
+
+      1. **proposal_id** (stable, content-derived) — when the proposal carries
+         one and a history entry records the same id. This recognises a
+         re-emitted proposal even though L3 wrote it under a fresh ts-slug
+         path, which the path-only check could never do.
+      2. **proposal_path** (exact string) — legacy fallback for history entries
+         written before proposal_id existed, and for callers that pass no
+         proposal dict. Ensures nothing already-processed silently re-fires.
+
+    A proposal with a NEW proposal_id (and a path not seen before) matches
+    neither key and is processed.
+    """
     history = _load_history(root)
     path_str = str(proposal_path)
+    proposal_id = None
+    if isinstance(proposal, dict):
+        pid = proposal.get("proposal_id")
+        if isinstance(pid, str) and pid:
+            proposal_id = pid
     for entry in history:
+        if proposal_id and entry.get("proposal_id") == proposal_id:
+            return True
         if entry.get("proposal_path") == path_str:
             return True
     return False
@@ -939,18 +964,23 @@ def apply_manager_proposals(
         paths = sorted(proposals_dir.glob("*.json"))
 
     for p in paths:
-        # Skip already-processed proposals.
-        if _is_already_processed(root, p):
-            continue
-
         try:
             proposal = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
+            # Cannot load the content, so dedup on the path alone (legacy key)
+            # to avoid reprocessing a known-bad file every cycle.
+            if _is_already_processed(root, p):
+                continue
             summary["errors"].append(f"failed_to_load:{p.name}: {exc!r}")
             continue
 
         if not isinstance(proposal, dict):
             summary["errors"].append(f"non_dict_proposal:{p.name}")
+            continue
+
+        # Skip already-processed proposals: match on the stable proposal_id
+        # first (survives a new ts-slug path), then exact path (legacy).
+        if _is_already_processed(root, p, proposal):
             continue
 
         # Classify.
@@ -986,9 +1016,12 @@ def apply_manager_proposals(
         if result.get("error"):
             summary["errors"].append(f"{p.name}: {result['error']}")
 
-        # Record in history.
+        # Record in history. Persist the stable ids so future cycles dedup on
+        # content, not the ts-slug path.
         history_entry = {
             "proposal_path": str(p),
+            "proposal_id": proposal.get("proposal_id", ""),
+            "concern_id": proposal.get("concern_id", ""),
             "ts": result.get("ts", datetime.now(UTC).isoformat()),
             "branch": result.get("branch"),
             "pr_url": result.get("pr_url"),

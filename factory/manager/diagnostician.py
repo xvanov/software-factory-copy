@@ -27,6 +27,7 @@ Public API
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -832,22 +833,48 @@ def _call_llm(
 # ---------------------------------------------------------------------------
 
 
+def _proposal_id(concern_id: str, target_area: str) -> str:
+    """Return a stable ``proposal_id`` derived from the source concern.
+
+    The id hashes the canonical ``concern_id`` plus the concern's stable
+    ``proposed_area``. Because both inputs are content-derived (not the
+    volatile ts-slug filename), re-diagnosing the SAME concern yields the SAME
+    proposal_id — which is what lets L4 recognise a re-emitted proposal even
+    when it lands under a fresh timestamped path.
+    """
+    material = f"{concern_id}|{target_area}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def _is_concern_processed(root: Path, concern: dict[str, Any]) -> bool:
     """Return True if a proposal already exists in state/manager_proposals/ for this concern.
 
-    Matching is by ``title`` — any proposal file whose ``concern_title`` matches
-    the concern's ``title`` counts as already processed.
+    Matching is by the canonical **concern_id** (the WS0.1 content signature),
+    so a re-fired concern is recognised as already-diagnosed regardless of any
+    LLM retitle, and two genuinely-different concerns that happen to share a
+    title are NOT collapsed. Legacy proposals written before concern_id existed
+    fall back to the old ``concern_title`` match so nothing already-processed
+    re-fires.
     """
     proposals_dir = _proposals_dir(root)
     if not proposals_dir.exists():
         return False
+    from factory.manager.summarizer import concern_id_for
+
+    target_id = concern_id_for(concern)
     concern_title = concern.get("title", "")
     for p in proposals_dir.glob("*.json"):
         try:
             doc = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if doc.get("concern_title") == concern_title:
+        doc_id = doc.get("concern_id")
+        if isinstance(doc_id, str) and doc_id:
+            # Modern proposal: match on stable content id only.
+            if doc_id == target_id:
+                return True
+        elif doc.get("concern_title") == concern_title:
+            # Legacy proposal (no concern_id): fall back to title match.
             return True
     return False
 
@@ -923,6 +950,8 @@ def _write_proposal(
         "schema_version": _SCHEMA_VERSION,
         "event": "proposal_emitted",
         "concern_title": proposal.get("concern_title", ""),
+        "concern_id": proposal.get("concern_id", ""),
+        "proposal_id": proposal.get("proposal_id", ""),
         "target_class": proposal.get("target_class", ""),
         "escalate_to_human": proposal.get("escalate_to_human", False),
         "proposal_path": str(proposal_path),
@@ -1078,6 +1107,15 @@ def run_diagnostician_once(
             max_tokens=max_tokens,
             concern_title=concern_title,
         )
+
+    # Stamp the canonical stable ids so L4 dedup (and any re-diagnosis of the
+    # same concern) keys off content, not the ts-slug filename. Derived from the
+    # source concern, so a re-fired concern yields the SAME proposal_id.
+    from factory.manager.summarizer import concern_id_for
+
+    cid = concern_id_for(concern)
+    proposal["concern_id"] = cid
+    proposal["proposal_id"] = _proposal_id(cid, concern.get("proposed_area", ""))
 
     # Step 7: write proposal.
     proposal_path = _write_proposal(root, proposal, now)
