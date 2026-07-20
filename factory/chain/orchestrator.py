@@ -20,6 +20,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -856,6 +857,221 @@ def _recover_blocked_stories(
     return recovered
 
 
+# Bound on how many stories ``reconcile_from_github`` will query GitHub for in a
+# single tick. Each candidate costs one read-only ``gh pr view`` shell-out;
+# capping keeps a large PR backlog from turning every tick into a burst of API
+# calls. Candidates beyond the cap are simply reconciled on a LATER tick (they
+# are never lost — they stay in a mergeable state and remain candidates).
+_MAX_RECONCILE_PER_TICK = 25
+
+
+def _query_pr_state(*, app_config: AppConfig, pr_number: int) -> str | None:
+    """Authoritative GitHub state for ``pr_number``.
+
+    Returns ``"OPEN"``, ``"CLOSED"``, ``"MERGED"``, or ``None`` when the state
+    cannot be determined. Read-only ``gh pr view --json state`` shell-out — the
+    SAME plumbing ``auto_merge._pr_terminally_unmergeable`` uses (gh's ``state``
+    field returns exactly those three literals; ``MERGED`` is distinct from a
+    plain ``CLOSED``).
+
+    ``None`` is the fail-safe sentinel: a non-positive placeholder PR number, gh
+    missing, a timeout, a non-zero exit (PR deleted / wrong repo / auth), or an
+    unparseable payload all map to ``None`` so the caller NEVER reconciles a
+    story on an uncertain answer.
+    """
+    import subprocess
+
+    if pr_number <= 0:  # synthesized placeholder — nothing to query
+        return None
+    cmd = [
+        "gh", "pr", "view", str(pr_number), "--repo", app_config.repo,
+        "--json", "state",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        # gh could not resolve the PR (deleted / wrong repo / auth). Unknown —
+        # do not reconcile on uncertainty.
+        return None
+    try:
+        data = json.loads(proc.stdout)
+    except (ValueError, TypeError):
+        return None
+    state = str(data.get("state", "")).upper()
+    if state in ("OPEN", "CLOSED", "MERGED"):
+        return state
+    return None
+
+
+def _write_drift_event(
+    *,
+    root: Path,
+    story: StoryRecord,
+    from_state: str,
+    pr_state: str,
+    action: str,
+) -> None:
+    """Emit a first-class ``state_drift_reconciled`` anomaly (best-effort).
+
+    Written to the ``git`` signal stream (one of the L1 watcher's ``_RAW_STREAMS``
+    — so drift is SEEN by the FMS, not silent) AND to the per-story event log for
+    the story timeline. Telemetry only: never raises, so a logging failure cannot
+    crash the tick.
+    """
+    try:
+        from factory.manager.signals import write_event
+
+        write_event(
+            "git",
+            {
+                "event": "state_drift_reconciled",
+                "app": story.app,
+                "story_id": story.id,
+                "slug": story.slug,
+                "pr_number": story.github_pr_number,
+                "local_state_before": from_state,
+                "authoritative_pr_state": pr_state,
+                "action": action,
+            },
+            software_factory_root=root,
+        )
+    except Exception:  # noqa: BLE001 - telemetry, never crash the tick
+        pass
+    try:
+        from factory.chain.event_log import log_story_event
+
+        log_story_event(
+            story.id,
+            "state_drift_reconciled",
+            {
+                "local_state_before": from_state,
+                "authoritative_pr_state": pr_state,
+                "action": action,
+                "pr_number": story.github_pr_number,
+            },
+            software_factory_root=root,
+            slug_hint=story.slug,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def reconcile_from_github(
+    db: Path,
+    app: str,
+    *,
+    cfg: AppConfig,
+    root: Path,
+    max_reconcile: int = _MAX_RECONCILE_PER_TICK,
+    query_pr_state: Callable[..., str | None] = _query_pr_state,
+) -> list[tuple[str, str, str]]:
+    """Pull authoritative GitHub PR state into the local DB at the top of a tick.
+
+    Local ``factory.db`` state is a PROJECTION; GitHub is the system of record
+    for whether a PR merged, closed, or is still open. That projection drifts: a
+    PR merged (or completed out-of-band) while the local story still says
+    ``pr_open``; a PR closed while the story keeps looping on a dead branch. This
+    pass reconciles each non-terminal story that has a real PR against GitHub
+    BEFORE any dispatch decision, using the SAME state-machine transitions
+    auto-merge uses, and logs every reconciliation as a first-class
+    ``state_drift_reconciled`` anomaly so drift is never silent.
+
+    Candidates are stories in ``auto_merge._MERGEABLE_STATES``
+    (``pr_open`` / ``ci_green`` / ``ready_for_merge``) with a positive
+    ``github_pr_number`` — exactly the states that hold an open PR and for which
+    the ``EVENT_MERGED`` / ``EVENT_PR_UNMERGEABLE`` transitions are defined.
+
+    Drift cases handled:
+
+    * PR **MERGED** on GitHub, local state still pre-merge → ``advance(story,
+      EVENT_MERGED)`` → ``DEPLOY_PENDING`` (identical to the auto-merge success
+      path) so the missed merge flows into deploy instead of being re-attempted
+      forever.
+    * PR **CLOSED** (not merged) on GitHub, local state still in-flight →
+      ``advance(story, EVENT_PR_UNMERGEABLE)`` → ``BLOCKED_DEPLOY_FAILED`` so the
+      story stops looping on a dead PR and surfaces for attention.
+    * PR **OPEN** → local projection already matches GitHub → no-op.
+    * **Unknown** query result (``None``) → no-op. Fail-safe: never advance a
+      story on an ambiguous or failed GitHub query.
+
+    Idempotent: once reconciled the story leaves ``_MERGEABLE_STATES`` and is no
+    longer a candidate, so a consistent DB produces zero mutations and zero
+    events on re-run. Bounded: at most ``max_reconcile`` GitHub calls per tick.
+    Pure DB rewrite + read-only gh queries — no LLM / git-write work, mirroring
+    ``_recover_blocked_stories``. Returns ``(slug, from_state, to_state)`` tuples
+    for the TickSummary.
+    """
+    from factory.chain.auto_merge import _MERGEABLE_STATES
+    from factory.chain.handlers import persist_story
+    from factory.chain.state_machine import (
+        EVENT_MERGED,
+        EVENT_PR_UNMERGEABLE,
+        IllegalTransitionError,
+    )
+
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        candidates = session.exec(
+            select(StoryRecord).where(
+                StoryRecord.app == app,
+                StoryRecord.state.in_(list(_MERGEABLE_STATES)),  # type: ignore[attr-defined]
+            )
+        ).all()
+
+    reconciled: list[tuple[str, str, str]] = []
+    checked = 0
+    for story in candidates:
+        pr_number = story.github_pr_number
+        if pr_number is None or pr_number <= 0:
+            continue
+        if checked >= max_reconcile:
+            break
+        checked += 1
+
+        pr_state = query_pr_state(app_config=cfg, pr_number=pr_number)
+        if pr_state is None or pr_state == "OPEN":
+            # Unknown → fail-safe no-op (never advance on uncertainty).
+            # OPEN → local projection already matches GitHub → no-op.
+            continue
+
+        from_state = story.state
+        event = EVENT_MERGED if pr_state == "MERGED" else EVENT_PR_UNMERGEABLE
+        try:
+            new_state = advance(story, event)
+        except IllegalTransitionError:
+            # No transition for this (state, event) pair — surface the observed
+            # drift but do NOT force an illegal mutation.
+            _write_drift_event(
+                root=root,
+                story=story,
+                from_state=from_state,
+                pr_state=pr_state,
+                action="observed_no_transition",
+            )
+            continue
+
+        story.state = new_state.value
+        if event == EVENT_PR_UNMERGEABLE:
+            story.error = (
+                f"reconcile: PR #{pr_number} is CLOSED on GitHub (not merged) "
+                f"while local state was {from_state!r}; routed to "
+                f"{new_state.value} for attention."
+            )
+        persist_story(story, db)
+        reconciled.append((story.slug, from_state, new_state.value))
+        _write_drift_event(
+            root=root,
+            story=story,
+            from_state=from_state,
+            pr_state=pr_state,
+            action=f"advanced_to:{new_state.value}",
+        )
+
+    return reconciled
+
+
 def _build_current_state(
     *,
     root: Path,
@@ -1007,6 +1223,22 @@ def tick(
         # mid-attempt). Pure DB rewrite — no LLM / git work. See the function
         # docstring for the recovery mapping.
         if not dry_run:
+            # Reconcile-from-authoritative FIRST: local factory.db state is a
+            # PROJECTION; GitHub is the system of record for PR merge/close truth.
+            # Pull authoritative PR state into the DB BEFORE any recovery or
+            # dispatch decision, so a merge that happened out-of-band flows into
+            # deploy (and a dead/closed PR sinks to attention) instead of the
+            # recovery/dispatch logic acting on stale local state. Read-only gh
+            # queries + pure DB rewrite; a gh failure is a fail-safe no-op.
+            try:
+                drifted = reconcile_from_github(db, app, cfg=cfg, root=root)
+                for slug, from_state, to_state in drifted:
+                    summary.handler_runs.append((slug, f"{from_state}(drift)", to_state))
+            except Exception as exc:
+                summary.errors.append(
+                    (app, f"github reconcile failed (non-fatal): {exc!r}")
+                )
+
             try:
                 recovered = _prune_stale_in_progress(db, app, settings=settings, root=root)
                 for slug, from_state, to_state in recovered:
