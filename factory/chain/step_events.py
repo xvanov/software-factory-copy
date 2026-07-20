@@ -168,3 +168,32 @@ def replay_chain_history(
         except OSError:
             continue
     return out
+
+
+def replay_transition_path(
+    story_id: int,
+    *,
+    software_factory_root: Path | None = None,
+) -> list[tuple[str, str, str]]:
+    """Reconstruct ``story_id``'s CONTROL-FLOW path as ordered transition hops.
+
+    Returns ``[(from_state, to_state, handler), ...]`` in chronological append
+    order — the deterministic projection of the ``chain_step`` stream that WS4.1
+    treats as the story's control-plane trajectory. Read-only; a thin wrapper
+    over :func:`replay_chain_history`, so it inherits that function's
+    determinism (same on-disk stream → identical path) and never mutates state.
+
+    The path is the CONTROL plane, not the handler bodies: each hop names the
+    deterministic dispatch (which handler ran for ``from_state``) and the
+    resulting ``to_state``. Handler BODIES are non-deterministic LLM calls, but
+    given the recorded per-step outcomes this hop sequence is reproducible —
+    which is exactly what makes a run replayable/auditable.
+    """
+    return [
+        (
+            str(rec.get("from_state", "")),
+            str(rec.get("to_state", "")),
+            str(rec.get("handler", "")),
+        )
+        for rec in replay_chain_history(story_id, software_factory_root=software_factory_root)
+    ]
