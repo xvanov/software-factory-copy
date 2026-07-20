@@ -161,6 +161,16 @@ class StoryRecord(SQLModel, table=True):
     # orchestrator advances the story to BLOCKED_BUDGET_EXCEEDED.
     total_attempts: int = 0
     total_spend_usd: float = 0.0
+    # WS1.1 advance-decay high-water mark: the highest happy-path progress
+    # ordinal (see orchestrator._STATE_PROGRESS_ORDINAL) this story has ever
+    # reached. When a dispatch advances the story to a state whose ordinal
+    # EXCEEDS this mark — genuine, monotonic forward progress, not a dev<->review
+    # oscillation that re-treads states already seen — the orchestrator resets
+    # ``total_attempts`` (the spend cap stays the hard ceiling). This keeps a
+    # story that is still making progress from tripping the attempt breaker on a
+    # poisoned historical count, while a stuck/oscillating story still exhausts
+    # it. Default 0 so a story's first real state always registers.
+    max_progress_ordinal: int = 0
     current_model_tier: str = "standard"  # standard | hard
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())

@@ -293,8 +293,14 @@ def test_under_cap_dispatches_normally_and_counts_attempt(
         refreshed = session.get(StoryRecord, sid)
     assert refreshed is not None
     assert refreshed.state == StoryState.SM_DONE.value
-    # The dispatch was counted toward the aggregate breaker accumulator.
-    assert refreshed.total_attempts == 1
+    # WS1.1 advance-decay: the dispatch bumped total_attempts to 1, but it also
+    # advanced the story to a NEW happy-path milestone (SM_DONE), so the attempt
+    # counter is reset to 0 and the progress high-water mark is recorded. An
+    # advancing story is deliberately never penalised on the attempt budget.
+    assert refreshed.total_attempts == 0
+    assert refreshed.max_progress_ordinal == O._progress_ordinal(
+        StoryState.SM_DONE.value
+    )
 
 
 # --------------------------------------------------------------------------- #

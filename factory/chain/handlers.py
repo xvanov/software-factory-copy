@@ -213,6 +213,11 @@ _MIGRATION_COLUMNS: dict[str, str] = {
     # their next dispatch, so none are retroactively tripped.
     "total_attempts": "INTEGER NOT NULL DEFAULT 0",
     "total_spend_usd": "REAL NOT NULL DEFAULT 0",
+    # WS1.1 advance-decay high-water mark (see StoryRecord.max_progress_ordinal).
+    # Pre-existing stories start at 0 and register their progress on next visit;
+    # a story mid-flight simply gets its first decay when it next advances to a
+    # state above its (freshly-recorded) mark — never retroactively tripped.
+    "max_progress_ordinal": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
@@ -1179,6 +1184,43 @@ _MAX_DEV_SANDBOX_INFRA_RETRIES = 3
 # history + reviewer findings) materially improve convergence on harder stories.
 _MAX_DEV_RETRIES = 6
 
+# Same-failure-signature fast-escalation cap. When consecutive dev runs fail
+# with the IDENTICAL normalized failure signature (the same assertions/errors,
+# volatile bits stripped) the model is stuck on something more attempts won't
+# fix — every retry re-discovers the same dead end while burning spend. Rather
+# than march to ``_MAX_DEV_RETRIES`` (+ the aggregate budget breaker) on no new
+# signal, block after this many identical failures. 3 per the "nothing loops
+# unproductively >3" operator rule. A CHANGING signature means the model IS
+# making progress and keeps its full retry budget.
+_MAX_DEV_SAME_SIGNATURE = 3
+
+
+def _consecutive_same_dev_signature(
+    prior_attempts: list[Any], current_sig: str
+) -> int:
+    """Count trailing dev attempts sharing ``current_sig`` (newest-first).
+
+    Walks ``prior_attempts`` (the ``dev_attempts_json`` list) from the end and
+    counts the unbroken run of red attempts whose ``failure_signature`` equals
+    ``current_sig``. A green attempt (``test_run_passed is True``) or a
+    different/absent signature breaks the run — a green in between or a changed
+    failure both mean genuine progress, so the stall counter resets. Returns 0
+    for an empty signature (no comparable evidence yet).
+    """
+    if not current_sig:
+        return 0
+    count = 0
+    for a in reversed(prior_attempts):
+        if not isinstance(a, dict):
+            break
+        if a.get("test_run_passed") is True:
+            break
+        if a.get("failure_signature") == current_sig:
+            count += 1
+        else:
+            break
+    return count
+
 # Review convergence guard. Judged by finding STABILITY, not raw cycle count: a
 # cycle that surfaces DIFFERENT findings is making progress. We block only when
 # the reviewer returns the SAME findings _MAX_REVIEW_STUCK times in a row
@@ -1200,7 +1242,28 @@ def _is_premodel_infra_failure(run_res: Any) -> bool:
     set and zero tokens/cost. Distinguishing the two is what keeps an
     environment blip from masquerading as a code failure and burning the dev
     retry budget.
+
+    The runner now sets an EXPLICIT ``premodel_infra`` flag (True only for
+    genuine pre-model breakage; False when the model spent tokens and then
+    raised). Prefer it when present: the old zero-cost/None heuristic
+    misclassified a run that DID real model work but crashed afterwards (e.g.
+    during metrics extraction) as "infra", so the dev handler bounced it back
+    for free and NEVER incremented ``dev_retries`` — the story-88 loop where a
+    story was re-dispatched 12 times with ``dev_retries`` stuck at 1. A run
+    that actually evaluated tests (``test_run_passed is not None``) is a real
+    dev attempt and is NEVER infra, regardless of the flag.
     """
+    if run_res.test_run_passed is not None:
+        # The post-model gate ran (tests passed OR failed, including collection
+        # errors that exit pytest non-zero) — this is a genuine dev attempt,
+        # never infra. Also covers the runner's "model did real work then
+        # raised" path, which now reports test_run_passed=False.
+        return False
+    if getattr(run_res, "premodel_infra", False):
+        # Runner explicitly flagged genuine pre-model breakage.
+        return True
+    # Backward-compat heuristic for RunResults built without the explicit flag
+    # (e.g. legacy fixtures): no success, tests never ran, zero cost/tokens.
     return bool(
         not run_res.success
         and run_res.test_run_passed is None
@@ -1727,10 +1790,36 @@ def _handle_dev_once(
         except (json.JSONDecodeError, TypeError):
             prior = []
         prior.append(attempt_record)
+        # R2: stamp this attempt with its normalized failure signature, reusing
+        # the SAME normalize+hash core the recovery / CI-fix loops use (via
+        # ``_story_failure_signature``) so "is this the same failure" means the
+        # same thing everywhere. Signed from the attempt's own ``test_output_tail``
+        # (already in-memory) so we serialize dev_attempts_json exactly ONCE.
         # Cap history to last 5 entries — beyond that the prompt bloat outweighs
         # the signal, and we have the full chain in the per-story event log.
+        # Detection survives across ticks via the persisted field.
+        from factory.chain.orchestrator import _failure_signature_from_tail
+
+        attempt_record["failure_signature"] = _failure_signature_from_tail(
+            str(attempt_record["test_output_tail"])
+        )
         story.dev_attempts_json = json.dumps(prior[-5:])
-    if story.dev_retries >= _MAX_DEV_RETRIES:
+
+    # R2: if the last _MAX_DEV_SAME_SIGNATURE red runs all failed with the
+    # identical signature, the loop is unproductive — escalate now instead of
+    # burning the rest of the retry + per-story budget re-discovering the same
+    # dead end. Dry-run records no attempts, so this never fires there.
+    same_sig_count = 0
+    if not dry_run:
+        try:
+            _attempts_now = json.loads(story.dev_attempts_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            _attempts_now = []
+        _cur_sig = str(attempt_record.get("failure_signature", "") or "")
+        same_sig_count = _consecutive_same_dev_signature(_attempts_now, _cur_sig)
+    same_sig_stall = same_sig_count >= _MAX_DEV_SAME_SIGNATURE
+
+    if story.dev_retries >= _MAX_DEV_RETRIES or same_sig_stall:
         # Preserve whatever dev produced so the work doesn't evaporate
         # into a stash when the next story takes the working tree. Commit
         # any uncommitted changes, push the branch to origin, and surface
@@ -1804,13 +1893,21 @@ def _handle_dev_once(
                 payload["dev_exhausted_commit_error"] = repr(commit_exc)
 
         story.state = advance(story, EVENT_DEV_EXHAUSTED).value
+        _stall_note = (
+            f"same failure signature {same_sig_count}x (>= "
+            f"{_MAX_DEV_SAME_SIGNATURE}); "
+            if same_sig_stall
+            else ""
+        )
         story.error = (
-            f"dev exhausted retries ({story.dev_retries}); "
+            f"dev exhausted retries ({story.dev_retries}); {_stall_note}"
             f"partial work {'pushed to origin' if commit_pushed else 'committed locally'}"
             f"{f' as {commit_sha[:12]}' if commit_sha else ''}"
         )
         payload["dev_exhausted_commit_sha"] = commit_sha
         payload["dev_exhausted_pushed"] = commit_pushed
+        if same_sig_stall:
+            payload["dev_same_signature_stall"] = same_sig_count
         persist_story(story, db)
         log_story_event(
             story.id,
@@ -1820,6 +1917,10 @@ def _handle_dev_once(
                 "commit_sha": commit_sha,
                 "pushed": commit_pushed,
                 "files_changed": payload.get("files_changed", []),
+                # R2: distinguish "ran out of retry budget" from "same failure
+                # N times — escalated early on no new signal".
+                "reason": "same_failure_signature" if same_sig_stall else "max_retries",
+                "same_signature_count": same_sig_count if same_sig_stall else None,
             },
             software_factory_root=software_factory_root,
             slug_hint=story.slug,
@@ -1877,8 +1978,10 @@ def _handle_dev_once(
             story.id,
             "factory_needs_redesign",
             {
+                "kind": "dev_same_signature_stall" if same_sig_stall else "dev_exhausted",
                 "retries_used": story.dev_retries,
                 "max_retries": _MAX_DEV_RETRIES,
+                "same_signature_count": same_sig_count if same_sig_stall else None,
                 "last_test_output_tail": last_tail[-600:],
                 "suggestions": suggestions,
                 "branch": story.github_branch,

@@ -196,6 +196,76 @@ def _story_ledger_spend_usd(db_path: Path, story_id: int | None) -> float | None
     return None
 
 
+# WS1.1 advance-decay: a canonical monotonic ranking of the happy-path states.
+# "Genuine forward progress" == entering a state whose ordinal EXCEEDS the
+# highest the story has ever reached (``story.max_progress_ordinal``). The
+# ranking is deliberately COARSE around the dev<->review loop: DEV_IN_PROGRESS,
+# DEV_RETRY, and REVIEWER_REQUESTED_CHANGES all sit at/below the reviewer tier,
+# so a dev<->reviewer ping-pong (tests_green -> reviewer -> requested_changes ->
+# dev -> tests_green -> ...) re-treads states already at the high-water mark and
+# NEVER counts as progress — exactly the oscillation the breaker must still be
+# able to trip. Only crossing a genuine NEW milestone (first tests_green, first
+# reviewer pass, an APPROVED review, tech-writer, docs, PR, deploy) decays the
+# attempt counter. Error/blocked/*_in_progress-only states are absent -> ordinal
+# 0 (never progress). Stored as an int on the story, so the map's VALUES must
+# stay stable across versions even if states are added.
+_STATE_PROGRESS_ORDINAL: dict[StoryState, int] = {
+    StoryState.STORY_CREATED: 1,
+    StoryState.SM_IN_PROGRESS: 2,
+    StoryState.DOCS_SM_IN_PROGRESS: 2,
+    StoryState.SM_DONE: 3,
+    StoryState.DOCS_SM_DONE: 3,
+    StoryState.DEV_IN_PROGRESS: 4,
+    StoryState.DEV_RETRY: 4,  # a retry is NOT progress — same tier as dev
+    StoryState.DOCS_ONBOARDER_IN_PROGRESS: 4,
+    StoryState.TESTS_GREEN: 5,
+    StoryState.REVIEWER_IN_PROGRESS: 6,
+    # request-changes bounces back to dev; keep it AT the reviewer tier so the
+    # oscillation stays flat (never re-decays once the reviewer tier is reached).
+    StoryState.REVIEWER_REQUESTED_CHANGES: 6,
+    StoryState.REVIEWER_DONE: 7,  # approved — a genuine milestone
+    StoryState.TECH_WRITER_IN_PROGRESS: 8,
+    StoryState.TECH_WRITER_DONE: 9,
+    StoryState.DOCS_ONBOARDER_DONE: 9,
+    StoryState.DOCS_ENFORCER_CHECK: 10,
+    StoryState.PR_OPEN: 11,
+    StoryState.CI_PENDING: 12,
+    StoryState.CI_GREEN: 13,
+    StoryState.READY_FOR_MERGE: 14,
+    StoryState.DEPLOY_PENDING: 15,
+    StoryState.DEPLOYED: 16,
+}
+
+
+def _progress_ordinal(state_value: str) -> int:
+    """Happy-path progress ordinal for a state value (0 for error/blocked/unknown)."""
+    try:
+        return _STATE_PROGRESS_ORDINAL.get(StoryState(state_value), 0)
+    except ValueError:
+        return 0
+
+
+def _apply_advance_decay(story: StoryRecord) -> bool:
+    """Reset ``total_attempts`` iff ``story`` just made genuine forward progress.
+
+    Genuine progress == the story's CURRENT state ranks strictly higher than any
+    state it has previously reached (``max_progress_ordinal``). This is
+    monotonic, so each milestone decays the attempt counter AT MOST once and a
+    dev<->review oscillation (which never exceeds the high-water mark) never
+    decays — so an oscillating/stuck story still exhausts the attempt budget
+    while an advancing one is never tripped on attempts. ``total_spend_usd`` is
+    deliberately untouched: spend is the absolute cost ceiling.
+
+    Returns True when a decay was applied (caller logs an evidence event).
+    """
+    ordinal = _progress_ordinal(story.state)
+    if ordinal > story.max_progress_ordinal:
+        story.max_progress_ordinal = ordinal
+        story.total_attempts = 0
+        return True
+    return False
+
+
 def _story_budget_breaker_reason(story: StoryRecord, caps: Any) -> str | None:
     """Return a human-readable reason iff the per-story breaker has tripped.
 
@@ -638,11 +708,22 @@ def _story_failure_signature(story: StoryRecord) -> str:
                 raw = (last.get("test_output_tail") or "").strip()
     if not raw:
         raw = (story.error or "").strip()
+    return _failure_signature_from_tail(raw)
+
+
+def _failure_signature_from_tail(raw: str) -> str:
+    """Normalized failure signature for a raw failure/test-output tail.
+
+    The tail→normalize→hash core of ``_story_failure_signature``, exposed so the
+    dev loop can sign an attempt's own ``test_output_tail`` directly (it already
+    has the tail in-memory and must not re-read the story's serialized state).
+    Both callers therefore produce the IDENTICAL signature for the same failure.
+    Returns ``""`` when there is no failure text.
+    """
+    raw = (raw or "").strip()
     if not raw:
         return ""
-
     normalized = _normalize_failure_text(raw)
-
     # The tail carries the actual assertion/error; the head is often
     # boilerplate pytest banner/collection noise that's identical across
     # unrelated failures.
@@ -1324,6 +1405,25 @@ def tick(
                 _spend = _story_ledger_spend_usd(db, story.id)
                 if _spend is not None:
                     story.total_spend_usd = _spend
+                # WS1.1 advance-decay: if this dispatch moved the story to a NEW
+                # happy-path milestone (strictly beyond its high-water mark, so
+                # NOT a dev<->review oscillation), reset the attempt counter so a
+                # poisoned historical count (e.g. attempts burned by an earlier
+                # infra bug) can't false-trip the breaker on a story that IS
+                # progressing. Spend stays the hard ceiling. Persist happens
+                # below so the decayed counter survives to the next tick.
+                if _apply_advance_decay(story):
+                    log_story_event(
+                        story.id,
+                        "budget_attempts_decayed",
+                        {
+                            "to_state": story.state,
+                            "progress_ordinal": story.max_progress_ordinal,
+                            "total_spend_usd": round(story.total_spend_usd, 4),
+                        },
+                        software_factory_root=root,
+                        slug_hint=story.slug,
+                    )
                 H.persist_story(story, db)
                 summary.handler_runs.append((story.slug, from_state, story.state))
                 summary.stories_advanced += 1

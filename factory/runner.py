@@ -203,6 +203,16 @@ class RunResult:
     last_assistant_message: str = ""
     recent_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     self_summary: str = ""
+    # Explicit "the sandbox failed BEFORE any model work" signal. True only for
+    # genuine pre-model breakage (no API key, SDK import failure, a stalled LLM
+    # request killed by the wall-clock timeout before it produced any usage).
+    # The dev handler's ``_is_premodel_infra_failure`` prefers this flag over
+    # the older zero-cost/None heuristic: a run that DID spend model tokens and
+    # then raised (e.g. during metrics extraction or conversation teardown) is
+    # a genuine failed dev attempt — it must consume a dev retry, NOT be bounced
+    # back for free as "infra". Defaults False so every non-infra return path
+    # (including a normal red run) is correctly counted as a real attempt.
+    premodel_infra: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -1225,7 +1235,7 @@ async def sandbox_run(
             direction_id=direction_id,
             app=app,
         )
-        return RunResult(success=False, error=err, summary=err)
+        return RunResult(success=False, error=err, summary=err, premodel_infra=True)
 
     try:
         # Import OpenHands lazily so test/CLI paths that never hit a real run
@@ -1254,7 +1264,7 @@ async def sandbox_run(
             direction_id=direction_id,
             app=app,
         )
-        return RunResult(success=False, error=err, summary=err)
+        return RunResult(success=False, error=err, summary=err, premodel_infra=True)
 
     # For Azure (either surface), populate base_url + api_version from env if
     # the caller didn't pass them. The two surfaces read different env vars:
@@ -1331,6 +1341,14 @@ async def sandbox_run(
 
     loop = asyncio.get_running_loop()
 
+    # Usage captured AS SOON AS the model run completes, BEFORE memory
+    # extraction / conversation teardown. If ``_do_run`` raises after this is
+    # populated (e.g. ``_extract_conversation_memory`` or ``close()`` blows up),
+    # the ``except`` handler below reads this holder to tell "the model did real
+    # work then crashed" (a genuine failed dev attempt — must burn a retry)
+    # apart from "the sandbox died before any model work" (infra — free retry).
+    _partial_usage: dict[str, float] = {}
+
     def _do_run() -> tuple[int, int, int, float, str, list[dict[str, Any]]]:
         # ``Conversation`` is a factory that returns LocalConversation/RemoteConversation
         # depending on the workspace type. Treat as Any for mypy purposes.
@@ -1352,6 +1370,11 @@ async def sandbox_run(
             # a raw litellm response here.
             t_cached = int(getattr(tok, "cache_read_tokens", 0) or 0)
             cost = float(getattr(stats, "accumulated_cost", 0.0) or 0.0)
+            # Record usage the instant it is known so a later crash in this
+            # function is still attributable to real model work.
+            _partial_usage.update(
+                tokens_in=t_in, tokens_out=t_out, cached=t_cached, cost=cost
+            )
             # Extract cross-retry memory signal from the conversation's
             # event stream BEFORE closing. ``conversation.state.events`` is
             # the canonical sequence of MessageEvent / ActionEvent /
@@ -1402,13 +1425,22 @@ async def sandbox_run(
             "(likely a stalled LLM call); treating as retryable infrastructure "
             "failure"
         )
+        # Same distinction as the generic-except path below: if the model run
+        # actually completed and only the post-model teardown (memory
+        # extraction / close) hit the wall clock, ``_partial_usage`` is
+        # populated — that is a genuine attempt whose spend must be recorded and
+        # which must consume a dev retry, NOT a free infra bounce. A truly
+        # stalled LLM (no partial usage) stays retryable infra.
+        _t_out = int(_partial_usage.get("tokens_out", 0) or 0)
+        _cost = float(_partial_usage.get("cost", 0.0) or 0.0)
+        model_did_work = _t_out > 0 or _cost > 0.0
         _record(
             persona=persona,
             model=llm_config.model,
             mode="sandbox",
-            tokens_in=0,
-            tokens_out=0,
-            cost_usd=0.0,
+            tokens_in=int(_partial_usage.get("tokens_in", 0) or 0),
+            tokens_out=_t_out,
+            cost_usd=_cost,
             success=False,
             story_path=str(story_path),
             repo_path=str(repo_path),
@@ -1419,27 +1451,41 @@ async def sandbox_run(
             model_tier=difficulty,
             direction_id=direction_id,
             app=app,
+            cached_input_tokens=int(_partial_usage.get("cached", 0) or 0),
         )
-        # test_run_passed defaults to None + zero cost/tokens → matches
-        # handle_dev._is_premodel_infra_failure, so the dev circuit breaker
-        # re-dispatches without consuming the retry budget.
         return RunResult(
             success=False,
+            # Model completed then teardown timed out → a real red attempt;
+            # otherwise a stalled request that never produced work → infra.
+            test_run_passed=False if model_did_work else None,
+            tokens_in=int(_partial_usage.get("tokens_in", 0) or 0),
+            tokens_out=_t_out,
+            cost_usd=_cost,
             error=err,
             summary=err,
             last_assistant_message="",
             recent_tool_calls=[],
             self_summary="",
+            premodel_infra=not model_did_work,
         )
     except Exception as exc:
         err = f"sandbox run raised: {exc!r}"
+        # Distinguish "the model already did real work then something raised"
+        # (e.g. metrics extraction / conversation teardown blew up) from "the
+        # sandbox died before any model work". Only the latter is pre-model
+        # infra; the former is a genuine failed dev attempt that MUST consume a
+        # dev retry (bypassing the increment was the story-88 bug: dev_retries
+        # stuck at 1 while the story was re-dispatched for free 12 times).
+        _t_out = int(_partial_usage.get("tokens_out", 0) or 0)
+        _cost = float(_partial_usage.get("cost", 0.0) or 0.0)
+        model_did_work = _t_out > 0 or _cost > 0.0
         _record(
             persona=persona,
             model=llm_config.model,
             mode="sandbox",
-            tokens_in=0,
-            tokens_out=0,
-            cost_usd=0.0,
+            tokens_in=int(_partial_usage.get("tokens_in", 0) or 0),
+            tokens_out=_t_out,
+            cost_usd=_cost,
             success=False,
             story_path=str(story_path),
             repo_path=str(repo_path),
@@ -1450,14 +1496,24 @@ async def sandbox_run(
             model_tier=difficulty,
             direction_id=direction_id,
             app=app,
+            cached_input_tokens=int(_partial_usage.get("cached", 0) or 0),
         )
         return RunResult(
             success=False,
+            # When the model did work the tests were NOT evaluated by the
+            # post-model gate (we never reached it), but the attempt is real:
+            # report test_run_passed=False so handle_dev counts it as a red
+            # dev run rather than pre-model infra.
+            test_run_passed=False if model_did_work else None,
+            tokens_in=int(_partial_usage.get("tokens_in", 0) or 0),
+            tokens_out=_t_out,
+            cost_usd=_cost,
             error=err,
             summary=err,
             last_assistant_message="",
             recent_tool_calls=[],
             self_summary="",
+            premodel_infra=not model_did_work,
         )
 
     files_changed = _scan_repo_for_changed_files(Path(repo_path))
