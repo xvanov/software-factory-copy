@@ -164,7 +164,7 @@ def test_live_run_non_ux_prompt_is_unchanged(
     assert "Scheduled UX Audit Runtime Inputs" not in str(captured["prompt"])
 
 
-def test_run_scheduled_persona_errors_when_ux_live_run_has_no_flow_artifact(
+def test_run_scheduled_persona_skips_when_ux_live_run_has_no_flow_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -182,10 +182,9 @@ def test_run_scheduled_persona_errors_when_ux_live_run_has_no_flow_artifact(
 
     out = run_scheduled_persona("ux_auditor", "sacrifice", root, dry_run=False)
 
-    assert out.status == "errored"
+    assert out.status == "rejected"
     assert out.findings_count == 0
-    assert out.error is not None
-    assert "flow.md" in out.error
+    assert out.error == "ux_auditor_no_flow_artifacts"
 
 
 def test_file_finding_creates_flow_md_for_ux_finding(tmp_path: Path) -> None:
@@ -219,3 +218,36 @@ def test_file_finding_creates_flow_md_for_ux_finding(tmp_path: Path) -> None:
     flow_text = flow_md.read_text(encoding="utf-8")
     assert "Flow: checkout-flow.md" in flow_text
     assert "Step: 2" in flow_text
+
+
+def test_live_run_is_not_blocked_when_flow_md_is_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UX auditor live run proceeds normally when flow.md artifacts exist."""
+    root = _write_app(tmp_path, with_flow=True)
+
+    monkeypatch.setattr("factory.chain.scheduled_tasks.route", lambda _persona: "fake-model")
+    monkeypatch.setattr(
+        "factory.context.loader.compose_context_prelude",
+        lambda *_args, **_kwargs: "PRELUDE",
+    )
+    monkeypatch.setattr(
+        "factory.runner.text_run",
+        lambda *_args, **_kwargs: {"findings": [], "duration_s": 0.1},
+    )
+
+    out = run_scheduled_persona("ux_auditor", "sacrifice", root, dry_run=False)
+
+    assert out.status == "ok"
+    assert out.findings_count == 0
+
+
+def test_dry_run_does_not_require_flow_md_artifacts(tmp_path: Path) -> None:
+    """Dry-run uses fixtures and should not be gated on flow.md availability."""
+    root = _write_app(tmp_path, with_flow=False)
+
+    out = run_scheduled_persona("ux_auditor", "sacrifice", root, dry_run=True)
+
+    assert out.status == "dry_run"
+    assert out.findings_count == 1

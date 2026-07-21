@@ -585,6 +585,24 @@ def run_scheduled_persona(
     if dry_run:
         raw = fixture_output if fixture_output is not None else _dry_run_fixture(persona, app)
     else:
+        # UX auditor gate: skip the run when no flow.md artifacts are
+        # available. A replay-based UX audit without concrete flow steps
+        # is evidence-free and not useful. This gate runs before the LLM
+        # call so we never spend tokens on a no-evidence audit.
+        if persona == "ux_auditor" and not _collect_flow_artifacts(app, root):
+            duration = (datetime.now(UTC) - started).total_seconds()
+            return _record_and_return(
+                persona=persona,
+                app=app,
+                duration_s=duration,
+                findings_count=0,
+                directions_filed=[],
+                status="rejected",
+                error="ux_auditor_no_flow_artifacts",
+                dry_run=False,
+                raw_output={},
+                db_path=db,
+            )
         try:
             raw = _live_run(persona, app, root)
         except Exception as exc:  # noqa: BLE001 - capture all exceptions for audit
