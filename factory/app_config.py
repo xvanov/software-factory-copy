@@ -207,3 +207,29 @@ def resolve_app_repo_path(cfg: AppConfig, software_factory_root: Path) -> Path:
     if p.is_absolute():
         return p
     return (Path(software_factory_root) / p).resolve()
+
+
+def list_apps(software_factory_root: Path) -> list[dict[str, object]]:
+    """Discover every ``apps/*/config.yaml`` and return one summary dict per app.
+
+    Each dict contains at least: ``name``, ``repo``, ``self_tick_enabled``,
+    ``deploy_enabled`` — reading effective values from the app's config.yaml.
+    The function is pure: it never mutates config, filesystem, or runtime state.
+    """
+    apps_dir = Path(software_factory_root) / "apps"
+    if not apps_dir.is_dir():
+        return []
+
+    result: list[dict[str, object]] = []
+    for cfg_path in sorted(apps_dir.glob("*/config.yaml")):
+        app_name = cfg_path.parent.name
+        cfg = load_app_config(app_name, software_factory_root)
+        result.append(
+            {
+                "name": cfg.name,
+                "repo": cfg.repo,
+                "self_tick_enabled": cfg.self_tick_enabled,
+                "deploy_enabled": cfg.deploy.enabled,
+            }
+        )
+    return result

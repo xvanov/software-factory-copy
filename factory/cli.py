@@ -416,6 +416,7 @@ def tick_cmd(
         # Fail-open: a broken halt module must not silently disable all ticks,
         # but an operator MUST notice, so we print to stderr.
         import sys as _sys
+
         print(
             f"[tick] WARNING: halt-check raised an exception: {_halt_check_exc!r}; "
             "continuing with tick (fail-open). This may indicate a broken halt module.",
@@ -575,7 +576,9 @@ def tick_cmd(
                 scheduled_results.append(
                     (
                         "auto_intake",
-                        "ok" if not intake_summary.errors else f"errors:{len(intake_summary.errors)}",
+                        "ok"
+                        if not intake_summary.errors
+                        else f"errors:{len(intake_summary.errors)}",
                         len(intake_summary.accepted),
                         len(intake_summary.accepted),
                     )
@@ -1113,9 +1116,7 @@ def resume_cmd(
             )
         )
         if not yes:
-            confirmed = typer.confirm(
-                "Clear the halt and resume normal operation?", default=False
-            )
+            confirmed = typer.confirm("Clear the halt and resume normal operation?", default=False)
             if not confirmed:
                 console.print("[yellow]Aborted.[/yellow]")
                 raise typer.Exit(code=0)
@@ -1137,9 +1138,7 @@ def resume_cmd(
         from factory.settings.modes import set_mode
 
         new = set_mode("normal", _FACTORY_ROOT)
-        console.print(
-            Panel.fit(f"factory mode -> [bold green]{new}[/bold green]", title="resume")
-        )
+        console.print(Panel.fit(f"factory mode -> [bold green]{new}[/bold green]", title="resume"))
 
 
 @app.command("mode")
@@ -1507,9 +1506,10 @@ def _story_progress_rows(app_name: str | None) -> list[dict[str, Any]]:
         commit = "—"
         try:
             res = subprocess.run(
-                ["git", "-C", "/home/k/sacrifice", "log", "-1", "--format=%h %s",
-                 branch, "--"],
-                capture_output=True, text=True, timeout=5,
+                ["git", "-C", "/home/k/sacrifice", "log", "-1", "--format=%h %s", branch, "--"],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if res.returncode == 0 and res.stdout.strip():
                 commit = res.stdout.strip()[:60]
@@ -2620,11 +2620,25 @@ def signals_dump_cmd(
 @manager_app.command("watch")
 def manager_watch_cmd(
     once: bool = typer.Option(False, "--once", help="Run a single watcher cycle and exit."),
-    interval_s: int = typer.Option(60, "--interval-s", help="Seconds between watcher cycles (daemon mode)."),
-    max_iters: int | None = typer.Option(None, "--max-iters", help="Stop after N iterations (useful for testing)."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Assemble prompt but do NOT call the LLM; print the prompt."),
-    no_l2: bool = typer.Option(False, "--no-l2", help="Suppress the immediate L2 trigger on L1 escalation (useful for testing L1 in isolation)."),
-    no_l3: bool = typer.Option(False, "--no-l3", help="Suppress the immediate L3 trigger on L2 escalation (useful for testing L2 in isolation)."),
+    interval_s: int = typer.Option(
+        60, "--interval-s", help="Seconds between watcher cycles (daemon mode)."
+    ),
+    max_iters: int | None = typer.Option(
+        None, "--max-iters", help="Stop after N iterations (useful for testing)."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Assemble prompt but do NOT call the LLM; print the prompt."
+    ),
+    no_l2: bool = typer.Option(
+        False,
+        "--no-l2",
+        help="Suppress the immediate L2 trigger on L1 escalation (useful for testing L1 in isolation).",
+    ),
+    no_l3: bool = typer.Option(
+        False,
+        "--no-l3",
+        help="Suppress the immediate L3 trigger on L2 escalation (useful for testing L2 in isolation).",
+    ),
     no_auto_apply: bool = typer.Option(
         False,
         "--no-auto-apply",
@@ -2698,6 +2712,7 @@ def manager_watch_cmd(
         if not dry_run:
             # Pretty-print the result envelope.
             import json as _json
+
             print(_json.dumps(result, indent=2, default=str))
     else:
         if dry_run:
@@ -2752,6 +2767,7 @@ def manager_summarize_cmd(
             console.print("[dim]No flagged watcher notes found — nothing to summarize.[/dim]")
         elif not dry_run:
             import json as _json
+
             print(_json.dumps(result, indent=2, default=str))
     else:
         if dry_run:
@@ -2774,7 +2790,9 @@ def manager_summarize_cmd(
 def manager_diagnose_cmd(
     once: bool = typer.Option(False, "--once", help="Run a single diagnostician cycle and exit."),
     interval_s: int = typer.Option(
-        300, "--interval-s", help="Seconds between diagnostician cycles (daemon mode). Default: 300."
+        300,
+        "--interval-s",
+        help="Seconds between diagnostician cycles (daemon mode). Default: 300.",
     ),
     max_iters: int | None = typer.Option(
         None, "--max-iters", help="Stop after N iterations (useful for testing)."
@@ -2814,6 +2832,7 @@ def manager_diagnose_cmd(
             console.print("[dim]No unprocessed concerns found — nothing to diagnose.[/dim]")
         elif not dry_run:
             import json as _json
+
             print(_json.dumps(result, indent=2, default=str))
     else:
         if dry_run:
@@ -2965,7 +2984,9 @@ def cb_status_cmd() -> None:
     tripped_at = state.get("tripped_at", "?")
 
     status_color = "red" if tripped else "yellow"
-    status_label = "TRIPPED (halting apply pipeline)" if tripped else "TRIPPED (halt window expired)"
+    status_label = (
+        "TRIPPED (halting apply pipeline)" if tripped else "TRIPPED (halt window expired)"
+    )
 
     console.print(
         Panel.fit(
@@ -2993,7 +3014,9 @@ def cb_check_cmd(
 
     result = check_and_trip(root=_FACTORY_ROOT, test_command=test_command)
     if result is None:
-        console.print("[green]Circuit breaker check: tests passed (or no tracked manager commit at HEAD).[/green]")
+        console.print(
+            "[green]Circuit breaker check: tests passed (or no tracked manager commit at HEAD).[/green]"
+        )
     else:
         console.print(
             Panel.fit(
@@ -3036,7 +3059,9 @@ def cb_reset_cmd(
         )
     )
     if not yes:
-        confirmed = typer.confirm("Clear the circuit breaker and resume the apply pipeline?", default=False)
+        confirmed = typer.confirm(
+            "Clear the circuit breaker and resume the apply pipeline?", default=False
+        )
         if not confirmed:
             console.print("[yellow]Aborted.[/yellow]")
             raise typer.Exit(code=0)
@@ -3089,17 +3114,14 @@ def refresh_context_cmd(
 
     if module is not None and module not in ALL_MODULES:
         console.print(
-            f"[red]error:[/red] unknown module {module!r}. "
-            f"Valid: {', '.join(ALL_MODULES)}"
+            f"[red]error:[/red] unknown module {module!r}. Valid: {', '.join(ALL_MODULES)}"
         )
         raise typer.Exit(code=2)
 
     if not dry_run:
         ok, hint = _has_any_llm_provider_key()
         if not ok:
-            console.print(
-                "[red]error:[/red] real refresh requires an LLM provider key. " + hint
-            )
+            console.print("[red]error:[/red] real refresh requires an LLM provider key. " + hint)
             raise typer.Exit(code=2)
 
     mode_label = "[yellow]DRY-RUN[/yellow]" if dry_run else "[green]REAL RUN[/green]"
@@ -3144,3 +3166,39 @@ def refresh_context_cmd(
     console.print(f"refreshed={refreshed} failed={failed}")
     if failed:
         raise typer.Exit(code=1)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 10 commands: factory apps (configured-app discovery)
+# --------------------------------------------------------------------------- #
+
+
+@app.command("apps")
+def apps_cmd() -> None:
+    """List every configured app (apps/*/config.yaml) with key operator fields.
+
+    Read-only: never mutates config, filesystem, or runtime state.
+    """
+    from factory.app_config import list_apps
+
+    rows = list_apps(_FACTORY_ROOT)
+
+    if not rows:
+        console.print("[dim]No configured apps found (no apps/*/config.yaml).[/dim]")
+        raise typer.Exit(code=0)
+
+    table = Table(title="Configured Apps")
+    table.add_column("name")
+    table.add_column("repo")
+    table.add_column("self_tick_enabled")
+    table.add_column("deploy.enabled")
+
+    for r in rows:
+        table.add_row(
+            str(r["name"]),
+            str(r["repo"]),
+            str(r["self_tick_enabled"]),
+            str(r["deploy_enabled"]),
+        )
+
+    console.print(table)
