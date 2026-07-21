@@ -3213,3 +3213,22 @@ def apps_cmd(
         )
 
     console.print(table)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 10 commands: factory version (git-state reporting)
+# --------------------------------------------------------------------------- #
+
+
+@app.command("version")
+def version_cmd() -> None:
+    """Print the factory repo's git SHA (short), branch name, and dirty flag.
+
+    Read-only: no writes, no network — only local git metadata reads.
+    """
+    from factory.git_state import get_git_state
+
+    state = get_git_state(_FACTORY_ROOT)
+    dirty_flag = " (dirty)" if state.dirty else ""
+    typer.echo(f"{state.sha} {state.branch}{dirty_flag}")
+    raise typer.Exit(code=0)
