@@ -3488,6 +3488,129 @@ def _post_factory_needs_redesign_comment(
     )
 
 
+def _autoformat_changed_py_before_pr(target_repo: Path, base: str) -> None:
+    """Best-effort: run ``ruff check --fix --select I`` (import-sort only) +
+    ``ruff format`` on the story's own changed ``.py`` files and commit the
+    result before the PR is opened.
+
+    Rationale (2026-07-21): a factory self-edit (PR #57) shipped with a trivial
+    ``I001`` unsorted-import + missing-trailing-newline. The chain's pre-merge
+    gates (tests-green / smoke / staging-clone) do NOT run ``ruff``, so the nit
+    only surfaced at GitHub's required lint check — which blocked the merge and,
+    because auto-merge had already been enabled, left the story stranded at
+    ``deploy_pending``. Making the pushed branch ruff-clean removes that class
+    of false-block.
+
+    Scoped and safe: only the files this branch changed vs ``origin/<base>`` are
+    touched (never a whole-repo reformat of unrelated code), the whole thing is
+    a no-op when the repo has no ruff config or ``ruff`` is unavailable, and it
+    NEVER raises — a formatting hiccup must not block PR creation.
+    """
+    import subprocess
+
+    # Only for repos that actually use ruff (config present) — otherwise a
+    # ``ruff format`` would be meaningless / could touch code the repo's own CI
+    # does not lint.
+    has_ruff = (target_repo / "ruff.toml").exists() or (
+        target_repo / ".ruff.toml"
+    ).exists()
+    if not has_ruff:
+        pyproject = target_repo / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                # Matches ``[tool.ruff]`` and any sub-table (``[tool.ruff.lint]``,
+                # ``[tool.ruff.format]``) — a repo may configure only a sub-table.
+                has_ruff = "[tool.ruff" in pyproject.read_text(encoding="utf-8")
+            except OSError:
+                has_ruff = False
+    if not has_ruff:
+        return
+
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--name-only", f"origin/{base}...HEAD"],
+            cwd=str(target_repo),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return
+    if diff.returncode != 0:
+        return
+    py_files = [
+        f
+        for f in diff.stdout.split()
+        if f.endswith(".py") and (target_repo / f).is_file()
+    ]
+    if not py_files:
+        return
+
+    try:
+        # Deliberately NARROW: only import-sorting (``--select I``) plus
+        # ``ruff format``. These are the NON-SEMANTIC nits that spuriously fail
+        # a required lint check (I001 unsorted imports, missing trailing
+        # newline, whitespace) — exactly PR #57's failure. A blanket
+        # ``ruff check --fix`` under the factory's full ruleset (E/F/I/W/UP/B)
+        # would also apply SEMANTIC "safe" fixes — e.g. delete an unused
+        # side-effect import (F401) or rewrite typing (UP) — and since the code
+        # is NOT re-tested after this step, such a mutation could break CI and
+        # re-create the very strand we're removing. A real E/F/UP/B error should
+        # surface at CI and be fixed by the dev loop, not silently auto-mutated.
+        subprocess.run(
+            ["uv", "run", "ruff", "check", "--fix", "--select", "I", *py_files],
+            cwd=str(target_repo),
+            check=False,
+            capture_output=True,
+            timeout=180,
+        )
+        subprocess.run(
+            ["uv", "run", "ruff", "format", *py_files],
+            cwd=str(target_repo),
+            check=False,
+            capture_output=True,
+            timeout=180,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return
+
+    # Commit only if ruff actually changed something.
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", *py_files],
+            cwd=str(target_repo),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if status.returncode == 0 and status.stdout.strip():
+            # Pathspec-scoped add+commit: only the story's own py files are
+            # committed, even if some earlier step left unrelated staged content
+            # in the index. The trailing ``-- <files>`` keeps the commit tight.
+            subprocess.run(
+                ["git", "add", "--", *py_files],
+                cwd=str(target_repo),
+                check=False,
+                capture_output=True,
+                timeout=30,
+            )
+            subprocess.run(
+                [
+                    "git", "commit",
+                    "-m", "style: ruff isort + format (pre-PR autoformat)",
+                    "--", *py_files,
+                ],
+                cwd=str(target_repo),
+                check=False,
+                capture_output=True,
+                timeout=60,
+            )
+    except (subprocess.TimeoutExpired, OSError):
+        return
+
+
 def _open_pr_for_story(
     story: StoryRecord, app_config: AppConfig, software_factory_root: Path
 ) -> int | None:
@@ -3574,6 +3697,16 @@ def _open_pr_for_story(
             capture_output=True,
             timeout=120,
         )
+        # Auto-format the story's own changed .py files (ruff --fix + format)
+        # and commit any fixes BEFORE pushing. Trivial lint/format nits (import
+        # sort, missing trailing newline) that the dev persona leaves would
+        # otherwise fail GitHub's required lint check — which the chain's
+        # pre-merge gates (tests-green / smoke / staging) do NOT cover — and,
+        # via the auto-merge-enabled path, strand the story at deploy_pending
+        # (found 2026-07-21 on the first factory self-edit, PR #57). Best-effort
+        # and scoped to changed files, so it never reformats unrelated code and
+        # never blocks PR creation.
+        _autoformat_changed_py_before_pr(target_repo, base)
         # Push the branch; gh pr create needs an upstream ref.
         # --force-with-lease: story branches are factory-owned and single-
         # writer, and origin may hold STALE commits from abandoned earlier
