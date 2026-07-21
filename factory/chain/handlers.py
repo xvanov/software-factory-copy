@@ -408,9 +408,17 @@ def handle_stories_spawned(
 
         for interp in interpretations:
             slug_base = _slug_of(interp.title or direction.title or "story")
-            # Force interpretation_id into the slug so two draft PRs
-            # don't collide on branch names.
-            slug = f"{slug_base}-{interp.interpretation_id}"[:60].strip("-") or "story"
+            # ALWAYS preserve the dual-draft interpretation suffix (``-alt-a`` /
+            # ``-alt-b``). The entire loser-cleanup mechanism identifies siblings
+            # via a trailing ``-alt-*`` (``dual_draft._DRAFT_ALT_SLUG_RE``). The
+            # old ``f"{base}-{id}"[:60]`` truncated the SUFFIX off for long
+            # titles — both siblings collapsed to the same 60-char slug with NO
+            # ``-alt-*``, so ``_draft_alt_suffix`` returned None, sibling
+            # detection failed silently, and BOTH interpretations merged (the
+            # dir 010 over-fire, 2026-07-21). Reserve room for the suffix by
+            # truncating the BASE, so ``-alt-a``/``-alt-b`` always survives.
+            _alt = f"-{interp.interpretation_id}"
+            slug = (slug_base[: max(1, 60 - len(_alt))].strip("-") + _alt) or "story"
             title = f"{interp.title}"[:200]
             issue_number: int | None = None
             story_file_path = f"stories/0-{slug}.md"
