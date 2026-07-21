@@ -95,6 +95,19 @@ class StoryState(StrEnum):
     # factory_settings.yaml. There is deliberately no auto-recovery path
     # (this state is absent from ``_AUTO_RECOVERABLE_STATES``).
     BLOCKED_BUDGET_EXCEEDED = "blocked_budget_exceeded"
+    # Phase 7 dual-draft loser sink. An ambiguous/(explore) direction spawns
+    # TWO ``draft-alternative`` siblings (slugs ``…-alt-a`` / ``…-alt-b``); only
+    # ONE should ship. When the winner's PR merges, the loser is parked here by
+    # ``dual_draft.close_abandoned_draft_sibling`` so the chain stops driving it
+    # (otherwise a loser still in dev/review would open its own PR and merge a
+    # redundant second interpretation to main — observed: direction 007 shipped
+    # BOTH PR #67 and #69). TERMINAL: no outgoing transition, so ``is_terminal``
+    # reports True, ``_dispatch_for_story`` returns None, and it is absent from
+    # ``auto_merge._MERGEABLE_STATES``. A supersede can fire from ANY in-flight
+    # state, so the caller sets this via a DIRECT state assignment rather than a
+    # state-machine ``advance()`` edge — deliberately NOT wired as an EVENT_*
+    # transition from every source state.
+    SUPERSEDED_BY_SIBLING = "superseded_by_sibling"
 
 
 class StoryRecord(SQLModel, table=True):

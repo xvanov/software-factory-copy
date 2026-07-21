@@ -1049,6 +1049,7 @@ def queue_cmd(
         StoryState.CI_GREEN.value,
         StoryState.READY_FOR_MERGE.value,
         StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
+        StoryState.SUPERSEDED_BY_SIBLING.value,
     }
     eng = create_engine(f"sqlite:///{db}", echo=False)
     table = Table(title="queue (in-flight stories)")
@@ -1487,7 +1488,7 @@ def _story_progress_rows(app_name: str | None) -> list[dict[str, Any]]:
         "SELECT id, app, slug, state, chain_kind, dev_retries, reviewer_cycles, "
         "github_issue_number, updated_at FROM stories WHERE state NOT IN "
         "('deployed','blocked_tests_need_clarification','blocked_deploy_failed',"
-        "'blocked_review_nonconvergent','story_created')"
+        "'blocked_review_nonconvergent','superseded_by_sibling','story_created')"
     )
     params: list[Any] = []
     if app_name:

@@ -370,6 +370,9 @@ _NON_CAP_COUNTING_STATES = {
     # WS1.1 terminal budget sink — the story is done burning spend; it must
     # not count against concurrency caps.
     StoryState.BLOCKED_BUDGET_EXCEEDED.value,
+    # Dual-draft loser sink (terminal). A superseded sibling is abandoned; it
+    # must not consume a concurrency slot.
+    StoryState.SUPERSEDED_BY_SIBLING.value,
     # Passive transition states — no agent is actively running; the story
     # is simply waiting for the orchestrator to dispatch the next handler
     # on the next tick. Counting these against the cap deadlocks any

@@ -41,6 +41,12 @@ _TERMINAL_STATES = frozenset(
         "blocked_tests_need_clarification",
         "blocked_deploy_failed",
         "blocked_review_nonconvergent",
+        # A dual-draft loser is an intentional terminal sink (its winning
+        # sibling shipped) — aging here is expected, never a stall to escalate.
+        "superseded_by_sibling",
+        # Budget-exhausted stories are also terminal; their absence here made
+        # the stalled-story detector re-alarm on them forever (concern-spam).
+        "blocked_budget_exceeded",
     }
 )
 

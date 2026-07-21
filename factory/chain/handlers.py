@@ -295,6 +295,9 @@ def stories_in_flight(app: str, db_path: Path) -> list[StoryRecord]:
         StoryState.DEPLOYED.value,
         StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
         StoryState.BLOCKED_DEPLOY_FAILED.value,
+        # Dual-draft loser: terminal, so its worktree is prunable and it never
+        # counts as in-flight.
+        StoryState.SUPERSEDED_BY_SIBLING.value,
     }
     # DEPLOY_PENDING is INTENTIONALLY in-flight so the orchestrator's
     # _DISPATCH picks it up for handle_deploy.

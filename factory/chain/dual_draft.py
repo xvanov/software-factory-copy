@@ -20,6 +20,7 @@ flow offline.
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -301,6 +302,30 @@ def _draft_alt_suffix(slug: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _close_loser_pr(pr_number: int, repo: str, runner: Any) -> None:
+    """Best-effort ``gh pr close --delete-branch`` on a losing sibling's PR.
+
+    A *closed* PR cannot auto-merge, so this is what actually prevents the
+    double-merge (the loser used to keep its own auto-merge-enabled PR and
+    shipped a redundant second interpretation ~minutes after the winner —
+    e.g. direction 007 landed BOTH PR #67 and #69). Mirrors the shell-out in
+    ``factory_improver_apply._comment_and_close_pr``. Never raises — this is
+    bookkeeping and must not break the merge worker. ``gh pr close`` on an
+    already-closed/merged PR is a harmless no-op (``check=False``), so a
+    re-run is safe.
+    """
+    try:
+        runner(
+            ["gh", "pr", "close", str(pr_number), "--repo", repo, "--delete-branch"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except Exception:  # noqa: BLE001 — bookkeeping must never break merge
+        pass
+
+
 def close_abandoned_draft_sibling(
     winner: Any,
     app_config: Any,
@@ -308,25 +333,40 @@ def close_abandoned_draft_sibling(
     db_path: Path,
     github_client: Any,
     dry_run: bool,
+    *,
+    runner: Any = None,
 ) -> bool:
-    """Close the losing dual-draft sibling's GitHub issue once ``winner`` merges.
+    """Retire the losing dual-draft sibling once ``winner`` merges.
 
     The dual-draft flow spawns two ``draft-alternative`` StoryRecords per
     ambiguous direction; the tracker comment (``link_alternatives``)
     promises "the factory auto-cleans the other draft once one alternative
-    merges" but that cleanup never existed — whichever alternative's PR
-    merged first left its sibling's issue (and branch) open forever (e.g.
-    #210 orphaned after #209 merged — audit 2026-07-18, leak 4 of 4).
+    merges". The original cleanup only closed the loser's GitHub *issue* — it
+    left the loser's in-flight StoryRecord AND its open PR alone, so a loser
+    that already had an auto-merge-enabled PR merged ANYWAY minutes later and
+    BOTH interpretations shipped to main (direction 007: PR #67 AND #69).
 
     ``winner`` is the StoryRecord whose PR just merged. Looks up sibling
-    StoryRecords sharing ``direction_id`` + ``app``, filters to the ones
-    that carry the dual-draft slug suffix (excluding the winner's own
-    interpretation), and — for any still-open GitHub issue among them —
-    posts an explanatory comment and closes it with reason "not planned".
+    StoryRecords sharing ``direction_id`` + ``app``, filters to the ones that
+    carry the dual-draft slug suffix (excluding the winner's own
+    interpretation), and for each losing sibling:
 
-    Best-effort and idempotent; never raises — a bookkeeping close must
-    never break the merge worker. Returns True iff at least one sibling
-    issue was closed.
+      1. **Closes its open PR** (``gh pr close --delete-branch``) if it has
+         one — a closed PR cannot auto-merge (prevents the double-merge).
+      2. **Closes its still-open tracker issue** with reason "not planned".
+      3. **Terminally supersedes its StoryRecord** — sets the state to
+         ``SUPERSEDED_BY_SIBLING`` so the orchestrator stops dispatching it
+         (covers a loser with NO PR yet, still in dev/review, that would
+         otherwise open a PR and merge later). A supersede can fire from ANY
+         in-flight state, so this is a DIRECT state assignment, not a
+         state-machine ``advance()`` edge.
+
+    Idempotent: a sibling already in ``SUPERSEDED_BY_SIBLING`` is skipped
+    entirely (no gh calls, no re-comment). Best-effort and fail-safe: neither
+    a gh failure nor a db error may raise out of this function — it must never
+    break the merge worker. ``dry_run`` / no ``github_client`` → no external
+    calls. The WINNER story is never touched. Returns True iff at least one
+    losing sibling was retired.
     """
     if dry_run or github_client is None:
         return False
@@ -336,10 +376,14 @@ def close_abandoned_draft_sibling(
     if winner_suffix is None:
         return False  # not a dual-draft story; nothing to clean up
 
+    runner = runner or subprocess.run
+
     try:
+        from datetime import UTC, datetime
+
         from sqlmodel import Session, select
 
-        from factory.chain.state_machine import StoryRecord
+        from factory.chain.state_machine import StoryRecord, StoryState
         from factory.runner import _engine
 
         eng = _engine(Path(db_path))
@@ -351,7 +395,7 @@ def close_abandoned_draft_sibling(
                 )
             ).all()
 
-        closed_any = False
+        retired_any = False
         for sib in siblings:
             if sib.id == winner.id:
                 continue
@@ -360,26 +404,54 @@ def close_abandoned_draft_sibling(
                 # Not a dual-draft sibling, or the same interpretation
                 # (shouldn't happen, but never self-close).
                 continue
-            if not sib.github_issue_number:
+            if sib.state == StoryState.SUPERSEDED_BY_SIBLING.value:
+                # Already retired on a prior run — idempotent no-op.
                 continue
+
+            winner_ref = (
+                f"#{winner.github_issue_number}"
+                if getattr(winner, "github_issue_number", None)
+                else f"story {winner.id}"
+            )
+
+            # 1. Close the loser's open PR so it can never auto-merge. Guarded
+            #    on a truthy, positive PR number; best-effort (never raises).
+            pr_num = getattr(sib, "github_pr_number", None)
             try:
-                repo = github_client.get_repo(app_config.repo)
-                issue = repo.get_issue(int(sib.github_issue_number))
-                if str(getattr(issue, "state", "")).lower() == "closed":
-                    continue
-                winner_ref = (
-                    f"#{winner.github_issue_number}"
-                    if getattr(winner, "github_issue_number", None)
-                    else f"story {winner.id}"
-                )
-                issue.create_comment(
-                    f"Superseded by sibling {winner_ref} which shipped — "
-                    "closing this draft-alternative automatically."
-                )
-                issue.edit(state="closed", state_reason="not_planned")
-                closed_any = True
-            except Exception:  # noqa: BLE001 - bookkeeping must never break merge
-                continue
-        return closed_any
+                if pr_num and int(pr_num) > 0:
+                    _close_loser_pr(int(pr_num), app_config.repo, runner)
+            except Exception:  # noqa: BLE001 — bookkeeping must never break merge
+                pass
+
+            # 2. Close the loser's still-open tracker issue (best-effort).
+            if sib.github_issue_number:
+                try:
+                    repo = github_client.get_repo(app_config.repo)
+                    issue = repo.get_issue(int(sib.github_issue_number))
+                    if str(getattr(issue, "state", "")).lower() != "closed":
+                        issue.create_comment(
+                            f"Superseded by sibling {winner_ref} which shipped — "
+                            "closing this draft-alternative automatically."
+                        )
+                        issue.edit(state="closed", state_reason="not_planned")
+                except Exception:  # noqa: BLE001 — bookkeeping must never break merge
+                    pass
+
+            # 3. Terminally supersede the loser's StoryRecord. DIRECT state
+            #    assignment (not ``advance()``): a supersede can originate from
+            #    ANY in-flight state, so wiring an EVENT_* edge from every source
+            #    would be noise. ``SUPERSEDED_BY_SIBLING`` is terminal — absent
+            #    from the dispatch table and from ``_MERGEABLE_STATES`` — so once
+            #    parked here the chain stops driving the story.
+            try:
+                sib.state = StoryState.SUPERSEDED_BY_SIBLING.value
+                sib.updated_at = datetime.now(UTC).isoformat()
+                with Session(eng) as session:
+                    session.add(sib)
+                    session.commit()
+                retired_any = True
+            except Exception:  # noqa: BLE001 — bookkeeping must never break merge
+                pass
+        return retired_any
     except Exception:  # noqa: BLE001
         return False

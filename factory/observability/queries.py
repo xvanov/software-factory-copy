@@ -169,6 +169,10 @@ _TERMINAL_STATES_FOR_PROGRESS = {
     "deployed",
     "docs_onboarder_done",
     "docs_onboarder_in_progress",
+    # A dual-draft direction is complete once ONE interpretation ships; the
+    # superseded loser is terminal-for-progress so the direction reads done
+    # (1/1 effective) instead of a perpetual 1/2.
+    "superseded_by_sibling",
 }
 
 # Stories in these states are out-of-band and should NOT contribute to
@@ -182,6 +186,8 @@ _NOT_IN_FLIGHT_STATES = {
     "deployed",
     "blocked_tests_need_clarification",
     "blocked_deploy_failed",
+    # Dual-draft loser sink — terminal (abandoned); not in flight.
+    "superseded_by_sibling",
 }
 
 

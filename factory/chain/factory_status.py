@@ -56,6 +56,8 @@ _TERMINAL_STATES = {
     "blocked_tests_need_clarification",
     "blocked_deploy_failed",
     "blocked_review_nonconvergent",
+    # Dual-draft loser sink — terminal (abandoned), never in-flight.
+    "superseded_by_sibling",
 }
 
 _BLOCKED_STATES = {

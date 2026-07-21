@@ -89,6 +89,10 @@ def test_terminal_states_never_alarm(tmp_path: Path) -> None:
             (1, "deployed", ancient),
             (2, "blocked_review_nonconvergent", ancient),
             (3, "blocked_tests_need_clarification", ancient),
+            # A dual-draft loser and a budget-exhausted story are terminal too:
+            # aging in them must NOT raise a stall alarm (else concern-spam).
+            (4, "superseded_by_sibling", ancient),
+            (5, "blocked_budget_exceeded", ancient),
         ],
     )
     _write_tick(tmp_path, now - timedelta(minutes=1))
