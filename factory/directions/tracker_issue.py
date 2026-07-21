@@ -228,6 +228,41 @@ def close_story_issue(
         return False
 
 
+# Story states that RESOLVE a child story for the purpose of closing a
+# direction tracker. Deliberately an explicit allowlist (not ``is_terminal``):
+#   DEPLOYED             = shipped;
+#   SUPERSEDED_BY_SIBLING = the dual-draft loser (never ships, by design);
+#   "closed"             = a regime-invalidated / abandoned story row.
+# Everything else keeps the tracker OPEN — including ``BLOCKED_*`` (needs a
+# human) AND states like ``CI_PENDING`` that are "terminal-by-omission" in the
+# state machine (the auto-merge poller drives ``ci_pending -> ci_green`` by
+# direct assignment, not a ``_TRANSITIONS`` edge, so ``is_terminal(ci_pending)``
+# is wrongly True). Using an allowlist means a story mid-CI can never be
+# mistaken for resolved — the fail-safe direction.
+_RESOLVED_STORY_STATES = frozenset({"deployed", "superseded_by_sibling", "closed"})
+
+
+def _direction_is_complete(rows: list[Any]) -> bool:
+    """True when a direction's winner shipped and no child work is unresolved.
+
+    Fixes the historical bug where the check required *every* story to be
+    ``DEPLOYED``: a dual-draft direction can never satisfy that because its
+    losing sibling lands in ``SUPERSEDED_BY_SIBLING``, so the tracker issue
+    leaked open forever. We instead require (a) at least one DEPLOYED story
+    (a real deliverable shipped) and (b) every child story in an explicitly
+    *resolved* state (:data:`_RESOLVED_STORY_STATES`). Any other state —
+    in-flight (``pr_open``/``ci_pending``/…) or ``BLOCKED_*`` — keeps the
+    tracker open.
+    """
+    from factory.chain.state_machine import StoryState
+
+    if not rows:
+        return False
+    if not any(r.state == StoryState.DEPLOYED.value for r in rows):
+        return False  # nothing has shipped yet — keep the tracker open
+    return all((r.state or "") in _RESOLVED_STORY_STATES for r in rows)
+
+
 def maybe_close_tracker_issue(
     direction_id: str,
     app_config: AppConfig,
@@ -236,11 +271,13 @@ def maybe_close_tracker_issue(
     software_factory_root: Path,
     db_path: Path | None = None,
 ) -> bool:
-    """Close a direction's tracker issue once ALL its child stories deploy.
+    """Close a direction's tracker issue once the direction is complete.
 
-    Reads the tracker number from the direction's ``state.yaml`` and checks
-    the ``stories`` table: if every story for ``direction_id`` is in state
-    ``deployed``, closes the tracker. Best-effort; returns True on close.
+    Reads the tracker number from the direction's ``state.yaml`` and checks the
+    ``stories`` table via :func:`_direction_is_complete`: the tracker closes
+    when at least one child story DEPLOYED and every child is resolved
+    (deployed / superseded / invalidated), never while active or ``BLOCKED_*``
+    work remains. Best-effort; returns True on close.
     """
     try:
         from sqlmodel import Session, select
@@ -254,9 +291,7 @@ def maybe_close_tracker_issue(
         dirs = list((root / "apps" / app_config.name / "directions").glob(f"{direction_id}-*"))
         if not dirs:
             return False
-        direction = parse_direction_dir(
-            app_config.name, dirs[0], software_factory_root=root
-        )
+        direction = parse_direction_dir(app_config.name, dirs[0], software_factory_root=root)
         tracker = (direction.state or {}).get("tracker_issue")
         if not tracker:
             return False
@@ -264,19 +299,145 @@ def maybe_close_tracker_issue(
         db = db_path or (root / "state" / "factory.db")
         with Session(_engine(db)) as session:
             rows = session.exec(
-                select(StoryRecord).where(StoryRecord.direction_id == direction_id)
+                select(StoryRecord).where(
+                    StoryRecord.direction_id == direction_id,
+                    StoryRecord.app == app_config.name,
+                )
             ).all()
-        if not rows or any(r.state != StoryState.DEPLOYED.value for r in rows):
-            return False  # still work in flight for this direction
+        if not _direction_is_complete(rows):
+            return False  # still active (or blocked) work for this direction
 
+        deployed = sum(1 for r in rows if r.state == StoryState.DEPLOYED.value)
         repo = github_client.get_repo(app_config.repo)
         issue = repo.get_issue(int(tracker))
         if str(getattr(issue, "state", "")).lower() == "closed":
             return False
         issue.create_comment(
-            f"✅ All {len(rows)} child stories deployed — closing the direction tracker."
+            f"✅ Direction complete — {deployed} of {len(rows)} child stories deployed "
+            "(remaining resolved/superseded). Closing the direction tracker."
         )
         issue.edit(state="closed")
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def reconcile_completed_issues(
+    app_config: AppConfig,
+    github_client: Any,
+    *,
+    software_factory_root: Path,
+    db_path: Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Backfill the GitHub-issue lifecycle: close issues left open for completed work.
+
+    Idempotent + fail-safe (never raises). This is the "detect-and-remediate"
+    safety net for issue-lifecycle drift — the event-driven close on deploy can
+    no-op (e.g. a merge that lands via the async ``--auto`` path with no token
+    in scope), leaving completed directions/stories with open trackers/issues.
+    Running this reconciles that state and is safe to run repeatedly / on a
+    schedule.
+
+    Two passes, both scoped to ``app_config.name``:
+      1. Direction trackers — close the tracker of every direction that is
+         complete per :func:`_direction_is_complete` (winner deployed, no
+         active/blocked child work).
+      2. Story issues — close the issue of every story in a resolved-shipped
+         state (``DEPLOYED`` or ``SUPERSEDED_BY_SIBLING``) whose issue is still
+         open.
+
+    An already-closed issue is never touched (state is checked first). Returns a
+    report: ``{"trackers_closed", "stories_closed", "would_close", "errors"}``.
+    """
+    from collections import defaultdict
+
+    report: dict[str, Any] = {
+        "trackers_closed": [],
+        "stories_closed": [],
+        "would_close": [],
+        "errors": [],
+    }
+
+    # Load story rows for this app. The DB read (missing / locked / corrupt
+    # ``factory.db``) must NOT raise — this function's contract is fail-safe so
+    # it can be run on a schedule / on the tick path without breaking it.
+    try:
+        from sqlmodel import Session, select
+
+        from factory.chain.state_machine import StoryRecord, StoryState
+        from factory.directions.parser import parse_direction_dir
+        from factory.runner import _engine
+
+        root = Path(software_factory_root)
+        db = db_path or (root / "state" / "factory.db")
+        with Session(_engine(db)) as session:
+            story_rows = list(
+                session.exec(select(StoryRecord).where(StoryRecord.app == app_config.name)).all()
+            )
+    except Exception as exc:  # noqa: BLE001 - a bad DB must not break the sweep
+        report["errors"].append(("db", str(db_path or "state/factory.db"), str(exc)))
+        return report
+
+    by_direction: dict[str, list[Any]] = defaultdict(list)
+    for r in story_rows:
+        by_direction[r.direction_id].append(r)
+
+    try:
+        repo = github_client.get_repo(app_config.repo)
+    except Exception as exc:  # noqa: BLE001 - a bad client must not raise
+        report["errors"].append(("repo", app_config.repo, str(exc)))
+        return report
+
+    def _close_if_open(kind: str, number: Any, comment: str, key: str) -> bool:
+        """Close one issue if currently open. Records the action in ``report``."""
+        try:
+            issue = repo.get_issue(int(number))
+            if str(getattr(issue, "state", "")).lower() == "closed":
+                return False
+            if dry_run:
+                report["would_close"].append((kind, int(number), key))
+                return True
+            issue.create_comment(comment)
+            issue.edit(state="closed")
+            return True
+        except Exception as exc:  # noqa: BLE001 - one bad issue must not abort the sweep
+            report["errors"].append((kind, number, str(exc)))
+            return False
+
+    # Pass 1 — direction trackers.
+    directions_root = root / "apps" / app_config.name / "directions"
+    for d in sorted(p for p in directions_root.glob("*") if p.is_dir()):
+        direction_id = d.name.split("-", 1)[0]
+        try:
+            direction = parse_direction_dir(app_config.name, d, software_factory_root=root)
+        except Exception:  # noqa: BLE001 - skip unparseable direction dirs
+            continue
+        tracker = (direction.state or {}).get("tracker_issue")
+        if not tracker:
+            continue
+        rows = by_direction.get(direction_id, [])
+        if not _direction_is_complete(rows):
+            continue
+        deployed = sum(1 for r in rows if r.state == StoryState.DEPLOYED.value)
+        comment = (
+            f"✅ Direction complete — {deployed} of {len(rows)} child stories deployed "
+            "(remaining resolved/superseded). Closing the direction tracker (reconcile)."
+        )
+        if _close_if_open("tracker", tracker, comment, direction_id) and not dry_run:
+            report["trackers_closed"].append((direction_id, int(tracker)))
+
+    # Pass 2 — story issues for resolved-shipped stories.
+    shipped = {StoryState.DEPLOYED.value, StoryState.SUPERSEDED_BY_SIBLING.value}
+    for r in story_rows:
+        num = getattr(r, "github_issue_number", None)
+        if not num or r.state not in shipped:
+            continue
+        if r.state == StoryState.DEPLOYED.value:
+            comment = "✅ Deployed — closing automatically (reconcile: story reached DEPLOYED)."
+        else:
+            comment = "🔁 Superseded by a sibling draft — closing automatically (reconcile)."
+        if _close_if_open("story", num, comment, r.slug or str(r.id)) and not dry_run:
+            report["stories_closed"].append((r.id, int(num)))
+
+    return report

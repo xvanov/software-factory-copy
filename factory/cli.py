@@ -339,6 +339,62 @@ def pm_sync_cmd(
         raise typer.Exit(code=1)
 
 
+@app.command("reconcile-issues")
+def reconcile_issues_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would close; make no GitHub changes"
+    ),
+) -> None:
+    """Close GitHub issues left open for completed directions/stories (idempotent).
+
+    A detect-and-remediate safety net: the event-driven close on deploy can
+    no-op (e.g. an async ``--auto`` merge with no token in scope), leaving
+    completed work with open trackers / story issues. This sweeps and closes
+    them. Safe to re-run; an already-closed issue is never touched.
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.app_config import load_app_config
+    from factory.directions.tracker_issue import reconcile_completed_issues
+
+    app_config = load_app_config(app_name, _FACTORY_ROOT)
+    github_client = _ensure_github_client()
+
+    report = reconcile_completed_issues(
+        app_config,
+        github_client,
+        software_factory_root=_FACTORY_ROOT,
+        dry_run=dry_run,
+    )
+
+    table = Table(title=f"reconcile-issues — app={app_name} dry_run={dry_run}")
+    table.add_column("action")
+    table.add_column("count", justify="right")
+    if dry_run:
+        table.add_row("would_close", str(len(report["would_close"])))
+    else:
+        table.add_row("trackers_closed", str(len(report["trackers_closed"])))
+        table.add_row("stories_closed", str(len(report["stories_closed"])))
+    table.add_row("errors", str(len(report["errors"])))
+    console.print(table)
+
+    if dry_run:
+        for kind, number, key in report["would_close"]:
+            console.print(f"  [yellow]would close[/yellow] {kind} #{number} ({key})")
+    else:
+        for did, number in report["trackers_closed"]:
+            console.print(f"  [green]closed tracker[/green] #{number} (D{did})")
+        for sid, number in report["stories_closed"]:
+            console.print(f"  [green]closed story[/green] #{number} (story {sid})")
+    if report["errors"]:
+        console.print("[red]errors:[/red]")
+        for kind, number, msg in report["errors"]:
+            console.print(f"  - {kind} #{number}: {msg}")
+        raise typer.Exit(code=1)
+
+
 @app.command("ingest-issue")
 def ingest_issue(
     app_name: str = typer.Option(..., "--app", help="App name"),
