@@ -54,8 +54,8 @@
             </div>
         </aside>
         <h2>
-            <span class="text">1326 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">604<span class="text"> run</span></button>
+            <span class="text">1333 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">611<span class="text"> run</span></button>
             <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">722<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
         </h2>
@@ -65,7 +65,7 @@
             <a id="nextFileLink" class="nav" href="z_5b0f513682f58480_canonical_paths_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-21 07:20 +0000
+            created at 2026-07-21 07:48 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -3295,6 +3295,25 @@
     <p class="run run2"><span class="n"><a id="t3213" href="#t3213">3213</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t3214" href="#t3214">3214</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t3215" href="#t3215">3215</a></span><span class="t">    <span class="nam">console</span><span class="op">.</span><span class="nam">print</span><span class="op">(</span><span class="nam">table</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3216" href="#t3216">3216</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3217" href="#t3217">3217</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3218" href="#t3218">3218</a></span><span class="t"><span class="com"># --------------------------------------------------------------------------- #</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3219" href="#t3219">3219</a></span><span class="t"><span class="com"># Phase 10 commands: factory version (git-state reporting)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3220" href="#t3220">3220</a></span><span class="t"><span class="com"># --------------------------------------------------------------------------- #</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3221" href="#t3221">3221</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3222" href="#t3222">3222</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3223" href="#t3223">3223</a></span><span class="t"><span class="op">@</span><span class="nam">app</span><span class="op">.</span><span class="nam">command</span><span class="op">(</span><span class="str">"version"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3224" href="#t3224">3224</a></span><span class="t"><span class="key">def</span> <span class="nam">version_cmd</span><span class="op">(</span><span class="op">)</span> <span class="op">-></span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3225" href="#t3225">3225</a></span><span class="t">    <span class="str">"""Print the factory repo's git SHA (short), branch name, and dirty flag.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3226" href="#t3226">3226</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3227" href="#t3227">3227</a></span><span class="t"><span class="str">    Read-only: no writes, no network &#8212; only local git metadata reads.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3228" href="#t3228">3228</a></span><span class="t"><span class="str">    """</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3229" href="#t3229">3229</a></span><span class="t">    <span class="key">from</span> <span class="nam">factory</span><span class="op">.</span><span class="nam">git_state</span> <span class="key">import</span> <span class="nam">get_git_state</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3230" href="#t3230">3230</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3231" href="#t3231">3231</a></span><span class="t">    <span class="nam">state</span> <span class="op">=</span> <span class="nam">get_git_state</span><span class="op">(</span><span class="nam">_FACTORY_ROOT</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3232" href="#t3232">3232</a></span><span class="t">    <span class="nam">dirty_flag</span> <span class="op">=</span> <span class="str">" (dirty)"</span> <span class="key">if</span> <span class="nam">state</span><span class="op">.</span><span class="nam">dirty</span> <span class="key">else</span> <span class="str">""</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3233" href="#t3233">3233</a></span><span class="t">    <span class="nam">typer</span><span class="op">.</span><span class="nam">echo</span><span class="op">(</span><span class="fst">f"</span><span class="op">{</span><span class="nam">state</span><span class="op">.</span><span class="nam">sha</span><span class="op">}</span><span class="fst"> </span><span class="op">{</span><span class="nam">state</span><span class="op">.</span><span class="nam">branch</span><span class="op">}</span><span class="op">{</span><span class="nam">dirty_flag</span><span class="op">}</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3234" href="#t3234">3234</a></span><span class="t">    <span class="key">raise</span> <span class="nam">typer</span><span class="op">.</span><span class="nam">Exit</span><span class="op">(</span><span class="nam">code</span><span class="op">=</span><span class="num">0</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -3304,7 +3323,7 @@
             <a class="nav" href="z_5b0f513682f58480_canonical_paths_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-21 07:20 +0000
+            created at 2026-07-21 07:48 +0000
         </p>
     </div>
 </footer>
