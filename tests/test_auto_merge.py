@@ -430,6 +430,10 @@ def test_auto_merge_closes_sibling_draft_alternative_on_merge(
         fixture_prs=[fixture],
         github_client=client,
         db_path=db,
+        # Real-run now CONFIRMS the merge on GitHub before claiming merged=True
+        # (``--auto`` only enables async auto-merge). This PR's checks were
+        # already green, so the confirmation query reports it merged.
+        pr_merged_query=lambda **_kwargs: True,
     )
 
     assert actions[0].merged, actions[0].reason
@@ -486,3 +490,229 @@ def test_auto_merge_does_not_close_sibling_when_dry_run(
     assert actions[0].merged, actions[0].reason
     # No github_client was even provided in dry-run; nothing to assert on
     # the (nonexistent) sibling issue beyond "no exception raised".
+
+
+# --------------------------------------------------------------------------- #
+# merged != auto-merge-enabled: ``gh pr merge --auto`` only ENABLES GitHub
+# auto-merge; it does NOT merge now. ``merged=True`` must reflect a REAL merge.
+# --------------------------------------------------------------------------- #
+
+
+def _docs_pr_story(*, pr_number: int, state: str = StoryState.PR_OPEN.value) -> StoryRecord:
+    """A docs-chain story so real-run gate evaluation is hermetic (the docs
+    chain synthesizes ``canonical-paths-only`` — no gate command shell-outs)."""
+    return StoryRecord(
+        direction_id="030",
+        app="sacrifice",
+        title="t",
+        slug=f"amerge-{pr_number}",
+        scope="docs",
+        state=state,
+        chain_kind="docs",
+        github_issue_number=pr_number,
+        github_pr_number=pr_number,
+    )
+
+
+def _merged_rows(db: Path) -> list[MergeActionRecord]:
+    with Session(create_engine(f"sqlite:///{db}")) as ses:
+        return list(
+            ses.exec(select(MergeActionRecord).where(MergeActionRecord.merged == True))  # noqa: E712
+        )
+
+
+def _reload_story(db: Path, story_id: int | None) -> StoryRecord:
+    with Session(create_engine(f"sqlite:///{db}")) as ses:
+        return ses.exec(select(StoryRecord).where(StoryRecord.id == story_id)).one()
+
+
+def test_auto_merge_enabled_but_not_merged_does_not_advance_or_record(
+    factory_root: Path,
+) -> None:
+    """The strand root cause: ``gh pr merge --auto`` succeeded (auto-merge
+    ENABLED) but the PR is not merged yet (required checks pending). The worker
+    must NOT claim merged=True, NOT record a merged merge-action, and NOT
+    advance the story — it stays in a mergeable state so reconcile + the
+    CI-failure loop keep watching it."""
+    from factory.chain.handlers import persist_story
+
+    db = factory_root / "state" / "factory.db"
+    story = persist_story(_docs_pr_story(pr_number=801), db)
+
+    # Fake gh merge: "enables auto-merge" — returns success (None) WITHOUT
+    # merging. Records that it was invoked.
+    called: list[bool] = []
+
+    def _fake_merge(**_kwargs: object) -> str | None:
+        called.append(True)
+        return None
+
+    # PR state query: the PR is still OPEN / not merged.
+    def _not_merged(**_kwargs: object) -> bool:
+        return False
+
+    fixture = FixturePR(
+        pr_number=801,
+        head_sha="pending-sha",
+        base_branch="main",
+        labels=[],
+        files_changed=["context/project.md"],
+        ci_state="success",
+        story=story,
+    )
+
+    actions = auto_merge_tick(
+        factory_root,
+        "sacrifice",
+        dry_run=False,
+        fixture_prs=[fixture],
+        db_path=db,
+        merge_fn=_fake_merge,
+        pr_merged_query=_not_merged,
+    )
+
+    assert called  # the merge (auto-merge enable) was actually attempted
+    assert len(actions) == 1
+    act = actions[0]
+    assert act.merged is False
+    assert act.auto_merge_enabled is True
+    assert "awaiting required checks" in act.reason
+    # No merged=True row → _latest_undeployed_sha never picks it up (no deploy).
+    assert _merged_rows(db) == []
+    # Story is NOT advanced — stays in a mergeable state (reconcile + CI-failure
+    # loop keep watching it); it is NOT stranded at deploy_pending.
+    assert _reload_story(db, story.id).state == StoryState.PR_OPEN.value
+
+
+def test_auto_merge_confirmed_merge_advances_and_enqueues_deploy(
+    factory_root: Path,
+) -> None:
+    """When the post-merge GitHub query confirms the PR ACTUALLY merged (e.g.
+    ``--auto`` merged immediately because checks were already green), the worker
+    claims merged=True, records a merged merge-action, advances the story to
+    DEPLOY_PENDING, and enqueues a deploy — exactly as before."""
+    from factory.chain.handlers import persist_story
+    from factory.deploy.models import DeployQueueEntry
+
+    db = factory_root / "state" / "factory.db"
+    story = persist_story(_docs_pr_story(pr_number=802), db)
+
+    # Start query returns False (not yet merged at the top of _evaluate_one_pr),
+    # post-merge query returns True (the --auto merge landed). Stateful by count.
+    calls: list[int] = []
+
+    def _merged_after_merge(**_kwargs: object) -> bool:
+        calls.append(1)
+        return len(calls) >= 2  # 1st call (start short-circuit) False, 2nd True
+
+    def _fake_merge(**_kwargs: object) -> str | None:
+        return None  # success (merge requested/performed)
+
+    fixture = FixturePR(
+        pr_number=802,
+        head_sha="merged-sha",
+        base_branch="main",
+        labels=[],
+        files_changed=["context/project.md"],
+        ci_state="success",
+        story=story,
+    )
+
+    actions = auto_merge_tick(
+        factory_root,
+        "sacrifice",
+        dry_run=False,
+        fixture_prs=[fixture],
+        db_path=db,
+        merge_fn=_fake_merge,
+        pr_merged_query=_merged_after_merge,
+    )
+
+    assert actions[0].merged is True
+    assert actions[0].auto_merge_enabled is False
+    # Merged row recorded for the head sha → deploy pipeline can pick it up.
+    merged = _merged_rows(db)
+    assert [r.head_sha for r in merged] == ["merged-sha"]
+    # Story advanced to DEPLOY_PENDING.
+    assert _reload_story(db, story.id).state == StoryState.DEPLOY_PENDING.value
+    # Deploy enqueued for the merged sha.
+    with Session(create_engine(f"sqlite:///{db}")) as ses:
+        q = list(ses.exec(select(DeployQueueEntry).where(DeployQueueEntry.sha == "merged-sha")))
+    assert len(q) == 1
+
+
+def test_auto_merge_already_merged_short_circuits(factory_root: Path) -> None:
+    """If the PR is ALREADY merged on GitHub at the top of the tick (the async
+    ``--auto`` merge landed between ticks), the worker short-circuits to
+    merged=True without re-running gates/staging, and drives deploy."""
+    from factory.chain.handlers import persist_story
+
+    db = factory_root / "state" / "factory.db"
+    story = persist_story(_docs_pr_story(pr_number=803), db)
+
+    def _already(**_kwargs: object) -> bool:
+        return True
+
+    def _fake_merge(**_kwargs: object) -> str | None:  # must NOT be called
+        raise AssertionError("merge should be short-circuited when already merged")
+
+    fixture = FixturePR(
+        pr_number=803,
+        head_sha="landed-sha",
+        base_branch="main",
+        labels=[],
+        files_changed=["context/project.md"],
+        ci_state="success",
+        story=story,
+    )
+
+    actions = auto_merge_tick(
+        factory_root,
+        "sacrifice",
+        dry_run=False,
+        fixture_prs=[fixture],
+        db_path=db,
+        merge_fn=_fake_merge,
+        pr_merged_query=_already,
+    )
+
+    assert actions[0].merged is True
+    assert actions[0].reason == "already merged on GitHub"
+    assert _reload_story(db, story.id).state == StoryState.DEPLOY_PENDING.value
+
+
+def test_auto_merge_enabled_then_failing_check_leaves_story_redispatchable(
+    factory_root: Path,
+) -> None:
+    """Regression for the exact strand (factory story 102 / PR #57): auto-merge
+    was ENABLED, then a required check (ruff lint) FAILED, so the PR never
+    merges. The story must remain in ``_MERGEABLE_STATES`` so a later tick's
+    CI-failure path (``_handle_ci_failure``, guarded to those states) can
+    re-dispatch dev — NOT stranded at deploy_pending where nothing watches it."""
+    from factory.chain.auto_merge import _MERGEABLE_STATES
+    from factory.chain.handlers import persist_story
+
+    db = factory_root / "state" / "factory.db"
+    story = persist_story(_docs_pr_story(pr_number=804), db)
+
+    # Tick 1: auto-merge enabled, PR not merged yet.
+    fixture = FixturePR(
+        pr_number=804,
+        head_sha="strand-sha",
+        base_branch="main",
+        labels=[],
+        files_changed=["context/project.md"],
+        ci_state="success",
+        story=story,
+    )
+    auto_merge_tick(
+        factory_root, "sacrifice", dry_run=False, fixture_prs=[fixture], db_path=db,
+        merge_fn=lambda **_k: None,
+        pr_merged_query=lambda **_k: False,
+    )
+
+    reloaded = _reload_story(db, story.id)
+    # The story is still in a mergeable state — reachable by _handle_ci_failure.
+    assert reloaded.state in _MERGEABLE_STATES
+    assert reloaded.state == StoryState.PR_OPEN.value
+    assert _merged_rows(db) == []

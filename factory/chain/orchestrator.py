@@ -959,6 +959,75 @@ def _write_drift_event(
         pass
 
 
+def _record_reconciled_merge_and_enqueue_deploy(
+    *, app: str, story: StoryRecord, pr_number: int, db: Path, root: Path
+) -> None:
+    """Record a ``merged=True`` merge-action row + enqueue a deploy for a merge
+    that ``reconcile_from_github`` detected on GitHub (best-effort, idempotent).
+
+    Since the auto-merge worker now only claims ``merged=True`` on a REALLY
+    merged PR (``--auto`` merely ENABLES async auto-merge — it does not merge
+    now), ``reconcile_from_github`` becomes the PRIMARY detector of the real,
+    asynchronous merge. So it must trigger the deploy exactly like auto-merge's
+    own merged path does — otherwise a merge that lands between ticks advances
+    the story to ``deploy_pending`` but nothing ever deploys it.
+
+    ``head_sha`` uses the SAME ``local-<story.id>`` scheme the auto-merge
+    worker's synthesized production path uses (StoryRecord carries no real head
+    sha, and the deploy sha is only a dedup/label key — the deploy pulls the
+    merged branch, it does not check out this sha). Sharing the scheme makes the
+    two merge detectors DEDUPE against each other: at most one row per story.
+
+    Idempotent + fail-safe: only records/enqueues when no ``merged=True`` row
+    for this ``head_sha`` already exists, and never raises (a recorder/enqueue
+    hiccup must not break reconcile). A story leaves ``_MERGEABLE_STATES`` the
+    moment it is reconciled, so it is no longer a candidate on later ticks — the
+    dedupe check is belt-and-suspenders against a same-tick race with the
+    auto-merge worker.
+    """
+    from factory.chain.auto_merge import (
+        MergeAction,
+        MergeActionRecord,
+        _record_merge_action,
+    )
+
+    head_sha = f"local-{story.id}"
+    try:
+        eng = create_engine(f"sqlite:///{db}", echo=False)
+        with Session(eng) as session:
+            existing = session.exec(
+                select(MergeActionRecord).where(
+                    MergeActionRecord.app == app,
+                    MergeActionRecord.head_sha == head_sha,
+                    MergeActionRecord.merged == True,  # noqa: E712
+                )
+            ).first()
+        if existing is not None:
+            return  # already recorded (and deploy already enqueued) — no-op
+        action = MergeAction(
+            app=app,
+            pr_number=pr_number,
+            merged=True,
+            reason="reconcile: PR merged on GitHub",
+        )
+        _record_merge_action(action, head_sha, db)
+    except Exception:  # noqa: BLE001 - fail-safe: never break reconcile
+        return
+
+    try:
+        from factory.deploy.orchestrator import enqueue_deploy
+
+        enqueue_deploy(
+            app=app,
+            sha=head_sha,
+            merged_pr_number=pr_number,
+            software_factory_root=root,
+            db_path=db,
+        )
+    except Exception:  # noqa: BLE001 - deploy-enqueue hiccup must not break reconcile
+        pass
+
+
 def reconcile_from_github(
     db: Path,
     app: str,
@@ -989,7 +1058,11 @@ def reconcile_from_github(
     * PR **MERGED** on GitHub, local state still pre-merge → ``advance(story,
       EVENT_MERGED)`` → ``DEPLOY_PENDING`` (identical to the auto-merge success
       path) so the missed merge flows into deploy instead of being re-attempted
-      forever.
+      forever. Because auto-merge now only claims ``merged=True`` on a REAL
+      merge (``--auto`` merely enables async auto-merge), reconcile is the
+      PRIMARY detector of the async merge and ALSO records a ``merged=True``
+      merge-action row + enqueues the deploy (see
+      ``_record_reconciled_merge_and_enqueue_deploy``) so the app actually ships.
     * PR **CLOSED** (not merged) on GitHub, local state still in-flight →
       ``advance(story, EVENT_PR_UNMERGEABLE)`` → ``BLOCKED_DEPLOY_FAILED`` so the
       story stops looping on a dead PR and surfaces for attention.
@@ -1061,6 +1134,15 @@ def reconcile_from_github(
                 f"{new_state.value} for attention."
             )
         persist_story(story, db)
+        if event == EVENT_MERGED:
+            # Reconcile is the PRIMARY detector of the real (async) merge now
+            # that auto-merge no longer claims merged=True on mere
+            # auto-merge-enable. Trigger the deploy exactly like auto-merge's
+            # merged path so ``_latest_undeployed_sha`` picks it up and the app
+            # actually deploys. Best-effort + idempotent; never crashes reconcile.
+            _record_reconciled_merge_and_enqueue_deploy(
+                app=app, story=story, pr_number=pr_number, db=db, root=root
+            )
         reconciled.append((story.slug, from_state, new_state.value))
         _write_drift_event(
             root=root,

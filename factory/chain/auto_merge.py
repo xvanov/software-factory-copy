@@ -127,6 +127,16 @@ class MergeAction:
     # bench/**), or ``"diff_unavailable"`` (could not fetch the diff to
     # validate). ``None`` when the merge was not staging-blocked.
     staging_status: str | None = None
+    # Set True when ``gh pr merge --auto`` succeeded but the PR is NOT merged
+    # yet — GitHub's auto-merge was merely ENABLED and the merge will happen
+    # asynchronously once the required checks pass. This is the critical
+    # ``merged != auto-merge-requested`` distinction: with ``merged=False`` the
+    # caller must NOT record a merged row, NOT enqueue a deploy, and NOT advance
+    # the story — it STAYS in ``_MERGEABLE_STATES`` so ``reconcile_from_github``
+    # and the CI-failure->dev loop keep watching it. If a required check later
+    # FAILS, the PR never merges and the story is still re-dispatchable instead
+    # of being stranded at ``deploy_pending``.
+    auto_merge_enabled: bool = False
 
 
 @dataclass
@@ -452,6 +462,8 @@ def _evaluate_one_pr(
     self_edit_gate: Any = None,
     patch_provider: Any = None,
     escalate: Any = None,
+    merge_fn: Any = None,
+    pr_merged_query: Any = None,
 ) -> MergeAction:
     """Decide if a PR should be merged; merge it in real-run.
 
@@ -462,9 +474,43 @@ def _evaluate_one_pr(
       doesn't apply the 10 TDD labels; the canonical-paths enforcer
       runs before reaching PR_OPEN, so we only check
       mergeable-state + blocking-labels.
+
+    ``merge_fn`` / ``pr_merged_query`` are injection seams for the real-run
+    merge shell-out (``_gh_pr_merge``) and the authoritative
+    "is-this-PR-actually-merged" query (``_pr_is_merged_on_github``). Tests
+    pass fakes to drive the "auto-merge enabled but not merged yet" vs "really
+    merged" branches without touching GitHub.
     """
     story = fixture.story
     docs_chain = _is_docs_chain(story)
+    merge_fn = merge_fn or _gh_pr_merge
+    pr_merged_query = pr_merged_query or _pr_is_merged_on_github
+
+    # Real-run short-circuit: if the PR is ALREADY merged on GitHub, we are
+    # done — record the merge and let the caller enqueue the deploy + advance
+    # the story. This cheaply handles the "auto-merge completed between ticks"
+    # case (the async merge that ``--auto`` requested on a prior tick has since
+    # landed) AND avoids re-running the expensive staging gate every tick while
+    # a merge is pending. Fail-safe: an unconfirmed state returns False, so we
+    # fall through to the normal gated evaluation. Dry-run never touches GH.
+    if not dry_run and fixture.pr_number > 0:
+        try:
+            already_merged = bool(
+                pr_merged_query(
+                    app_config=app_config,
+                    pr_number=fixture.pr_number,
+                    github_client=github_client,
+                )
+            )
+        except Exception:  # noqa: BLE001 - fail-safe: cannot confirm → not merged
+            already_merged = False
+        if already_merged:
+            return MergeAction(
+                app=app,
+                pr_number=fixture.pr_number,
+                merged=True,
+                reason="already merged on GitHub",
+            )
 
     # The TDD gate evaluator is only relevant for the TDD chain; for
     # docs PRs we skip it (the enforcer already vetted the diff in the
@@ -589,31 +635,76 @@ def _evaluate_one_pr(
                 staging_status=se_decision.status,
             )
 
-    # Gates passed + no blockers. Merge.
-    if not dry_run:
-        merge_err = _gh_pr_merge(
-            app_config=app_config,
-            pr_number=fixture.pr_number,
-            merge_method=merge_method,
-            wait_for_ci=wait_for_ci,
-            delete_branch=delete_branch_after_merge,
-            github_client=github_client,
-        )
-        if merge_err is not None:  # pragma: no cover - real-run path
-            return MergeAction(
-                app=app,
-                pr_number=fixture.pr_number,
-                merged=False,
-                reason=f"gh merge failed: {merge_err}",
-                gates_passed=gates_passed,
-                blocking_labels=blocking_present,
-            )
-
     reason = (
         "docs chain enforcer passed; no blocking labels"
         if docs_chain
         else "all required gates passed; no blocking labels"
     )
+
+    # Dry-run merges nothing; the decision path still returns merged=True so
+    # tests exercise the record/deploy plumbing without touching GitHub.
+    if dry_run:
+        return MergeAction(
+            app=app,
+            pr_number=fixture.pr_number,
+            merged=True,
+            reason=reason,
+            gates_passed=gates_passed,
+            blocking_labels=blocking_present,
+        )
+
+    # Gates passed + no blockers. Merge.
+    merge_err = merge_fn(
+        app_config=app_config,
+        pr_number=fixture.pr_number,
+        merge_method=merge_method,
+        wait_for_ci=wait_for_ci,
+        delete_branch=delete_branch_after_merge,
+        github_client=github_client,
+    )
+    if merge_err is not None:
+        return MergeAction(
+            app=app,
+            pr_number=fixture.pr_number,
+            merged=False,
+            reason=f"gh merge failed: {merge_err}",
+            gates_passed=gates_passed,
+            blocking_labels=blocking_present,
+        )
+
+    # CRITICAL: ``merged`` must reflect a REAL GitHub merge, not merely that a
+    # merge was requested. With ``wait_for_ci=False`` ``gh pr merge`` (no
+    # ``--auto``) merges SYNCHRONOUSLY, so success == merged. With
+    # ``wait_for_ci=True`` the shell-out used ``--auto``, which only ENABLES
+    # auto-merge and returns 0 immediately WITHOUT merging when required checks
+    # are still pending — so we must QUERY GitHub's authoritative state and only
+    # claim a merge if the PR actually merged now (e.g. checks were already
+    # green so ``--auto`` merged immediately). If it is NOT merged yet, return a
+    # NON-merged action flagged ``auto_merge_enabled`` so the caller leaves the
+    # story in ``_MERGEABLE_STATES`` (reconcile + the CI-failure loop keep
+    # watching it) instead of stranding it at ``deploy_pending``.
+    if wait_for_ci:
+        try:
+            really_merged = bool(
+                pr_merged_query(
+                    app_config=app_config,
+                    pr_number=fixture.pr_number,
+                    github_client=github_client,
+                )
+            )
+        except Exception:  # noqa: BLE001 - fail-safe: cannot confirm → not merged
+            really_merged = False
+        if not really_merged:
+            return MergeAction(
+                app=app,
+                pr_number=fixture.pr_number,
+                merged=False,
+                reason="auto-merge enabled; awaiting required checks",
+                gates_passed=gates_passed,
+                blocking_labels=blocking_present,
+                auto_merge_enabled=True,
+            )
+
     return MergeAction(
         app=app,
         pr_number=fixture.pr_number,
@@ -682,6 +773,48 @@ def _gh_pr_merge(
         except Exception as exc:
             return f"pygithub merge failed: {exc!r}"
     return None
+
+
+def _pr_is_merged_on_github(
+    *, app_config: AppConfig, pr_number: int, github_client: Any = None
+) -> bool:  # pragma: no cover - real-run path; queries live GH state
+    """Return True iff the PR is ACTUALLY merged on GitHub right now.
+
+    ``gh pr merge --auto`` returns exit 0 the instant it ENABLES auto-merge —
+    it does NOT wait for or perform the merge. So a successful ``_gh_pr_merge``
+    is NOT evidence the PR merged; only GitHub's authoritative state is. This
+    queries ``gh pr view <n> --json state,mergedAt`` and treats the PR as merged
+    iff ``mergedAt`` is non-null (equivalently ``state == "MERGED"``).
+
+    Fail-safe: ANY failure (gh missing, timeout, non-zero exit, unparseable
+    payload, non-positive placeholder PR) returns ``False``. We NEVER claim a
+    merge we cannot positively confirm, so a story is never advanced to
+    ``deploy_pending`` on an unconfirmed merge.
+    """
+    import json as _json
+    import subprocess
+
+    if pr_number <= 0:
+        return False
+    cmd = [
+        "gh", "pr", "view", str(pr_number), "--repo", app_config.repo,
+        "--json", "state,mergedAt",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        data = _json.loads(proc.stdout)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    merged_at = data.get("mergedAt")
+    state = str(data.get("state", "")).upper()
+    return bool(merged_at) or state == "MERGED"
 
 
 def _pr_terminally_unmergeable(
@@ -1088,6 +1221,8 @@ def auto_merge_tick(
     self_edit_gate: Any = None,
     patch_provider: Any = None,
     escalate: Any = None,
+    merge_fn: Any = None,
+    pr_merged_query: Any = None,
 ) -> list[MergeAction]:
     """Single pass of the auto-merge worker against ``app``.
 
@@ -1302,6 +1437,8 @@ def auto_merge_tick(
             self_edit_gate=self_edit_gate,
             patch_provider=patch_provider,
             escalate=escalate,
+            merge_fn=merge_fn,
+            pr_merged_query=pr_merged_query,
         )
         _record_merge_action(action, f.head_sha, db)
         # A factory self-edit refused by the chain-side staging gate: the live
@@ -1508,12 +1645,17 @@ def auto_merge_tick(
             from factory.manager.signals import write_git_event as _wge_am
 
             _story_id_am: int | None = f.story.id if f.story is not None else None
+            # An auto-merge that was ENABLED but is still awaiting required
+            # checks is NOT an error — the merge is pending, not failed.
+            # Reporting it as an error every tick would spam the L1 watcher
+            # (concern-spam) for a healthy in-flight PR.
+            _ok = action.merged or action.auto_merge_enabled
             _wge_am(
                 kind="auto_merge_attempt",
                 story_id=_story_id_am,
                 pr_number=action.pr_number,
-                result="ok" if action.merged else "error",
-                error=None if action.merged else action.reason,
+                result="ok" if _ok else "error",
+                error=None if _ok else action.reason,
                 software_factory_root=root,
             )
         except Exception:  # noqa: BLE001

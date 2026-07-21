@@ -240,6 +240,98 @@ def test_reconcile_is_idempotent(tmp_path: Path) -> None:
     assert _reload(db, s.id).state == StoryState.DEPLOY_PENDING.value
 
 
+# --------------------------------------------------------------------------- #
+# Reconcile is now the PRIMARY detector of the real (async) merge: it must also
+# record a merged=True merge-action row and enqueue the deploy, else a merge
+# that lands between ticks advances the story to deploy_pending but nothing ever
+# deploys it.
+# --------------------------------------------------------------------------- #
+
+
+def _merged_rows(db: Path) -> list:
+    from factory.chain.auto_merge import MergeActionRecord
+
+    with Session(create_engine(f"sqlite:///{db}")) as ses:
+        return list(
+            ses.exec(select(MergeActionRecord).where(MergeActionRecord.merged == True))  # noqa: E712
+        )
+
+
+def _deploy_queue(db: Path) -> list:
+    from factory.deploy.models import DeployQueueEntry
+
+    with Session(create_engine(f"sqlite:///{db}")) as ses:
+        return list(ses.exec(select(DeployQueueEntry)))
+
+
+def test_merged_records_merge_action_and_enqueues_deploy(tmp_path: Path) -> None:
+    db = _seed(tmp_path)
+    s = _story(db, state=StoryState.PR_OPEN.value, slug="ship")
+
+    reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_fixed_state("MERGED"),
+    )
+
+    assert _reload(db, s.id).state == StoryState.DEPLOY_PENDING.value
+    # A merged=True merge-action row was recorded for this story's head sha, so
+    # deploy._latest_undeployed_sha will pick it up.
+    merged = _merged_rows(db)
+    assert [r.head_sha for r in merged] == [f"local-{s.id}"]
+    assert merged[0].pr_number == 42
+    # And a deploy was enqueued for that same sha.
+    q = _deploy_queue(db)
+    assert [e.sha for e in q] == [f"local-{s.id}"]
+    assert q[0].merged_pr_number == 42
+
+
+def test_open_pr_records_no_merge_and_no_deploy(tmp_path: Path) -> None:
+    db = _seed(tmp_path)
+    _story(db, state=StoryState.PR_OPEN.value, slug="stillopen")
+
+    reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_fixed_state("OPEN"),
+    )
+
+    assert _merged_rows(db) == []
+    assert _deploy_queue(db) == []
+
+
+def test_merged_record_and_enqueue_is_idempotent(tmp_path: Path) -> None:
+    db = _seed(tmp_path)
+    s = _story(db, state=StoryState.PR_OPEN.value, slug="idem-ship")
+
+    reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_fixed_state("MERGED"),
+    )
+    # Re-run: the story already left the mergeable states, so it is no longer a
+    # candidate — no duplicate merge row, no duplicate deploy.
+    reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_fixed_state("MERGED"),
+    )
+
+    assert len(_merged_rows(db)) == 1
+    assert len(_deploy_queue(db)) == 1
+    assert _reload(db, s.id).state == StoryState.DEPLOY_PENDING.value
+
+
+def test_closed_pr_records_no_merge_and_no_deploy(tmp_path: Path) -> None:
+    db = _seed(tmp_path)
+    _story(db, state=StoryState.PR_OPEN.value, slug="dead")
+
+    reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_fixed_state("CLOSED"),
+    )
+
+    # CLOSED (not merged) → attention state, never a deploy.
+    assert _merged_rows(db) == []
+    assert _deploy_queue(db) == []
+
+
 def test_reconcile_is_bounded_per_tick(tmp_path: Path) -> None:
     db = _seed(tmp_path)
     for i in range(5):
