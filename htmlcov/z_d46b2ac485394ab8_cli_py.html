@@ -54,8 +54,8 @@
             </div>
         </aside>
         <h2>
-            <span class="text">1333 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">611<span class="text"> run</span></button>
+            <span class="text">1342 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">620<span class="text"> run</span></button>
             <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">722<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
         </h2>
@@ -65,7 +65,7 @@
             <a id="nextFileLink" class="nav" href="z_5b0f513682f58480_canonical_paths_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-21 07:48 +0000
+            created at 2026-07-21 12:30 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -3311,9 +3311,19 @@
     <p class="run"><span class="n"><a id="t3229" href="#t3229">3229</a></span><span class="t">    <span class="key">from</span> <span class="nam">factory</span><span class="op">.</span><span class="nam">git_state</span> <span class="key">import</span> <span class="nam">get_git_state</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t3230" href="#t3230">3230</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t3231" href="#t3231">3231</a></span><span class="t">    <span class="nam">state</span> <span class="op">=</span> <span class="nam">get_git_state</span><span class="op">(</span><span class="nam">_FACTORY_ROOT</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3232" href="#t3232">3232</a></span><span class="t">    <span class="nam">dirty_flag</span> <span class="op">=</span> <span class="str">" (dirty)"</span> <span class="key">if</span> <span class="nam">state</span><span class="op">.</span><span class="nam">dirty</span> <span class="key">else</span> <span class="str">""</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3233" href="#t3233">3233</a></span><span class="t">    <span class="nam">typer</span><span class="op">.</span><span class="nam">echo</span><span class="op">(</span><span class="fst">f"</span><span class="op">{</span><span class="nam">state</span><span class="op">.</span><span class="nam">sha</span><span class="op">}</span><span class="fst"> </span><span class="op">{</span><span class="nam">state</span><span class="op">.</span><span class="nam">branch</span><span class="op">}</span><span class="op">{</span><span class="nam">dirty_flag</span><span class="op">}</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3234" href="#t3234">3234</a></span><span class="t">    <span class="key">raise</span> <span class="nam">typer</span><span class="op">.</span><span class="nam">Exit</span><span class="op">(</span><span class="nam">code</span><span class="op">=</span><span class="num">0</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3232" href="#t3232">3232</a></span><span class="t">    <span class="key">if</span> <span class="nam">state</span><span class="op">.</span><span class="nam">dirty</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3233" href="#t3233">3233</a></span><span class="t">        <span class="nam">parts</span> <span class="op">=</span> <span class="op">[</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3234" href="#t3234">3234</a></span><span class="t">        <span class="key">if</span> <span class="nam">state</span><span class="op">.</span><span class="nam">staged</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3235" href="#t3235">3235</a></span><span class="t">            <span class="nam">parts</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="fst">f"</span><span class="op">{</span><span class="nam">state</span><span class="op">.</span><span class="nam">staged</span><span class="op">}</span><span class="fst"> staged</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3236" href="#t3236">3236</a></span><span class="t">        <span class="key">if</span> <span class="nam">state</span><span class="op">.</span><span class="nam">unstaged</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3237" href="#t3237">3237</a></span><span class="t">            <span class="nam">parts</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="fst">f"</span><span class="op">{</span><span class="nam">state</span><span class="op">.</span><span class="nam">unstaged</span><span class="op">}</span><span class="fst"> unstaged</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3238" href="#t3238">3238</a></span><span class="t">        <span class="key">if</span> <span class="nam">state</span><span class="op">.</span><span class="nam">untracked</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3239" href="#t3239">3239</a></span><span class="t">            <span class="nam">parts</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="fst">f"</span><span class="op">{</span><span class="nam">state</span><span class="op">.</span><span class="nam">untracked</span><span class="op">}</span><span class="fst"> untracked</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3240" href="#t3240">3240</a></span><span class="t">        <span class="nam">dirty_flag</span> <span class="op">=</span> <span class="str">" (dirty: "</span> <span class="op">+</span> <span class="str">", "</span><span class="op">.</span><span class="nam">join</span><span class="op">(</span><span class="nam">parts</span><span class="op">)</span> <span class="op">+</span> <span class="str">")"</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3241" href="#t3241">3241</a></span><span class="t">    <span class="key">else</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3242" href="#t3242">3242</a></span><span class="t">        <span class="nam">dirty_flag</span> <span class="op">=</span> <span class="str">""</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3243" href="#t3243">3243</a></span><span class="t">    <span class="nam">typer</span><span class="op">.</span><span class="nam">echo</span><span class="op">(</span><span class="fst">f"</span><span class="op">{</span><span class="nam">state</span><span class="op">.</span><span class="nam">sha</span><span class="op">}</span><span class="fst"> </span><span class="op">{</span><span class="nam">state</span><span class="op">.</span><span class="nam">branch</span><span class="op">}</span><span class="op">{</span><span class="nam">dirty_flag</span><span class="op">}</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3244" href="#t3244">3244</a></span><span class="t">    <span class="key">raise</span> <span class="nam">typer</span><span class="op">.</span><span class="nam">Exit</span><span class="op">(</span><span class="nam">code</span><span class="op">=</span><span class="num">0</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -3323,7 +3333,7 @@
             <a class="nav" href="z_5b0f513682f58480_canonical_paths_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-21 07:48 +0000
+            created at 2026-07-21 12:30 +0000
         </p>
     </div>
 </footer>
