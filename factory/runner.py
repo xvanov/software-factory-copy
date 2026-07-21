@@ -427,23 +427,29 @@ _DEFAULT_ERROR_MAX_LENGTH = 4000
 def truncate_error(text: str, max_length: int = _DEFAULT_ERROR_MAX_LENGTH) -> str:
     """Return *text* truncated to fit within *max_length* with a ``...[truncated N chars]`` marker.
 
-    Text at or under *max_length* is returned unchanged.  The total output
+    Text at or under *max_length* is returned unchanged. The total output
     (including marker) never exceeds *max_length*, making the helper naturally
     idempotent.
     """
+    if max_length <= 0:
+        return ""
     if len(text) <= max_length:
         return text
 
-    marker_placeholder = "...[truncated NNNNN chars]"
-    keep_len = max_length - len(marker_placeholder)
-    if keep_len < 0:
-        keep_len = 0
+    marker_template = "...[truncated {removed} chars]"
+    keep_len = max_length
 
-    truncated = text[:keep_len]
-    removed = len(text) - len(truncated)
-    marker = f"...[truncated {removed} chars]"
+    while True:
+        removed = len(text) - keep_len
+        marker = marker_template.format(removed=removed)
+        new_keep_len = max_length - len(marker)
+        if new_keep_len < 0:
+            new_keep_len = 0
+        if new_keep_len == keep_len:
+            break
+        keep_len = new_keep_len
 
-    return truncated + marker
+    return (text[:keep_len] + marker)[:max_length]
 
 
 def _read_persona_prompt(persona: str) -> str:

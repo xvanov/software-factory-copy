@@ -42,10 +42,10 @@ def test_truncate_error_over_bound_truncates_with_marker():
 def test_truncate_error_default_max_length():
     """AC1.2: default max_length is 4000."""
     assert _DEFAULT_ERROR_MAX_LENGTH == 4000
-    text = "x" * 5000
+    text = "x" * 200_000
     result = truncate_error(text)
-    # Total output fits within 4000
-    assert len(result) <= 4000
+    # Total output fits within the default bound
+    assert len(result) <= _DEFAULT_ERROR_MAX_LENGTH
     assert "...[truncated " in result
     assert "chars]" in result
     # The prefix before the marker matches the original text
@@ -55,11 +55,11 @@ def test_truncate_error_default_max_length():
 
 def test_truncate_error_idempotent():
     """AC3.2 / AC3.3: repeated application is idempotent."""
-    text = "x" * 5000
+    text = "x" * 200_000
     first = truncate_error(text)
     second = truncate_error(first)
     assert first == second
-    assert first.encode("utf-8") == second.encode("utf-8")
+    assert len(first) <= _DEFAULT_ERROR_MAX_LENGTH
 
 
 def test_truncate_error_idempotent_on_within_bound_text():
@@ -93,7 +93,7 @@ def test_record_run_truncates_long_error(tmp_path: Path):
 
     # Use a character that won't match the hex/base64 secret patterns so
     # redact_secrets is a no-op and we test truncation in isolation.
-    long_error = "@" * 5000
+    long_error = "@" * 200_000
 
     _record_run(
         persona="dev",
