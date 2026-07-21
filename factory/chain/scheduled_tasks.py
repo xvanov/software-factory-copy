@@ -434,18 +434,41 @@ def _file_finding_as_direction(
         # next_direction_id scans target_root/apps/<app>/directions/, so
         # ensure it exists.
         (scratch / "apps" / app / "directions").mkdir(parents=True, exist_ok=True)
+    # UX auditor findings carry flow + step data; surface a flow.md so the
+    # next slice (citation/parsing) has concrete filenames and step numbers
+    # to reference. All other personas stay as-is — their findings are not
+    # UI-specific.
+    has_ui = persona == "ux_auditor"
+    flow_steps: list[str] | None = None
+    if has_ui:
+        flow_name = str(finding.get("flow") or "").strip()
+        step = finding.get("step")
+        evidence = str(finding.get("evidence") or "").strip()
+        suggestion = str(finding.get("suggestion") or "").strip()
+        steps: list[str] = []
+        if flow_name:
+            steps.append(f"Flow: {flow_name}")
+        if isinstance(step, int):
+            steps.append(f"Step: {step}")
+        if evidence:
+            steps.append(f"Evidence: {evidence}")
+        if suggestion:
+            steps.append(f"Suggestion: {suggestion}")
+        if steps:
+            flow_steps = steps
+
     created = create_direction(
         app,
         title=title,
         type_tag=type_tag,
         why=why,
-        has_ui=False,
-        flow_steps=None,
+        has_ui=has_ui,
+        flow_steps=flow_steps,
         has_api=False,
         api_spec_lines=None,
         acceptance=acceptance,
-        # Scheduled personas (bug_hunter/ralph/ux_auditor/security) file
-        # findings the factory itself should investigate and fix. They have no
+        # Scheduled personas (bug_hunter/ralph/security) file findings the
+        # factory itself should investigate and fix. They have no
         # user_flow/api_spec — a bug report isn't a feature spec — so with
         # explore=False they ALWAYS failed the backpressure gate and produced
         # zero stories (observed 2026-07-06: every scheduled-* direction stuck
@@ -679,6 +702,106 @@ def _record_and_return(
     )
 
 
+def _collect_flow_artifacts(app: str, software_factory_root: Path) -> list[tuple[str, str]]:
+    """Collect flow.md files from all direction directories for ``app``.
+
+    Returns a list of (label, content) tuples. The label is
+    ``<direction-id-slug>/flow.md`` so the UX auditor can cite it by name.
+    Empty directories and missing files are silently skipped.
+    """
+    directions_dir = Path(software_factory_root) / "apps" / app / "directions"
+    if not directions_dir.is_dir():
+        return []
+    artifacts: list[tuple[str, str]] = []
+    for d in sorted(directions_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        flow_md = d / "flow.md"
+        if not flow_md.is_file():
+            continue
+        try:
+            content = flow_md.read_text(encoding="utf-8").strip()
+            if content:
+                artifacts.append((f"{d.name}/flow.md", content))
+        except Exception:  # noqa: BLE001 - best-effort collection
+            continue
+    return artifacts
+
+
+def _extract_http_urls(text: str) -> list[str]:
+    """Return distinct HTTP(S) URLs found in arbitrary shell text."""
+    import re
+
+    matches = re.findall(r"https?://[^\s`\"')]+", text)
+    return sorted({m.rstrip(".,;:") for m in matches})
+
+
+def _build_ux_auditor_context(app: str, software_factory_root: Path) -> str:
+    """Build UX-auditor runtime input context for scheduled dispatch.
+
+    The scheduled UX run MUST carry at least one concrete ``flow.md`` artifact;
+    if none are available, the scheduler refuses dispatch instead of sending a
+    guess-based prompt.
+    """
+    from datetime import UTC, datetime
+
+    from factory.app_config import load_app_config
+
+    parts: list[str] = ["## Scheduled UX Audit Runtime Inputs\n"]
+
+    # -- Flow artifacts (AC1.1) --
+    flow_artifacts = _collect_flow_artifacts(app, software_factory_root)
+    if not flow_artifacts:
+        raise ValueError(
+            f"scheduled ux_auditor input for app '{app}' requires at least one flow.md artifact"
+        )
+
+    parts.append("\n### Flow Artifacts\n")
+    parts.append(
+        f"_Collected {len(flow_artifacts)} flow.md file(s) from prior directions. "
+        "Use these concrete filenames and numbered steps during the audit._\n"
+    )
+    for label, content in flow_artifacts:
+        parts.append(f"\n#### {label}\n")
+        parts.append(content + "\n")
+
+    # -- App URL context (AC1.2) --
+    parts.append("\n### App URL Context\n")
+    try:
+        cfg = load_app_config(app, software_factory_root)
+        parts.append(f"- App name: `{cfg.name}`\n")
+        parts.append(f"- Repo: `{cfg.repo}`\n")
+
+        url_candidates: list[str] = []
+        if cfg.deploy.health_check_command:
+            url_candidates.extend(_extract_http_urls(cfg.deploy.health_check_command))
+        if cfg.deploy.smoke_test_command:
+            url_candidates.extend(_extract_http_urls(cfg.deploy.smoke_test_command))
+
+        if cfg.deploy.enabled:
+            parts.append("- Deploy: **enabled**\n")
+            if cfg.deploy.health_check_command:
+                parts.append(f"  - Health check command: `{cfg.deploy.health_check_command}`\n")
+            if url_candidates:
+                for url in sorted(set(url_candidates)):
+                    parts.append(f"  - App URL candidate: `{url}`\n")
+            else:
+                parts.append("  - App URL candidate: not declared in deploy commands\n")
+        else:
+            parts.append("- Deploy: **disabled** (no live URL configured)\n")
+    except Exception:  # noqa: BLE001 - best-effort
+        parts.append("- (could not load app config)\n")
+
+    # -- Runtime context (AC1.3) --
+    parts.append("\n### Runtime Context\n")
+    parts.append(f"- Timestamp (UTC): `{datetime.now(UTC).isoformat()}`\n")
+    parts.append(f"- Software factory root: `{software_factory_root}`\n")
+    parts.append(f"- Target app: `{app}`\n")
+    parts.append("- Scheduler transport: `text_run`\n")
+
+    return "".join(parts)
+
+
 def _live_run(persona: str, app: str, software_factory_root: Path) -> dict[str, Any]:
     """Compose context + persona prompt + dispatch via runner.
 
@@ -698,7 +821,14 @@ def _live_run(persona: str, app: str, software_factory_root: Path) -> dict[str, 
     )
     persona_md_path = Path(__file__).resolve().parent.parent / "personas" / f"{persona}.md"
     persona_prompt = persona_md_path.read_text(encoding="utf-8") if persona_md_path.exists() else ""
-    prompt = f"{persona_prompt}\n\n# Context prelude\n\n{prelude}\n"
+
+    # UX auditor: enrich the prompt with flow artifacts, app URL, and runtime context.
+    if persona == "ux_auditor":
+        ux_context = _build_ux_auditor_context(app, software_factory_root)
+        prompt = f"{persona_prompt}\n\n{ux_context}\n\n# Context prelude\n\n{prelude}\n"
+    else:
+        prompt = f"{persona_prompt}\n\n# Context prelude\n\n{prelude}\n"
+
     model = route(persona)
     max_tokens = _OUTPUT_TOKEN_CAP.get(persona, 2048)
     result = text_run(
