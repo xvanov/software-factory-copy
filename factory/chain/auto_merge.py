@@ -137,6 +137,13 @@ class MergeAction:
     # FAILS, the PR never merges and the story is still re-dispatchable instead
     # of being stranded at ``deploy_pending``.
     auto_merge_enabled: bool = False
+    # Set True when the per-PR evaluation REFUSED to merge because this story is
+    # a dual-draft alternative whose SIBLING already shipped (Part 2 — the
+    # defense-in-depth self-check that composes with the reconcile-detected
+    # ``--auto`` merge path). ``merged`` is always False when this is True. The
+    # caller terminally supersedes the story (``SUPERSEDED_BY_SIBLING``) and
+    # closes its PR so it can never merge a redundant second interpretation.
+    superseded_by_sibling: bool = False
 
 
 @dataclass
@@ -448,6 +455,124 @@ def _evaluate_self_edit_gate(
     return _SelfEditDecision(allow=False, status=status, logs_tail=logs_tail)
 
 
+# --------------------------------------------------------------------------- #
+# Part 2 — dual-draft loser self-check (defense-in-depth)
+# --------------------------------------------------------------------------- #
+
+# A dual-draft sibling that reaches one of these states has WON the race — any
+# OTHER alternative of the same direction must not also merge (that redundant
+# second merge is exactly the dual-draft over-fire the loser-cleanup exists to
+# prevent). ``superseded_by_sibling`` is included so a loser already retired by
+# the winner's cleanup can never be resurrected into a merge, and
+# ``deploy_pending`` covers the winner the instant its merge is detected (by the
+# auto-merge path OR by ``reconcile_from_github``) — before it has deployed.
+_SIBLING_SHIPPED_STATES: frozenset[str] = frozenset(
+    {
+        StoryState.DEPLOYED.value,
+        StoryState.DEPLOY_PENDING.value,
+        StoryState.SUPERSEDED_BY_SIBLING.value,
+    }
+)
+
+
+def _default_sibling_rows(
+    *, direction_id: str, app: str, db_path: Path
+) -> list[StoryRecord]:
+    """All StoryRecords sharing ``direction_id`` + ``app`` (the sibling set)."""
+    eng = _engine(db_path)
+    with Session(eng) as session:
+        return list(
+            session.exec(
+                select(StoryRecord).where(
+                    StoryRecord.direction_id == direction_id,
+                    StoryRecord.app == app,
+                )
+            ).all()
+        )
+
+
+def _default_merged_pr_exists(*, app: str, pr_number: Any, db_path: Path) -> bool:
+    """True iff a ``merged=True`` merge-action row exists for ``pr_number``.
+
+    Catches a sibling whose PR already merged on GitHub (recorded by either the
+    auto-merge path or ``reconcile._record_reconciled_merge_and_enqueue_deploy``)
+    even in the brief window before its StoryRecord advances to a shipped state.
+    """
+    try:
+        n = int(pr_number)
+    except (TypeError, ValueError):
+        return False
+    if n <= 0:
+        return False
+    eng = _engine(db_path)
+    with Session(eng) as session:
+        row = session.exec(
+            select(MergeActionRecord).where(
+                MergeActionRecord.app == app,
+                MergeActionRecord.pr_number == n,
+                MergeActionRecord.merged == True,  # noqa: E712
+            )
+        ).first()
+    return row is not None
+
+
+def _sibling_already_shipped(
+    *,
+    story: StoryRecord | None,
+    db_path: Path,
+    sibling_rows: Any = None,
+    merged_pr_exists: Any = None,
+) -> bool:
+    """Return True iff ``story`` is a dual-draft alternative that LOST the race.
+
+    ``story`` loses when it carries a dual-draft ``-alt-*`` slug suffix AND a
+    SIBLING (same ``direction_id`` + ``app`` but a DIFFERENT alt-suffix) is
+    already in a terminal-shipped state (``deployed`` / ``deploy_pending`` /
+    ``superseded_by_sibling``) OR already has a merged PR. Such a ``story`` must
+    NOT merge — the winner already landed, and merging this one would ship a
+    redundant second interpretation (the dual-draft over-fire).
+
+    ``sibling_rows`` / ``merged_pr_exists`` are injection seams so the check is
+    testable with a fake DB/github; both default to the real DB-backed queries.
+
+    Fail-safe: a non-dual-draft story, no shipped sibling, OR **any error**
+    returns False — the check must never wrongly supersede a legitimate story
+    nor block a legitimate merge on a query hiccup.
+    """
+    if story is None:
+        return False
+    try:
+        from factory.chain.dual_draft import _draft_alt_suffix
+
+        my_suffix = _draft_alt_suffix(getattr(story, "slug", "") or "")
+        if my_suffix is None:
+            return False  # not a dual-draft story — nothing to guard
+
+        rows_fn = sibling_rows or _default_sibling_rows
+        merged_fn = merged_pr_exists or _default_merged_pr_exists
+        rows = rows_fn(
+            direction_id=story.direction_id, app=story.app, db_path=db_path
+        )
+        for sib in rows:
+            if getattr(sib, "id", None) == getattr(story, "id", None):
+                continue  # never compare a story to itself
+            sib_suffix = _draft_alt_suffix(getattr(sib, "slug", "") or "")
+            if sib_suffix is None or sib_suffix == my_suffix:
+                # Not a dual-draft sibling, or the SAME interpretation — skip.
+                continue
+            if getattr(sib, "state", "") in _SIBLING_SHIPPED_STATES:
+                return True
+            if merged_fn(
+                app=getattr(sib, "app", None) or story.app,
+                pr_number=getattr(sib, "github_pr_number", None),
+                db_path=db_path,
+            ):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 - fail-safe: never wrongly supersede/block
+        return False
+
+
 def _evaluate_one_pr(
     *,
     app: str,
@@ -464,6 +589,8 @@ def _evaluate_one_pr(
     escalate: Any = None,
     merge_fn: Any = None,
     pr_merged_query: Any = None,
+    db_path: Path | None = None,
+    sibling_shipped_query: Any = None,
 ) -> MergeAction:
     """Decide if a PR should be merged; merge it in real-run.
 
@@ -485,6 +612,32 @@ def _evaluate_one_pr(
     docs_chain = _is_docs_chain(story)
     merge_fn = merge_fn or _gh_pr_merge
     pr_merged_query = pr_merged_query or _pr_is_merged_on_github
+
+    # Part 2 — dual-draft loser self-check (defense-in-depth for the reconcile
+    # window). If THIS story is a dual-draft alternative and a SIBLING has
+    # already shipped (deployed / deploy_pending / superseded_by_sibling / a
+    # merged PR), REFUSE to merge — the winner already landed and merging this
+    # loser would ship a redundant second interpretation (the dual-draft
+    # over-fire). This composes with Part 1 (reconcile's proactive sibling
+    # cleanup): Part 1 supersedes losers the cleanup can reach; this catches a
+    # loser whose own PR reaches the merge worker in the SAME window. Runs
+    # regardless of dry_run so a simulated tick reproduces the guard. Fail-safe:
+    # ``_sibling_already_shipped`` swallows any query error → False, so a query
+    # hiccup NEVER wrongly supersedes a legitimate story nor blocks its merge.
+    if db_path is not None and story is not None:
+        _sib_shipped = sibling_shipped_query or _sibling_already_shipped
+        try:
+            _lost = bool(_sib_shipped(story=story, db_path=db_path))
+        except Exception:  # noqa: BLE001 - fail-safe: proceed normally on error
+            _lost = False
+        if _lost:
+            return MergeAction(
+                app=app,
+                pr_number=fixture.pr_number,
+                merged=False,
+                reason="superseded: sibling already shipped",
+                superseded_by_sibling=True,
+            )
 
     # Real-run short-circuit: if the PR is ALREADY merged on GitHub, we are
     # done — record the merge and let the caller enqueue the deploy + advance
@@ -1439,6 +1592,7 @@ def auto_merge_tick(
             escalate=escalate,
             merge_fn=merge_fn,
             pr_merged_query=pr_merged_query,
+            db_path=db,
         )
         _record_merge_action(action, f.head_sha, db)
         # A factory self-edit refused by the chain-side staging gate: the live
@@ -1640,6 +1794,41 @@ def auto_merge_tick(
                         session.commit()
                 except Exception:
                     pass
+        # Part 2 — the per-PR evaluation refused to merge this dual-draft
+        # alternative because a SIBLING already shipped. Terminally supersede
+        # this loser and close its PR so it can never merge a redundant second
+        # interpretation. DIRECT state assignment (not an ``advance()`` edge): a
+        # supersede can originate from ANY in-flight state, mirroring
+        # ``close_abandoned_draft_sibling``'s own terminal park. Best-effort and
+        # idempotent — never raises out of the merge worker.
+        if action.superseded_by_sibling and f.story is not None:
+            try:
+                f.story.state = StoryState.SUPERSEDED_BY_SIBLING.value
+                f.story.error = (
+                    f"superseded: a dual-draft sibling already shipped; PR "
+                    f"#{action.pr_number} refused to merge a redundant "
+                    f"interpretation of the same direction."
+                )
+                f.story.updated_at = datetime.now(UTC).isoformat()
+                eng = _engine(db)
+                with Session(eng) as session:
+                    session.add(f.story)
+                    session.commit()
+                    session.refresh(f.story)
+            except Exception:  # noqa: BLE001 - state park is best-effort
+                pass
+            # Close this loser's open PR so it can never auto-merge. Reuses the
+            # dual-draft PR-close helper (``gh pr close --delete-branch``); a
+            # closed PR cannot merge. Skipped in dry-run / for a placeholder PR.
+            if not dry_run and f.pr_number > 0:
+                try:
+                    import subprocess
+
+                    from factory.chain.dual_draft import _close_loser_pr
+
+                    _close_loser_pr(int(f.pr_number), cfg.repo, subprocess.run)
+                except Exception:  # noqa: BLE001 - bookkeeping, never break merge
+                    pass
         # Emit auto_merge_attempt signal — best-effort, never raises.
         try:
             from factory.manager.signals import write_git_event as _wge_am
@@ -1649,7 +1838,11 @@ def auto_merge_tick(
             # checks is NOT an error — the merge is pending, not failed.
             # Reporting it as an error every tick would spam the L1 watcher
             # (concern-spam) for a healthy in-flight PR.
-            _ok = action.merged or action.auto_merge_enabled
+            _ok = (
+                action.merged
+                or action.auto_merge_enabled
+                or action.superseded_by_sibling
+            )
             _wge_am(
                 kind="auto_merge_attempt",
                 story_id=_story_id_am,

@@ -1031,6 +1031,81 @@ def _record_reconciled_merge_and_enqueue_deploy(
         pass
 
 
+def _current_story_state(db: Path, story_id: int | None) -> str | None:
+    """Read a story's LIVE state from the DB (the reconcile ``candidates``
+    snapshot goes stale as siblings are superseded mid-loop). Returns None on
+    any failure or missing id — the caller treats None as "no fresh info, use
+    the snapshot", which is fail-safe (never skips on uncertainty)."""
+    if story_id is None:
+        return None
+    try:
+        eng = create_engine(f"sqlite:///{db}", echo=False)
+        with Session(eng) as session:
+            row = session.exec(
+                select(StoryRecord).where(StoryRecord.id == story_id)
+            ).first()
+            return row.state if row is not None else None
+    except Exception:  # noqa: BLE001 - a read hiccup must never break reconcile
+        return None
+
+
+def _close_dual_draft_sibling_on_reconcile(
+    *,
+    winner: StoryRecord,
+    cfg: AppConfig,
+    root: Path,
+    db: Path,
+    github_client_factory: Callable[[], Any] | None,
+    runner: Any,
+) -> None:
+    """Retire the losing dual-draft sibling when RECONCILE detects the winner's
+    merge — the reconcile-path analogue of the auto-merge worker's own
+    ``close_abandoned_draft_sibling`` call (auto_merge_tick, ``if action.merged``).
+
+    Why this exists: fix A routes the real, asynchronous ``gh pr merge --auto``
+    merge through ``reconcile_from_github`` (auto-merge only ENABLES auto-merge,
+    returning ``merged=False``). Reconcile is therefore the PRIMARY detector of
+    the merge for ``--auto`` PRs — the now-common case — and the ONLY place the
+    winner's merge is observed on that path. Without this call the losing
+    sibling is never superseded and proceeds toward a redundant second merge
+    (the dual-draft OVER-FIRE that #70 meant to fix but only closed for the rare
+    synchronous auto-merge path).
+
+    Best-effort + idempotent: skips a non-dual-draft winner before building any
+    GitHub client; ``close_abandoned_draft_sibling`` skips an already-superseded
+    sibling and never raises. Any error here is swallowed — sibling cleanup must
+    never break reconcile. ``dry_run`` is False: reconcile only runs on the
+    real-run (``not dry_run``) tick path.
+    """
+    try:
+        from factory.chain.dual_draft import (
+            _draft_alt_suffix,
+            close_abandoned_draft_sibling,
+        )
+
+        # Short-circuit before constructing a client: the vast majority of
+        # merges are NOT dual-draft, and we should not resolve a GitHub token /
+        # build a client for them.
+        if _draft_alt_suffix(getattr(winner, "slug", "") or "") is None:
+            return
+
+        factory = github_client_factory
+        if factory is None:
+            from factory.providers.github import build_github_client
+
+            factory = build_github_client
+        gh = factory()
+        if gh is None:
+            # No token / client available — cleanup is best-effort; the Part 2
+            # self-check in auto-merge still blocks the loser from merging.
+            return
+        close_abandoned_draft_sibling(
+            winner, cfg, root, db, gh, False, runner=runner
+        )
+    except Exception:  # noqa: BLE001 - cleanup must never break reconcile
+        pass
+
+
 def reconcile_from_github(
     db: Path,
     app: str,
@@ -1039,6 +1114,8 @@ def reconcile_from_github(
     root: Path,
     max_reconcile: int = _MAX_RECONCILE_PER_TICK,
     query_pr_state: Callable[..., str | None] = _query_pr_state,
+    github_client_factory: Callable[[], Any] | None = None,
+    sibling_cleanup_runner: Any = None,
 ) -> list[tuple[str, str, str]]:
     """Pull authoritative GitHub PR state into the local DB at the top of a tick.
 
@@ -1105,8 +1182,22 @@ def reconcile_from_github(
             continue
         if checked >= max_reconcile:
             break
-        checked += 1
 
+        # The ``candidates`` snapshot is taken ONCE, but a winner processed
+        # earlier in THIS same loop may have run the dual-draft cleanup, which
+        # closes a losing sibling's PR and sets it to SUPERSEDED_BY_SIBLING.
+        # Re-read the live state and skip any candidate that has already left
+        # _MERGEABLE_STATES — otherwise we'd query its just-closed PR, see
+        # CLOSED, apply EVENT_PR_UNMERGEABLE, and clobber the intended
+        # SUPERSEDED_BY_SIBLING with a false BLOCKED_DEPLOY_FAILED "attention"
+        # signal (adversarial review, 2026-07-21).
+        live_state = _current_story_state(db, story.id)
+        if live_state is not None and live_state not in _MERGEABLE_STATES:
+            continue
+        if live_state is not None:
+            story.state = live_state
+
+        checked += 1
         pr_state = query_pr_state(app_config=cfg, pr_number=pr_number)
         if pr_state is None or pr_state == "OPEN":
             # Unknown → fail-safe no-op (never advance on uncertainty).
@@ -1145,6 +1236,20 @@ def reconcile_from_github(
             # actually deploys. Best-effort + idempotent; never crashes reconcile.
             _record_reconciled_merge_and_enqueue_deploy(
                 app=app, story=story, pr_number=pr_number, db=db, root=root
+            )
+            # Dual-draft cleanup on the RECONCILE path (Part 1). Because fix A
+            # routes the async ``--auto`` merge through reconcile, this — not the
+            # auto-merge worker — is where the winner's merge is observed for the
+            # common case, so the losing sibling must be superseded HERE too, the
+            # same way ``auto_merge_tick`` does on its own merged path. Best-
+            # effort/idempotent; never raises out of reconcile.
+            _close_dual_draft_sibling_on_reconcile(
+                winner=story,
+                cfg=cfg,
+                root=root,
+                db=db,
+                github_client_factory=github_client_factory,
+                runner=sibling_cleanup_runner,
             )
         reconciled.append((story.slug, from_state, new_state.value))
         _write_drift_event(

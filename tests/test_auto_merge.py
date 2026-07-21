@@ -716,3 +716,240 @@ def test_auto_merge_enabled_then_failing_check_leaves_story_redispatchable(
     assert reloaded.state in _MERGEABLE_STATES
     assert reloaded.state == StoryState.PR_OPEN.value
     assert _merged_rows(db) == []
+
+
+# --------------------------------------------------------------------------- #
+# Part 2 — dual-draft loser self-check: a story must REFUSE to merge if a
+# sibling already shipped. This is the defense-in-depth backstop that composes
+# with the reconcile-detected ``--auto`` merge path: Part 1 supersedes losers
+# the winner's cleanup can reach; this catches a loser whose OWN PR reaches the
+# merge worker in the SAME window the winner merged.
+# --------------------------------------------------------------------------- #
+
+
+def _seed_dual_pair(
+    db: Path,
+    *,
+    winner_state: str,
+    loser_state: str = StoryState.PR_OPEN.value,
+    loser_pr: int = 556,
+) -> tuple[StoryRecord, StoryRecord]:
+    """Docs-chain dual-draft pair (hermetic gates): winner ``-alt-a`` in
+    ``winner_state``, loser ``-alt-b`` in ``loser_state`` with PR ``loser_pr``."""
+    from factory.chain.handlers import persist_story
+
+    winner = persist_story(
+        StoryRecord(
+            direction_id="042", app="sacrifice", title="w",
+            slug="picker-refactor-alt-a", scope="docs", state=winner_state,
+            chain_kind="docs", github_issue_number=209, github_pr_number=555,
+        ),
+        db,
+    )
+    loser = persist_story(
+        StoryRecord(
+            direction_id="042", app="sacrifice", title="l",
+            slug="picker-refactor-alt-b", scope="docs", state=loser_state,
+            chain_kind="docs", github_issue_number=210, github_pr_number=loser_pr,
+        ),
+        db,
+    )
+    return winner, loser
+
+
+def _cfg() -> object:
+    from factory.app_config import AppConfig
+
+    return AppConfig(name="sacrifice", repo="o/r", default_branch="main")
+
+
+def test_sibling_already_shipped_true_for_each_shipped_state(factory_root: Path) -> None:
+    """A dual-draft loser is 'superseded' when its sibling is in ANY shipped
+    state: deployed, deploy_pending, or superseded_by_sibling."""
+    from factory.chain.auto_merge import _sibling_already_shipped
+
+    for st in (
+        StoryState.DEPLOYED.value,
+        StoryState.DEPLOY_PENDING.value,
+        StoryState.SUPERSEDED_BY_SIBLING.value,
+    ):
+        db = factory_root / "state" / f"dd-{st}.db"
+        _winner, loser = _seed_dual_pair(db, winner_state=st)
+        assert _sibling_already_shipped(story=loser, db_path=db) is True, st
+
+
+def test_sibling_already_shipped_true_when_sibling_has_merged_pr(factory_root: Path) -> None:
+    """Even before the winner's StoryRecord advances to a shipped state, a
+    merged=True merge-action row for its PR marks the loser as superseded."""
+    from factory.chain.auto_merge import (
+        MergeAction,
+        _record_merge_action,
+        _sibling_already_shipped,
+    )
+
+    db = factory_root / "state" / "merged-pr.db"
+    # Winner still in a mergeable state, but its PR (555) recorded a merge.
+    winner, loser = _seed_dual_pair(db, winner_state=StoryState.PR_OPEN.value)
+    _record_merge_action(
+        MergeAction(app="sacrifice", pr_number=555, merged=True, reason="merged"),
+        "sha-win",
+        db,
+    )
+    assert _sibling_already_shipped(story=loser, db_path=db) is True
+
+
+def test_sibling_already_shipped_false_when_no_sibling_shipped(factory_root: Path) -> None:
+    """Both siblings still in-flight → neither is superseded (the first to merge
+    wins normally)."""
+    from factory.chain.auto_merge import _sibling_already_shipped
+
+    db = factory_root / "state" / "both-open.db"
+    winner, loser = _seed_dual_pair(db, winner_state=StoryState.PR_OPEN.value)
+    assert _sibling_already_shipped(story=loser, db_path=db) is False
+    assert _sibling_already_shipped(story=winner, db_path=db) is False
+
+
+def test_sibling_already_shipped_false_for_non_dual_draft(factory_root: Path) -> None:
+    """A story without an ``-alt-*`` suffix is never superseded, even if a
+    same-direction sibling shipped."""
+    from factory.chain.auto_merge import _sibling_already_shipped
+    from factory.chain.handlers import persist_story
+
+    db = factory_root / "state" / "non-dd.db"
+    persist_story(
+        StoryRecord(
+            direction_id="043", app="sacrifice", title="s", slug="plain-shipped",
+            scope="docs", state=StoryState.DEPLOYED.value, github_pr_number=1,
+        ),
+        db,
+    )
+    normal = persist_story(
+        StoryRecord(
+            direction_id="043", app="sacrifice", title="n", slug="plain-other",
+            scope="docs", state=StoryState.PR_OPEN.value, github_pr_number=2,
+        ),
+        db,
+    )
+    assert _sibling_already_shipped(story=normal, db_path=db) is False
+
+
+def test_sibling_already_shipped_failsafe_on_query_error(factory_root: Path) -> None:
+    """A query blowup must fail-safe to False — NEVER wrongly supersede a
+    legitimate story on a DB hiccup."""
+    from factory.chain.auto_merge import _sibling_already_shipped
+
+    db = factory_root / "state" / "boom.db"
+    _winner, loser = _seed_dual_pair(db, winner_state=StoryState.DEPLOYED.value)
+
+    def _boom(**_kwargs):
+        raise RuntimeError("db exploded")
+
+    # Even though the real query WOULD supersede (sibling deployed), the raising
+    # injected query is swallowed → False.
+    assert _sibling_already_shipped(story=loser, db_path=db, sibling_rows=_boom) is False
+
+
+def test_evaluate_one_pr_refuses_loser_when_sibling_shipped(factory_root: Path) -> None:
+    """``_evaluate_one_pr`` returns a non-merged, ``superseded_by_sibling`` action
+    for a loser whose sibling already shipped — before any merge is attempted."""
+    from factory.chain.auto_merge import FixturePR, _evaluate_one_pr
+
+    db = factory_root / "state" / "eval.db"
+    _winner, loser = _seed_dual_pair(db, winner_state=StoryState.DEPLOYED.value)
+
+    fixture = FixturePR(
+        pr_number=556, head_sha="loser-sha", base_branch="main", labels=[],
+        files_changed=["context/project.md"], ci_state="success", story=loser,
+    )
+    action = _evaluate_one_pr(
+        app="sacrifice", fixture=fixture, app_config=_cfg(), dry_run=True,
+        github_client=None, db_path=db,
+    )
+    assert action.merged is False
+    assert action.superseded_by_sibling is True
+    assert action.reason == "superseded: sibling already shipped"
+
+
+def test_evaluate_one_pr_failsafe_merges_on_query_error(factory_root: Path) -> None:
+    """A raising ``sibling_shipped_query`` must NOT block a legitimate merge — the
+    self-check fails safe and evaluation proceeds to a normal (merged) decision."""
+    from factory.chain.auto_merge import FixturePR, _evaluate_one_pr
+
+    db = factory_root / "state" / "eval-safe.db"
+    _winner, loser = _seed_dual_pair(db, winner_state=StoryState.DEPLOYED.value)
+
+    def _boom(**_kwargs):
+        raise RuntimeError("query exploded")
+
+    fixture = FixturePR(
+        pr_number=556, head_sha="loser-sha", base_branch="main", labels=[],
+        files_changed=["context/project.md"], ci_state="success", story=loser,
+    )
+    action = _evaluate_one_pr(
+        app="sacrifice", fixture=fixture, app_config=_cfg(), dry_run=True,
+        github_client=None, db_path=db, sibling_shipped_query=_boom,
+    )
+    # Despite the deployed sibling, the raising query fails safe → the docs-chain
+    # loser merges normally (dry-run merged=True), never wrongly superseded.
+    assert action.superseded_by_sibling is False
+    assert action.merged is True
+
+
+def test_auto_merge_tick_supersedes_loser_and_closes_pr(
+    factory_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: the merge worker refuses the loser, parks it terminally in
+    SUPERSEDED_BY_SIBLING, and closes its PR via gh (defense-in-depth for the
+    same-window race the reconcile path can miss)."""
+    import subprocess
+
+    db = factory_root / "state" / "factory.db"
+    _winner, loser = _seed_dual_pair(db, winner_state=StoryState.DEPLOYED.value)
+
+    closed: list[list] = []
+
+    def _fake_run(cmd: list, **kwargs: object) -> subprocess.CompletedProcess:
+        closed.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run, raising=True)
+
+    fixture = FixturePR(
+        pr_number=556, head_sha="loser-sha", base_branch="main", labels=[],
+        files_changed=["context/project.md"], ci_state="success", story=loser,
+    )
+    actions = auto_merge_tick(
+        factory_root, "sacrifice", dry_run=False, fixture_prs=[fixture],
+        github_client=None, db_path=db,
+    )
+
+    assert actions[0].merged is False
+    assert actions[0].superseded_by_sibling is True
+    assert _reload_story(db, loser.id).state == StoryState.SUPERSEDED_BY_SIBLING.value
+    # The loser's PR (556) was closed so it can never auto-merge.
+    assert any(
+        c[:3] == ["gh", "pr", "close"] and "556" in c and "--delete-branch" in c
+        for c in closed
+    )
+    # No merge row recorded for the loser.
+    assert _merged_rows(db) == []
+
+
+def test_auto_merge_tick_does_not_supersede_when_no_sibling_shipped(
+    factory_root: Path,
+) -> None:
+    """Both dual-draft siblings still in-flight → the evaluated one merges
+    normally; neither is superseded (the winner must never be blocked)."""
+    db = factory_root / "state" / "factory.db"
+    winner, _loser = _seed_dual_pair(db, winner_state=StoryState.PR_OPEN.value)
+
+    fixture = FixturePR(
+        pr_number=555, head_sha="win-sha", base_branch="main", labels=[],
+        files_changed=["context/project.md"], ci_state="success", story=winner,
+    )
+    actions = auto_merge_tick(
+        factory_root, "sacrifice", dry_run=True, fixture_prs=[fixture], db_path=db,
+    )
+    assert actions[0].superseded_by_sibling is False
+    assert actions[0].merged is True
+    assert _reload_story(db, winner.id).state == StoryState.DEPLOY_PENDING.value

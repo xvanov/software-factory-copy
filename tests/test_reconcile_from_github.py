@@ -350,3 +350,211 @@ def test_reconcile_is_bounded_per_tick(tmp_path: Path) -> None:
 
     assert out == []
     assert len(calls) == 2  # capped — the other 3 wait for a later tick
+
+
+# --------------------------------------------------------------------------- #
+# Part 1 — reconcile runs the dual-draft sibling cleanup on a detected merge.
+#
+# Because fix A routes the real async ``gh pr merge --auto`` merge through
+# RECONCILE (auto-merge only ENABLES auto-merge, returning merged=False),
+# reconcile is the PRIMARY detector of the winner's merge for ``--auto`` PRs. It
+# must therefore supersede the losing dual-draft sibling exactly like the
+# auto-merge worker's own merged path does — else the loser proceeds to a
+# redundant second merge (the dual-draft over-fire #70 meant to fix).
+# --------------------------------------------------------------------------- #
+
+
+class _Issue:
+    def __init__(self, number: int, state: str = "open") -> None:
+        self.number = number
+        self.state = state
+        self.comments: list[str] = []
+        self.close_reason: str | None = None
+
+    def create_comment(self, body: str) -> None:
+        self.comments.append(body)
+
+    def edit(self, *, state: str, state_reason: str | None = None) -> None:
+        self.state = state
+        self.close_reason = state_reason
+
+
+class _Repo:
+    def __init__(self, issues: dict[int, _Issue]) -> None:
+        self._issues = issues
+
+    def get_issue(self, n: int) -> _Issue:
+        return self._issues[n]
+
+
+class _Client:
+    def __init__(self, repo: _Repo) -> None:
+        self._repo = repo
+
+    def get_repo(self, full_name: str) -> _Repo:
+        return self._repo
+
+
+class _RunResult:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+
+class _Runner:
+    """Recording stand-in for ``subprocess.run`` — captures every ``gh pr
+    close`` argv so the test asserts the loser's PR was closed without a real gh."""
+
+    def __init__(self) -> None:
+        self.calls: list[list] = []
+
+    def __call__(self, argv: list, **kwargs) -> _RunResult:
+        self.calls.append(list(argv))
+        return _RunResult()
+
+
+def _dual_pair(db: Path) -> tuple[StoryRecord, StoryRecord]:
+    """Winner (``-alt-a``, PR 555) + loser (``-alt-b``, PR 556), same direction."""
+    winner = persist_story(
+        StoryRecord(
+            direction_id="008", app="sacrifice", title="w", slug="dd-topic-alt-a",
+            scope="backend", state=StoryState.PR_OPEN.value,
+            github_issue_number=209, github_pr_number=555,
+            github_branch="factory/dd-topic-alt-a",
+        ),
+        db,
+    )
+    loser = persist_story(
+        StoryRecord(
+            direction_id="008", app="sacrifice", title="l", slug="dd-topic-alt-b",
+            scope="backend", state=StoryState.PR_OPEN.value,
+            github_issue_number=210, github_pr_number=556,
+            github_branch="factory/dd-topic-alt-b",
+        ),
+        db,
+    )
+    return winner, loser
+
+
+def _per_pr_state(mapping: dict[int, str]):
+    """A ``query_pr_state`` stub keyed by pr_number (default OPEN)."""
+    def _q(*, app_config: AppConfig, pr_number: int) -> str | None:
+        return mapping.get(pr_number, "OPEN")
+    return _q
+
+
+def test_reconcile_merge_supersedes_losing_dual_draft_sibling(tmp_path: Path) -> None:
+    db = _seed(tmp_path)
+    winner, loser = _dual_pair(db)
+
+    sibling_issue = _Issue(210)
+    client = _Client(_Repo({209: _Issue(209), 210: sibling_issue}))
+    runner = _Runner()
+
+    # Only the winner's PR (555) is MERGED on GitHub; the loser's (556) is still
+    # OPEN, so reconcile does NOT advance the loser itself — the supersede must
+    # come from the Part-1 sibling cleanup, not reconcile's own EVENT_MERGED.
+    out = reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_per_pr_state({555: "MERGED"}),
+        github_client_factory=lambda: client,
+        sibling_cleanup_runner=runner,
+    )
+
+    # Winner advanced to deploy_pending; loser terminally superseded.
+    assert (winner.slug, StoryState.PR_OPEN.value, StoryState.DEPLOY_PENDING.value) in out
+    assert _reload(db, winner.id).state == StoryState.DEPLOY_PENDING.value
+    assert _reload(db, loser.id).state == StoryState.SUPERSEDED_BY_SIBLING.value
+    # Loser's PR (556) was closed via gh, and its issue (210) was closed.
+    assert any("556" in argv and "--delete-branch" in argv for argv in runner.calls)
+    assert sibling_issue.state == "closed"
+    assert sibling_issue.close_reason == "not_planned"
+
+
+def test_reconcile_loser_pr_closed_midloop_is_not_clobbered(tmp_path: Path) -> None:
+    """Regression (adversarial review 2026-07-21): the winner is ordered before
+    the loser in the reconcile ``candidates`` snapshot; the winner's Part-1
+    cleanup closes the loser's PR + supersedes it. When the loop then reaches
+    the loser, its (now CLOSED) PR must NOT drive EVENT_PR_UNMERGEABLE ->
+    BLOCKED_DEPLOY_FAILED, clobbering the SUPERSEDED_BY_SIBLING just written.
+    The loop re-reads the live state and skips the already-terminal loser."""
+    db = _seed(tmp_path)
+    winner, loser = _dual_pair(db)
+
+    client = _Client(_Repo({209: _Issue(209), 210: _Issue(210)}))
+    runner = _Runner()
+
+    # Winner MERGED; loser's PR reports CLOSED (the cleanup just closed it) —
+    # exactly the stale-snapshot ordering that caused the clobber.
+    reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_per_pr_state({555: "MERGED", 556: "CLOSED"}),
+        github_client_factory=lambda: client,
+        sibling_cleanup_runner=runner,
+    )
+
+    assert _reload(db, winner.id).state == StoryState.DEPLOY_PENDING.value
+    # The loser is SUPERSEDED (by the cleanup), NOT the false BLOCKED_DEPLOY_FAILED.
+    assert _reload(db, loser.id).state == StoryState.SUPERSEDED_BY_SIBLING.value
+
+
+def test_reconcile_merge_non_dual_draft_never_builds_client(tmp_path: Path) -> None:
+    """A normal (non-``-alt-*``) merge must NOT build a GitHub client or touch a
+    sibling — the winner just advances to deploy_pending as before."""
+    db = _seed(tmp_path)
+    s = _story(db, state=StoryState.PR_OPEN.value, slug="ordinary", pr_number=42)
+
+    built: list[int] = []
+
+    def _factory():
+        built.append(1)
+        raise AssertionError("client should not be built for a non-dual-draft merge")
+
+    out = reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_fixed_state("MERGED"),
+        github_client_factory=_factory,
+    )
+
+    assert out == [("ordinary", StoryState.PR_OPEN.value, StoryState.DEPLOY_PENDING.value)]
+    assert _reload(db, s.id).state == StoryState.DEPLOY_PENDING.value
+    assert built == []  # short-circuited before building a client
+
+
+def test_reconcile_merge_winner_never_self_superseded(tmp_path: Path) -> None:
+    """The winning dual-draft story (the one whose PR merged) advances to
+    deploy_pending and is NEVER itself superseded."""
+    db = _seed(tmp_path)
+    winner, loser = _dual_pair(db)
+    client = _Client(_Repo({209: _Issue(209), 210: _Issue(210)}))
+
+    reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_per_pr_state({555: "MERGED"}),
+        github_client_factory=lambda: client,
+        sibling_cleanup_runner=_Runner(),
+    )
+
+    assert _reload(db, winner.id).state == StoryState.DEPLOY_PENDING.value
+
+
+def test_reconcile_sibling_cleanup_failure_never_breaks_reconcile(tmp_path: Path) -> None:
+    """A client-build blowup during the sibling cleanup must be swallowed — the
+    winner's own reconcile (advance + deploy enqueue) still completes."""
+    db = _seed(tmp_path)
+    winner, loser = _dual_pair(db)
+
+    def _boom_factory():
+        raise RuntimeError("token resolution exploded")
+
+    out = reconcile_from_github(
+        db, "sacrifice", cfg=_CFG, root=tmp_path,
+        query_pr_state=_per_pr_state({555: "MERGED"}),
+        github_client_factory=_boom_factory,
+    )
+
+    # Winner still advanced despite the cleanup failure.
+    assert (winner.slug, StoryState.PR_OPEN.value, StoryState.DEPLOY_PENDING.value) in out
+    assert _reload(db, winner.id).state == StoryState.DEPLOY_PENDING.value
+    # Loser untouched (cleanup could not run) — Part 2 self-check is the backstop.
+    assert _reload(db, loser.id).state == StoryState.PR_OPEN.value
