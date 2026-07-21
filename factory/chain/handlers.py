@@ -128,16 +128,25 @@ def _writing_worktree(
     try:
         subprocess.run(
             ["git", "fetch", "origin", base],
-            cwd=str(wt), check=False, capture_output=True, timeout=60,
+            cwd=str(wt),
+            check=False,
+            capture_output=True,
+            timeout=60,
         )
         merged = subprocess.run(
             ["git", "merge", "--no-edit", f"origin/{base}"],
-            cwd=str(wt), capture_output=True, text=True, timeout=120,
+            cwd=str(wt),
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         if merged.returncode != 0:
             subprocess.run(
                 ["git", "merge", "--abort"],
-                cwd=str(wt), check=False, capture_output=True, timeout=60,
+                cwd=str(wt),
+                check=False,
+                capture_output=True,
+                timeout=60,
             )
     except (OSError, subprocess.SubprocessError):
         pass  # base refresh is best-effort; never block the writing handler
@@ -162,12 +171,17 @@ def _abort_inflight_merge(worktree: Path) -> None:
     try:
         head = subprocess.run(
             ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
-            cwd=str(worktree), capture_output=True, timeout=15,
+            cwd=str(worktree),
+            capture_output=True,
+            timeout=15,
         )
         if head.returncode == 0:
             subprocess.run(
                 ["git", "merge", "--abort"],
-                cwd=str(worktree), check=False, capture_output=True, timeout=30,
+                cwd=str(worktree),
+                check=False,
+                capture_output=True,
+                timeout=30,
             )
     except (OSError, subprocess.SubprocessError):
         pass
@@ -350,7 +364,9 @@ def _author_acceptance_oracle(
         _logger.warning(
             "acceptance oracle authoring raised for story %s (%s): %r — "
             "acceptance_expected governs blocking; tick self-heal will retry",
-            getattr(story, "id", None), story.slug, exc,
+            getattr(story, "id", None),
+            story.slug,
+            exc,
         )
 
 
@@ -450,9 +466,7 @@ def handle_stories_spawned(
                 estimate_story_seconds as _est_secs_dd,
             )
 
-            dd_estimated_seconds = _est_secs_dd(
-                db_path=db, points=dd_points, chain_kind=chain_kind
-            )
+            dd_estimated_seconds = _est_secs_dd(db_path=db, points=dd_points, chain_kind=chain_kind)
             story = StoryRecord(
                 direction_id=direction.id or direction.slug,
                 app=direction.app,
@@ -475,8 +489,12 @@ def handle_stories_spawned(
             if not dry_run:
                 persist_story(story, db)
                 _author_acceptance_oracle(
-                    story, direction, app_config, software_factory_root,
-                    dry_run=dry_run, db_path=db,
+                    story,
+                    direction,
+                    app_config,
+                    software_factory_root,
+                    dry_run=dry_run,
+                    db_path=db,
                 )
             out.append(story)
 
@@ -517,9 +535,7 @@ def handle_stories_spawned(
             points = int(points_raw) if points_raw is not None else 3
         except (TypeError, ValueError):
             points = 3
-        estimated_seconds = estimate_story_seconds(
-            db_path=db, points=points, chain_kind=chain_kind
-        )
+        estimated_seconds = estimate_story_seconds(db_path=db, points=points, chain_kind=chain_kind)
         issue_number = None
         story_file_path = f"stories/0-{slug}.md"
 
@@ -558,8 +574,12 @@ def handle_stories_spawned(
         if not dry_run:
             persist_story(story, db)
             _author_acceptance_oracle(
-                story, direction, app_config, software_factory_root,
-                dry_run=dry_run, db_path=db,
+                story,
+                direction,
+                app_config,
+                software_factory_root,
+                dry_run=dry_run,
+                db_path=db,
             )
         out.append(story)
     return out
@@ -752,9 +772,7 @@ def handle_sm(
         persona = "sm"
         persona_prompt = _read_persona_prompt(persona)
         chain = (
-            get_direction_chain(direction, software_factory_root)
-            if direction is not None
-            else None
+            get_direction_chain(direction, software_factory_root) if direction is not None else None
         )
         prelude = compose_context_prelude(
             persona=persona,
@@ -952,7 +970,6 @@ def _read_persona_prompt(persona: str) -> str:
     return _rpp(persona)
 
 
-
 def _finding_location_file(f: dict[str, Any]) -> str:
     """Normalize a finding's location to its file path (drop :line, lowercase).
 
@@ -1059,9 +1076,7 @@ def _parse_reviewer_result(result_any: Any) -> dict[str, Any]:
 # the vocabulary. An unknown/absent criterion normalizes to "" — it still
 # participates in the signature (via location + text) but carries no rubric
 # axis, which is the correct backward-compatible behavior for pre-rubric output.
-_RUBRIC_CRITERIA = frozenset(
-    {"correctness", "contract", "security", "tests", "scope", "style"}
-)
+_RUBRIC_CRITERIA = frozenset({"correctness", "contract", "security", "tests", "scope", "style"})
 
 
 def _finding_criterion(f: dict[str, Any]) -> str:
@@ -1110,6 +1125,7 @@ def _append_reviewer_history(story: StoryRecord, result: dict[str, Any]) -> None
     finality (location + what + severity + regression flag) and for dev's
     do-not-regress section, without unbounded prompt growth.
     """
+
     def _digest(findings: Any, *, is_test: bool = False) -> list[dict[str, Any]]:
         out = []
         for f in findings or []:
@@ -1161,16 +1177,14 @@ def _render_reviewer_history_section(story: StoryRecord) -> str:
         "",
         "You have reviewed this story before. Per the Review-finality rule, a",
         "new `medium`/`high` finding is legitimate ONLY as (a) a regression",
-        "since your last review (mark `\"regression\": true`) or (b) one of",
+        'since your last review (mark `"regression": true`) or (b) one of',
         "the findings below not actually addressed. Anything else is `low` /",
         "`comments_to_post`. At cycle 3+ the chain clamps non-compliant",
         "blocking findings to non-blocking.",
         "",
     ]
     for entry in history:
-        lines.append(
-            f"### Cycle {entry.get('cycle')} — verdict: {entry.get('verdict')}"
-        )
+        lines.append(f"### Cycle {entry.get('cycle')} — verdict: {entry.get('verdict')}")
         for f in (entry.get("findings") or []) + (entry.get("test_quality_findings") or []):
             # Legacy history (written before _digest's isinstance guard) can
             # contain a bare-string finding; skip it rather than crash the
@@ -1219,9 +1233,7 @@ _MAX_DEV_RETRIES = 6
 _MAX_DEV_SAME_SIGNATURE = 3
 
 
-def _consecutive_same_dev_signature(
-    prior_attempts: list[Any], current_sig: str
-) -> int:
+def _consecutive_same_dev_signature(prior_attempts: list[Any], current_sig: str) -> int:
     """Count trailing dev attempts sharing ``current_sig`` (newest-first).
 
     Walks ``prior_attempts`` (the ``dev_attempts_json`` list) from the end and
@@ -1245,6 +1257,7 @@ def _consecutive_same_dev_signature(
             break
     return count
 
+
 # Review convergence guard. Judged by finding STABILITY, not raw cycle count: a
 # cycle that surfaces DIFFERENT findings is making progress. We block only when
 # the reviewer returns the SAME findings _MAX_REVIEW_STUCK times in a row
@@ -1252,7 +1265,6 @@ def _consecutive_same_dev_signature(
 # backstop (_MAX_REVIEW_CYCLES) so a slowly-mutating loop can't run forever.
 _MAX_REVIEW_STUCK = 3
 _MAX_REVIEW_CYCLES = 6
-
 
 
 def _is_premodel_infra_failure(run_res: Any) -> bool:
@@ -1296,9 +1308,7 @@ def _is_premodel_infra_failure(run_res: Any) -> bool:
     )
 
 
-def _consecutive_trailing_infra_errors(
-    story: StoryRecord, software_factory_root: Path
-) -> int:
+def _consecutive_trailing_infra_errors(story: StoryRecord, software_factory_root: Path) -> int:
     """Count ``dev_sandbox_infra_error`` events with no real dev progress after.
 
     Walks the per-story event log newest-first and counts the unbroken run of
@@ -1469,9 +1479,7 @@ def handle_dev(
     # lost to an interruption. If so, resume from the persisted result WITHOUT
     # re-running the expensive dev LLM (the green code already lives in the
     # reused per-story worktree). Real-run only and gated by a default-on flag.
-    if not dry_run and getattr(
-        _settings.dev_convergence, "resume_from_checkpoint", True
-    ):
+    if not dry_run and getattr(_settings.dev_convergence, "resume_from_checkpoint", True):
         _resumed = _try_resume_dev_from_checkpoint(
             story, software_factory_root, app_config=app_config, db_path=db_path
         )
@@ -1651,6 +1659,7 @@ def _handle_dev_once(
 
         dev_direction = find_direction_for_story(story, software_factory_root)
         from factory.directions.parser import get_direction_chain
+
         dev_chain = (
             get_direction_chain(dev_direction, software_factory_root)
             if dev_direction is not None
@@ -1740,10 +1749,7 @@ def _handle_dev_once(
             # Escalate to the hard-tier model instead — a different model has
             # a different filter profile. One-shot: if the hard tier also
             # filters, fall through to the bounded infra path below.
-            if (
-                "content_filter" in (run_res.error or "")
-                and story.current_model_tier != "hard"
-            ):
+            if "content_filter" in (run_res.error or "") and story.current_model_tier != "hard":
                 story.current_model_tier = "hard"
                 story.state = advance(story, EVENT_DEV_TESTS_RED).value
                 story.error = None
@@ -1766,9 +1772,7 @@ def _handle_dev_once(
                     },
                     error=None,
                 )
-            prior_infra = _consecutive_trailing_infra_errors(
-                story, software_factory_root
-            )
+            prior_infra = _consecutive_trailing_infra_errors(story, software_factory_root)
             infra_err = (run_res.error or "sandbox failed before model work")[:300]
             if prior_infra < _MAX_DEV_SANDBOX_INFRA_RETRIES:
                 story.state = advance(story, EVENT_DEV_TESTS_RED).value
@@ -1927,12 +1931,8 @@ def _handle_dev_once(
             "test_output_tail": (run_res.summary or "")[-1800:],
             "summary": (run_res.error or "tests not green after run")[:300],
             "self_summary": (getattr(run_res, "self_summary", "") or "")[:2000],
-            "last_assistant_message": (
-                getattr(run_res, "last_assistant_message", "") or ""
-            )[:2000],
-            "recent_tool_calls": list(getattr(run_res, "recent_tool_calls", []) or [])[
-                -8:
-            ],
+            "last_assistant_message": (getattr(run_res, "last_assistant_message", "") or "")[:2000],
+            "recent_tool_calls": list(getattr(run_res, "recent_tool_calls", []) or [])[-8:],
         }
         try:
             prior = json.loads(story.dev_attempts_json or "[]")
@@ -2045,8 +2045,7 @@ def _handle_dev_once(
 
         story.state = advance(story, EVENT_DEV_EXHAUSTED).value
         _stall_note = (
-            f"same failure signature {same_sig_count}x (>= "
-            f"{_MAX_DEV_SAME_SIGNATURE}); "
+            f"same failure signature {same_sig_count}x (>= {_MAX_DEV_SAME_SIGNATURE}); "
             if same_sig_stall
             else ""
         )
@@ -2249,9 +2248,7 @@ _BROKEN_PROMPT_MARKERS: tuple[str, ...] = (
 )
 
 
-def _read_story_file_content(
-    story: StoryRecord, software_factory_root: Path
-) -> str:
+def _read_story_file_content(story: StoryRecord, software_factory_root: Path) -> str:
     """Return the story markdown content, capped, with a clear error fallback.
 
     The reviewer / tech_writer prompts used to embed ``(see <path>)`` instead
@@ -2304,11 +2301,7 @@ def _fetch_latest_test_output(
             tail = (last.get("test_output_tail") or "").strip()
             if tail:
                 passed = last.get("test_run_passed")
-                verdict = (
-                    "PASSED" if passed is True
-                    else "FAILED" if passed is False
-                    else "unknown"
-                )
+                verdict = "PASSED" if passed is True else "FAILED" if passed is False else "unknown"
                 header = (
                     f"(from dev_attempts[-1]; "
                     f"attempt={last.get('attempt')!r} "
@@ -2698,9 +2691,7 @@ def handle_review(
         persona_prompt = _read_persona_prompt(persona)
         direction = find_direction_for_story(story, software_factory_root)
         chain = (
-            get_direction_chain(direction, software_factory_root)
-            if direction is not None
-            else None
+            get_direction_chain(direction, software_factory_root) if direction is not None else None
         )
         prelude = compose_context_prelude(
             persona=persona,
@@ -2711,9 +2702,7 @@ def handle_review(
         )
         story_content = _read_story_file_content(story, software_factory_root)
         fresh_test_output = _fetch_latest_test_output(story, software_factory_root)
-        pr_diff = _fetch_pr_diff_for_review(
-            story, app_config, software_factory_root
-        )
+        pr_diff = _fetch_pr_diff_for_review(story, app_config, software_factory_root)
         rcaps = (
             "## App test capabilities (HONOR when judging test choices)\n\n"
             f"* `e2e_harness_ready`: {str(app_config.gates.e2e_harness_ready).lower()}\n"
@@ -2731,9 +2720,7 @@ def handle_review(
             "---\n\n"
             "## Context\n\n"
             f"{prelude.rstrip()}\n\n"
-            f"{rcaps}"
-            + (f"{history_section}\n\n" if history_section else "")
-            + "## Story\n\n"
+            f"{rcaps}" + (f"{history_section}\n\n" if history_section else "") + "## Story\n\n"
             f"{story_content}\n\n"
             "## Test plan\n\n"
             f"{story.test_plan_json or '{}'}\n\n"
@@ -2814,12 +2801,9 @@ def handle_review(
         if prev:
             prev_locs = {
                 _finding_location_file(f)
-                for f in (prev.get("findings") or [])
-                + (prev.get("test_quality_findings") or [])
+                for f in (prev.get("findings") or []) + (prev.get("test_quality_findings") or [])
             } - {""}
-            slop_ids = {
-                id(f) for f in (result.get("slop_detector_findings") or [])
-            }
+            slop_ids = {id(f) for f in (result.get("slop_detector_findings") or [])}
             clamped: list[dict[str, Any]] = []
             for f in result.get("findings") or []:
                 if not isinstance(f, dict) or id(f) in slop_ids:
@@ -2903,11 +2887,7 @@ def handle_review(
                 f"Review did not converge ({reason}); routed to "
                 f"{StoryState.BLOCKED_REVIEW_NONCONVERGENT.value} for human review."
             )
-            if (
-                not dry_run
-                and github_client is not None
-                and story.github_pr_number is not None
-            ):
+            if not dry_run and github_client is not None and story.github_pr_number is not None:
                 try:
                     repo = github_client.get_repo(app_config.repo)
                     pr = repo.get_pull(story.github_pr_number)
@@ -2929,11 +2909,7 @@ def handle_review(
             # and ``test_quality_findings`` (see handle_dev's reviewer_findings
             # plumbing), so it knows what to fix in code and in tests.
             story.state = advance(story, EVENT_REVIEWER_REQUEST_CHANGES).value
-            if (
-                not dry_run
-                and github_client is not None
-                and story.github_pr_number is not None
-            ):
+            if not dry_run and github_client is not None and story.github_pr_number is not None:
                 try:
                     repo = github_client.get_repo(app_config.repo)
                     pr = repo.get_pull(story.github_pr_number)
@@ -2997,9 +2973,7 @@ def handle_tech_writer(
         persona_prompt = _read_persona_prompt(persona)
         direction = find_direction_for_story(story, software_factory_root)
         chain = (
-            get_direction_chain(direction, software_factory_root)
-            if direction is not None
-            else None
+            get_direction_chain(direction, software_factory_root) if direction is not None else None
         )
         prelude = compose_context_prelude(
             persona=persona,
@@ -3009,9 +2983,7 @@ def handle_tech_writer(
             software_factory_root=software_factory_root,
         )
         story_content = _read_story_file_content(story, software_factory_root)
-        pr_diff = _fetch_pr_diff_for_review(
-            story, app_config, software_factory_root
-        )
+        pr_diff = _fetch_pr_diff_for_review(story, app_config, software_factory_root)
         full_prompt = (
             f"{persona_prompt.rstrip()}\n\n"
             "---\n\n"
@@ -3411,10 +3383,7 @@ def handle_docs_enforcer(
     # this (stories/*.md is a canonical path, so a story-file-only diff scans
     # clean — exactly how benchmark t7 "passed" 2026-07-17 with a diff that
     # only added the seeded story file).
-    substantive = [
-        f for f in files
-        if f and not str(f).startswith("stories/")
-    ]
+    substantive = [f for f in files if f and not str(f).startswith("stories/")]
     if files and not substantive:
         story.state = advance(story, EVENT_DOCS_ENFORCER_FAIL).value
         story.error = "vacuous diff: only story files changed — no deliverable content"
@@ -3451,11 +3420,7 @@ def handle_docs_enforcer(
     # PR_OPEN with github_pr_number=None and auto-merge (which matches open
     # PRs to stories by number) could never merge them. Observed live
     # 2026-06-11 on story 5, the first Loop-4 story to complete the chain.
-    if (
-        not dry_run
-        and story.github_pr_number is None
-        and story.github_branch
-    ):
+    if not dry_run and story.github_pr_number is None and story.github_branch:
         opened = _open_pr_for_story(story, app_config, software_factory_root)
         if opened is not None:
             story.github_pr_number = opened
@@ -3517,9 +3482,7 @@ def _post_factory_needs_redesign_comment(
             "```",
         ]
     body_parts.append("")
-    body_parts.append(
-        f"Inspect via `factory trace {story.id}` for the per-attempt event log."
-    )
+    body_parts.append(f"Inspect via `factory trace {story.id}` for the per-attempt event log.")
     body = "\n".join(body_parts)
 
     import subprocess
@@ -3532,43 +3495,72 @@ def _post_factory_needs_redesign_comment(
     )
 
 
-def _autoformat_changed_py_before_pr(target_repo: Path, base: str) -> None:
-    """Best-effort: run ``ruff check --fix --select I`` (import-sort only) +
-    ``ruff format`` on the story's own changed ``.py`` files and commit the
-    result before the PR is opened.
+def _autoformat_changed_py_before_pr(
+    target_repo: Path, base: str, app_config: AppConfig | None = None
+) -> None:
+    """Best-effort: make the story's own changed ``.py`` files ruff-clean and
+    commit the result before the PR is opened.
 
-    Rationale (2026-07-21): a factory self-edit (PR #57) shipped with a trivial
-    ``I001`` unsorted-import + missing-trailing-newline. The chain's pre-merge
-    gates (tests-green / smoke / staging-clone) do NOT run ``ruff``, so the nit
-    only surfaced at GitHub's required lint check — which blocked the merge and,
-    because auto-merge had already been enabled, left the story stranded at
-    ``deploy_pending``. Making the pushed branch ruff-clean removes that class
-    of false-block.
+    Two scoped passes on the branch's OWN changed files (never a whole-repo
+    reformat):
+      1. ``ruff check --fix --select F401`` restricted to imports the BRANCH
+         ITSELF added — an unused import the dev just added is safe to delete;
+         a pre-existing (possibly side-effect) import is never touched (the file
+         is reverted if the fix would remove a line the branch didn't add).
+      2. ``ruff check --fix --select I`` (import-sort) + ``ruff format`` — the
+         non-semantic nits.
 
-    Scoped and safe: only the files this branch changed vs ``origin/<base>`` are
-    touched (never a whole-repo reformat of unrelated code), the whole thing is
-    a no-op when the repo has no ruff config or ``ruff`` is unavailable, and it
+    Rationale: a factory self-edit (PR #57) shipped with an ``I001`` unsorted
+    import; sacrifice PRs (#301/#293/#286/#275, 2026-07-21) sat lint-blocked on
+    ``F401`` unused imports the dev left in its own new/changed files. The
+    chain's pre-merge gates (tests-green / smoke / staging-clone) do NOT run
+    ``ruff``, so the nit only surfaced at GitHub's required lint check — blocking
+    the merge and, via auto-merge-enabled, stranding the story. Making the
+    pushed branch ruff-clean removes that class of false-block.
+
+    Safe: scoped to ``origin/<base>...HEAD`` changed files, F401 only ever
+    deletes branch-added imports, no-op when the repo/app doesn't use ruff, and
     NEVER raises — a formatting hiccup must not block PR creation.
     """
     import subprocess
 
-    # Only for repos that actually use ruff (config present) — otherwise a
-    # ``ruff format`` would be meaningless / could touch code the repo's own CI
-    # does not lint.
-    has_ruff = (target_repo / "ruff.toml").exists() or (
-        target_repo / ".ruff.toml"
-    ).exists()
-    if not has_ruff:
+    # Only for repos/apps that actually use ruff — otherwise a ``ruff format``
+    # would be meaningless / could touch code the repo's own CI does not lint.
+    # Detection: a ruff config file, ``[tool.ruff*]`` in pyproject, OR the app's
+    # configured lint/format gate command invokes ruff (sacrifice runs
+    # default-config ``ruff check .`` with NO ``[tool.ruff]`` table).
+    local_config = (target_repo / "ruff.toml").exists() or (target_repo / ".ruff.toml").exists()
+    if not local_config:
         pyproject = target_repo / "pyproject.toml"
         if pyproject.exists():
             try:
                 # Matches ``[tool.ruff]`` and any sub-table (``[tool.ruff.lint]``,
                 # ``[tool.ruff.format]``) — a repo may configure only a sub-table.
-                has_ruff = "[tool.ruff" in pyproject.read_text(encoding="utf-8")
+                local_config = "[tool.ruff" in pyproject.read_text(encoding="utf-8")
             except OSError:
-                has_ruff = False
+                local_config = False
+    has_ruff = local_config
+    if not has_ruff and app_config is not None:
+        gate_cmds = " ".join(
+            c
+            for c in (
+                getattr(app_config.gates, "lint_command", None),
+                getattr(app_config.gates, "format_check_command", None),
+            )
+            if c
+        )
+        has_ruff = "ruff" in gate_cmds
     if not has_ruff:
         return
+
+    # When the app uses ruff but has NO local config table (sacrifice: default
+    # config via ``ruff check .``), the per-story worktree is physically nested
+    # under the factory repo, so ruff would otherwise walk up and pick the
+    # FACTORY's ``[tool.ruff]`` (line-length 100, double-quote) — reformatting
+    # the app's files to a style its OWN default-config CI (``ruff format
+    # --check`` at line-length 88) then REJECTS. ``--isolated`` pins ruff to its
+    # built-in defaults, matching exactly what the app's CI runs.
+    iso = ["--isolated"] if not local_config else []
 
     try:
         diff = subprocess.run(
@@ -3583,34 +3575,33 @@ def _autoformat_changed_py_before_pr(target_repo: Path, base: str) -> None:
         return
     if diff.returncode != 0:
         return
-    py_files = [
-        f
-        for f in diff.stdout.split()
-        if f.endswith(".py") and (target_repo / f).is_file()
-    ]
+    py_files = [f for f in diff.stdout.split() if f.endswith(".py") and (target_repo / f).is_file()]
     if not py_files:
         return
 
+    # Pass 1 — F401 unused-import removal, restricted to the branch's OWN added
+    # imports. A blanket ``ruff check --fix`` under the full ruleset (E/F/I/W/
+    # UP/B) could delete a PRE-EXISTING side-effect import or rewrite typing and,
+    # since the code is NOT re-tested after this step, break CI and re-create the
+    # strand. So a file is F401-fixed ONLY when every F401 violation in it sits
+    # on a line THIS branch added (decided from ruff's line numbers vs the diff
+    # hunks BEFORE fixing). A pre-existing unused import is left for the dev loop
+    # / CI, never silently mutated here.
+    _strip_own_added_unused_imports(target_repo, base, py_files, iso)
+
     try:
-        # Deliberately NARROW: only import-sorting (``--select I``) plus
-        # ``ruff format``. These are the NON-SEMANTIC nits that spuriously fail
-        # a required lint check (I001 unsorted imports, missing trailing
-        # newline, whitespace) — exactly PR #57's failure. A blanket
-        # ``ruff check --fix`` under the factory's full ruleset (E/F/I/W/UP/B)
-        # would also apply SEMANTIC "safe" fixes — e.g. delete an unused
-        # side-effect import (F401) or rewrite typing (UP) — and since the code
-        # is NOT re-tested after this step, such a mutation could break CI and
-        # re-create the very strand we're removing. A real E/F/UP/B error should
-        # surface at CI and be fixed by the dev loop, not silently auto-mutated.
+        # Pass 2 — NON-SEMANTIC nits: import-sorting (``--select I``) plus
+        # ``ruff format`` (I001 unsorted imports, missing trailing newline,
+        # whitespace) — exactly PR #57's failure. These never change behavior.
         subprocess.run(
-            ["uv", "run", "ruff", "check", "--fix", "--select", "I", *py_files],
+            ["uv", "run", "ruff", "check", "--fix", "--select", "I", *iso, *py_files],
             cwd=str(target_repo),
             check=False,
             capture_output=True,
             timeout=180,
         )
         subprocess.run(
-            ["uv", "run", "ruff", "format", *py_files],
+            ["uv", "run", "ruff", "format", *iso, *py_files],
             cwd=str(target_repo),
             check=False,
             capture_output=True,
@@ -3642,9 +3633,12 @@ def _autoformat_changed_py_before_pr(target_repo: Path, base: str) -> None:
             )
             subprocess.run(
                 [
-                    "git", "commit",
-                    "-m", "style: ruff isort + format (pre-PR autoformat)",
-                    "--", *py_files,
+                    "git",
+                    "commit",
+                    "-m",
+                    "style: ruff F401 (own imports) + isort + format (pre-PR autoformat)",
+                    "--",
+                    *py_files,
                 ],
                 cwd=str(target_repo),
                 check=False,
@@ -3653,6 +3647,93 @@ def _autoformat_changed_py_before_pr(target_repo: Path, base: str) -> None:
             )
     except (subprocess.TimeoutExpired, OSError):
         return
+
+
+def _added_line_numbers(diff_text: str) -> set[int]:
+    """New-file line numbers of the lines a unified diff ADDS.
+
+    Walks hunk headers (``@@ -a,b +c,d @@``) and counts ``+``/context lines in
+    the new-file coordinate system, so we can ask "was line N added by this
+    branch?" positionally — content matching alone is unsafe (a pre-existing
+    import can share text with an unrelated branch-added line).
+    """
+    import re
+
+    added: set[int] = set()
+    new_ln = 0
+    for line in diff_text.splitlines():
+        if line.startswith("@@"):
+            m = re.search(r"\+(\d+)", line)
+            new_ln = int(m.group(1)) if m else 0
+            continue
+        if line.startswith(("+++", "---")):
+            continue
+        if line.startswith("+"):
+            added.add(new_ln)
+            new_ln += 1
+        elif line.startswith("-"):
+            continue  # old-only line — does not advance the new-file counter
+        else:
+            new_ln += 1  # context line
+    return added
+
+
+def _strip_own_added_unused_imports(
+    target_repo: Path, base: str, py_files: list[str], iso: list[str]
+) -> None:
+    """Remove F401 unused imports, but ONLY from files where every F401 sits on a
+    line THIS branch added — decided by line number, not text.
+
+    Per file: compute the branch's added new-file line numbers (diff hunks vs
+    ``origin/<base>...HEAD``); ask ruff for the F401 violations as JSON (their
+    row numbers, WITHOUT fixing); if — and only if — every F401 row is a
+    branch-added line, run ``ruff --fix --select F401``. If any F401 is on a
+    pre-existing line the file is left untouched (a possibly load-bearing
+    side-effect import is never deleted; the dev loop / CI handles it).
+    Best-effort; never raises.
+    """
+    import json
+    import subprocess
+
+    def _run(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess[str] | None:
+        try:
+            return subprocess.run(
+                args,
+                cwd=str(target_repo),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+
+    for f in py_files:
+        diff = _run(["git", "diff", f"origin/{base}...HEAD", "--", f])
+        if diff is None or diff.returncode != 0:
+            continue
+        added = _added_line_numbers(diff.stdout)
+        # F401 violations (line numbers) in the CURRENT (committed) file — no fix yet.
+        probe = _run(
+            ["uv", "run", "ruff", "check", "--select", "F401", "--output-format", "json", *iso, f],
+            timeout=120,
+        )
+        if probe is None or not probe.stdout.strip():
+            continue
+        try:
+            violations = json.loads(probe.stdout)
+        except (ValueError, TypeError):
+            continue
+        rows = {
+            int(v["location"]["row"])
+            for v in violations
+            if isinstance(v, dict) and v.get("location", {}).get("row") is not None
+        }
+        if not rows:
+            continue
+        # Fix ONLY if every unused-import violation is on a branch-added line.
+        if rows <= added:
+            _run(["uv", "run", "ruff", "check", "--fix", "--select", "F401", *iso, f], timeout=180)
 
 
 def _open_pr_for_story(
@@ -3750,7 +3831,7 @@ def _open_pr_for_story(
         # (found 2026-07-21 on the first factory self-edit, PR #57). Best-effort
         # and scoped to changed files, so it never reformats unrelated code and
         # never blocks PR creation.
-        _autoformat_changed_py_before_pr(target_repo, base)
+        _autoformat_changed_py_before_pr(target_repo, base, app_config)
         # Push the branch; gh pr create needs an upstream ref.
         # --force-with-lease: story branches are factory-owned and single-
         # writer, and origin may hold STALE commits from abandoned earlier
@@ -3802,7 +3883,11 @@ def _open_pr_for_story(
             text=True,
             timeout=60,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as _push_exc:
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ) as _push_exc:
         # A PR may already exist for this branch (e.g. the story re-reached
         # PR_OPEN after a CI-fix / review re-dispatch). `gh pr create` then
         # exits non-zero with "already exists" — but the story genuinely HAS a
@@ -3814,10 +3899,21 @@ def _open_pr_for_story(
             try:
                 existing = subprocess.run(
                     [
-                        "gh", "pr", "view", str(branch), "--repo", app_config.repo,
-                        "--json", "number", "-q", ".number",
+                        "gh",
+                        "pr",
+                        "view",
+                        str(branch),
+                        "--repo",
+                        app_config.repo,
+                        "--json",
+                        "number",
+                        "-q",
+                        ".number",
                     ],
-                    cwd=str(target_repo), capture_output=True, text=True, timeout=30,
+                    cwd=str(target_repo),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 num = (existing.stdout or "").strip()
                 if existing.returncode == 0 and num.isdigit():
@@ -4026,7 +4122,9 @@ def handle_deploy(
         # few lines down never runs for apps with deploy.enabled=false
         # (e.g. sacrifice) — the story reaches DEPLOYED here but its GH
         # issues never closed (audit 2026-07-18). Close them here too.
-        _close_issues_on_deploy(story, app_config, software_factory_root, db, github_client, dry_run)
+        _close_issues_on_deploy(
+            story, app_config, software_factory_root, db, github_client, dry_run
+        )
         return HandlerResult(
             next_state=StoryState(story.state),
             payload={"skipped": True, "reason": "deploy_disabled_in_config"},
@@ -4079,7 +4177,9 @@ def handle_deploy(
         story.state = advance(story, EVENT_DEPLOY_SUCCEEDED).value
         story.error = None
         persist_story(story, db)
-        _close_issues_on_deploy(story, app_config, software_factory_root, db, github_client, dry_run)
+        _close_issues_on_deploy(
+            story, app_config, software_factory_root, db, github_client, dry_run
+        )
         return HandlerResult(
             next_state=StoryState(story.state),
             payload={"deploy_action": True, "success": True},
@@ -4098,7 +4198,9 @@ def handle_deploy(
         persist_story(story, db)
         # deploy_disabled_in_config still reaches DEPLOYED — the story is done
         # from the chain's perspective, so close its issues too.
-        _close_issues_on_deploy(story, app_config, software_factory_root, db, github_client, dry_run)
+        _close_issues_on_deploy(
+            story, app_config, software_factory_root, db, github_client, dry_run
+        )
         return HandlerResult(
             next_state=StoryState(story.state),
             payload={"skipped": True, "reason": action.error},
