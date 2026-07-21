@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Coverage for factory/cli.py: 45%</title>
+    <title>Coverage for factory/cli.py: 46%</title>
     <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
     <link rel="stylesheet" href="style_cb_4667309f.css" type="text/css">
     <script src="coverage_html_cb_dd2e7eb5.js" defer></script>
@@ -12,7 +12,7 @@
     <div class="content">
         <h1>
             <span class="text">Coverage for </span><b>factory<span class="sep">/</span>cli.py</b>:
-            <span class="pc_cov">45%</span>
+            <span class="pc_cov">46%</span>
         </h1>
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
@@ -54,8 +54,8 @@
             </div>
         </aside>
         <h2>
-            <span class="text">1322 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">600<span class="text"> run</span></button>
+            <span class="text">1326 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">604<span class="text"> run</span></button>
             <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">722<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
         </h2>
@@ -65,7 +65,7 @@
             <a id="nextFileLink" class="nav" href="z_5b0f513682f58480_canonical_paths_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-21 05:25 +0000
+            created at 2026-07-21 06:40 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -3257,34 +3257,44 @@
     <p class="pln"><span class="n"><a id="t3175" href="#t3175">3175</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t3176" href="#t3176">3176</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t3177" href="#t3177">3177</a></span><span class="t"><span class="op">@</span><span class="nam">app</span><span class="op">.</span><span class="nam">command</span><span class="op">(</span><span class="str">"apps"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3178" href="#t3178">3178</a></span><span class="t"><span class="key">def</span> <span class="nam">apps_cmd</span><span class="op">(</span><span class="op">)</span> <span class="op">-></span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t3179" href="#t3179">3179</a></span><span class="t">    <span class="str">"""List every configured app (apps/*/config.yaml) with key operator fields.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t3180" href="#t3180">3180</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t3181" href="#t3181">3181</a></span><span class="t"><span class="str">    Read-only: never mutates config, filesystem, or runtime state.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t3182" href="#t3182">3182</a></span><span class="t"><span class="str">    """</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3183" href="#t3183">3183</a></span><span class="t">    <span class="key">from</span> <span class="nam">factory</span><span class="op">.</span><span class="nam">app_config</span> <span class="key">import</span> <span class="nam">list_apps</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3178" href="#t3178">3178</a></span><span class="t"><span class="key">def</span> <span class="nam">apps_cmd</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t3179" href="#t3179">3179</a></span><span class="t">    <span class="nam">json_output</span><span class="op">:</span> <span class="nam">bool</span> <span class="op">=</span> <span class="nam">typer</span><span class="op">.</span><span class="nam">Option</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t3180" href="#t3180">3180</a></span><span class="t">        <span class="key">False</span><span class="op">,</span> <span class="str">"--json"</span><span class="op">,</span> <span class="nam">help</span><span class="op">=</span><span class="str">"Emit a JSON array to stdout instead of the table."</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t3181" href="#t3181">3181</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t3182" href="#t3182">3182</a></span><span class="t"><span class="op">)</span> <span class="op">-></span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3183" href="#t3183">3183</a></span><span class="t">    <span class="str">"""List every configured app (apps/*/config.yaml) with key operator fields.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t3184" href="#t3184">3184</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3185" href="#t3185">3185</a></span><span class="t">    <span class="nam">rows</span> <span class="op">=</span> <span class="nam">list_apps</span><span class="op">(</span><span class="nam">_FACTORY_ROOT</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t3186" href="#t3186">3186</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3187" href="#t3187">3187</a></span><span class="t">    <span class="key">if</span> <span class="key">not</span> <span class="nam">rows</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t3188" href="#t3188">3188</a></span><span class="t">        <span class="nam">console</span><span class="op">.</span><span class="nam">print</span><span class="op">(</span><span class="str">"[dim]No configured apps found (no apps/*/config.yaml).[/dim]"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t3189" href="#t3189">3189</a></span><span class="t">        <span class="key">raise</span> <span class="nam">typer</span><span class="op">.</span><span class="nam">Exit</span><span class="op">(</span><span class="nam">code</span><span class="op">=</span><span class="num">0</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3185" href="#t3185">3185</a></span><span class="t"><span class="str">    Read-only: never mutates config, filesystem, or runtime state.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3186" href="#t3186">3186</a></span><span class="t"><span class="str">    """</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3187" href="#t3187">3187</a></span><span class="t">    <span class="key">import</span> <span class="nam">json</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3188" href="#t3188">3188</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3189" href="#t3189">3189</a></span><span class="t">    <span class="key">from</span> <span class="nam">factory</span><span class="op">.</span><span class="nam">app_config</span> <span class="key">import</span> <span class="nam">list_apps</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t3190" href="#t3190">3190</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3191" href="#t3191">3191</a></span><span class="t">    <span class="nam">table</span> <span class="op">=</span> <span class="nam">Table</span><span class="op">(</span><span class="nam">title</span><span class="op">=</span><span class="str">"Configured Apps"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3192" href="#t3192">3192</a></span><span class="t">    <span class="nam">table</span><span class="op">.</span><span class="nam">add_column</span><span class="op">(</span><span class="str">"name"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3193" href="#t3193">3193</a></span><span class="t">    <span class="nam">table</span><span class="op">.</span><span class="nam">add_column</span><span class="op">(</span><span class="str">"repo"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3194" href="#t3194">3194</a></span><span class="t">    <span class="nam">table</span><span class="op">.</span><span class="nam">add_column</span><span class="op">(</span><span class="str">"self_tick_enabled"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3195" href="#t3195">3195</a></span><span class="t">    <span class="nam">table</span><span class="op">.</span><span class="nam">add_column</span><span class="op">(</span><span class="str">"deploy.enabled"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3191" href="#t3191">3191</a></span><span class="t">    <span class="nam">rows</span> <span class="op">=</span> <span class="nam">list_apps</span><span class="op">(</span><span class="nam">_FACTORY_ROOT</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3192" href="#t3192">3192</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3193" href="#t3193">3193</a></span><span class="t">    <span class="key">if</span> <span class="nam">json_output</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3194" href="#t3194">3194</a></span><span class="t">        <span class="nam">typer</span><span class="op">.</span><span class="nam">echo</span><span class="op">(</span><span class="nam">json</span><span class="op">.</span><span class="nam">dumps</span><span class="op">(</span><span class="nam">rows</span><span class="op">,</span> <span class="nam">default</span><span class="op">=</span><span class="nam">str</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3195" href="#t3195">3195</a></span><span class="t">        <span class="key">raise</span> <span class="nam">typer</span><span class="op">.</span><span class="nam">Exit</span><span class="op">(</span><span class="nam">code</span><span class="op">=</span><span class="num">0</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t3196" href="#t3196">3196</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3197" href="#t3197">3197</a></span><span class="t">    <span class="key">for</span> <span class="nam">r</span> <span class="key">in</span> <span class="nam">rows</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3198" href="#t3198">3198</a></span><span class="t">        <span class="nam">table</span><span class="op">.</span><span class="nam">add_row</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t3199" href="#t3199">3199</a></span><span class="t">            <span class="nam">str</span><span class="op">(</span><span class="nam">r</span><span class="op">[</span><span class="str">"name"</span><span class="op">]</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t3200" href="#t3200">3200</a></span><span class="t">            <span class="nam">str</span><span class="op">(</span><span class="nam">r</span><span class="op">[</span><span class="str">"repo"</span><span class="op">]</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t3201" href="#t3201">3201</a></span><span class="t">            <span class="nam">str</span><span class="op">(</span><span class="nam">r</span><span class="op">[</span><span class="str">"self_tick_enabled"</span><span class="op">]</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t3202" href="#t3202">3202</a></span><span class="t">            <span class="nam">str</span><span class="op">(</span><span class="nam">r</span><span class="op">[</span><span class="str">"deploy_enabled"</span><span class="op">]</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t3203" href="#t3203">3203</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t3204" href="#t3204">3204</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t3205" href="#t3205">3205</a></span><span class="t">    <span class="nam">console</span><span class="op">.</span><span class="nam">print</span><span class="op">(</span><span class="nam">table</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3197" href="#t3197">3197</a></span><span class="t">    <span class="key">if</span> <span class="key">not</span> <span class="nam">rows</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="mis show_mis"><span class="n"><a id="t3198" href="#t3198">3198</a></span><span class="t">        <span class="nam">console</span><span class="op">.</span><span class="nam">print</span><span class="op">(</span><span class="str">"[dim]No configured apps found (no apps/*/config.yaml).[/dim]"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="mis show_mis"><span class="n"><a id="t3199" href="#t3199">3199</a></span><span class="t">        <span class="key">raise</span> <span class="nam">typer</span><span class="op">.</span><span class="nam">Exit</span><span class="op">(</span><span class="nam">code</span><span class="op">=</span><span class="num">0</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3200" href="#t3200">3200</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3201" href="#t3201">3201</a></span><span class="t">    <span class="nam">table</span> <span class="op">=</span> <span class="nam">Table</span><span class="op">(</span><span class="nam">title</span><span class="op">=</span><span class="str">"Configured Apps"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3202" href="#t3202">3202</a></span><span class="t">    <span class="nam">table</span><span class="op">.</span><span class="nam">add_column</span><span class="op">(</span><span class="str">"name"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3203" href="#t3203">3203</a></span><span class="t">    <span class="nam">table</span><span class="op">.</span><span class="nam">add_column</span><span class="op">(</span><span class="str">"repo"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3204" href="#t3204">3204</a></span><span class="t">    <span class="nam">table</span><span class="op">.</span><span class="nam">add_column</span><span class="op">(</span><span class="str">"self_tick_enabled"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3205" href="#t3205">3205</a></span><span class="t">    <span class="nam">table</span><span class="op">.</span><span class="nam">add_column</span><span class="op">(</span><span class="str">"deploy.enabled"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3206" href="#t3206">3206</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3207" href="#t3207">3207</a></span><span class="t">    <span class="key">for</span> <span class="nam">r</span> <span class="key">in</span> <span class="nam">rows</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3208" href="#t3208">3208</a></span><span class="t">        <span class="nam">table</span><span class="op">.</span><span class="nam">add_row</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t3209" href="#t3209">3209</a></span><span class="t">            <span class="nam">str</span><span class="op">(</span><span class="nam">r</span><span class="op">[</span><span class="str">"name"</span><span class="op">]</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t3210" href="#t3210">3210</a></span><span class="t">            <span class="nam">str</span><span class="op">(</span><span class="nam">r</span><span class="op">[</span><span class="str">"repo"</span><span class="op">]</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t3211" href="#t3211">3211</a></span><span class="t">            <span class="nam">str</span><span class="op">(</span><span class="nam">r</span><span class="op">[</span><span class="str">"self_tick_enabled"</span><span class="op">]</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t3212" href="#t3212">3212</a></span><span class="t">            <span class="nam">str</span><span class="op">(</span><span class="nam">r</span><span class="op">[</span><span class="str">"deploy_enabled"</span><span class="op">]</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t3213" href="#t3213">3213</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t3214" href="#t3214">3214</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t3215" href="#t3215">3215</a></span><span class="t">    <span class="nam">console</span><span class="op">.</span><span class="nam">print</span><span class="op">(</span><span class="nam">table</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -3294,7 +3304,7 @@
             <a class="nav" href="z_5b0f513682f58480_canonical_paths_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-21 05:25 +0000
+            created at 2026-07-21 06:40 +0000
         </p>
     </div>
 </footer>
