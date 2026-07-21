@@ -13,11 +13,18 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class GitState:
-    """Immutable snapshot of local git state for a repo."""
+    """Immutable snapshot of local git state for a repo.
+
+    *dirty* is a convenience boolean — True when any of *staged*,
+    *unstaged*, or *untracked* is non-zero.
+    """
 
     sha: str
     branch: str
     dirty: bool
+    staged: int = 0
+    unstaged: int = 0
+    untracked: int = 0
 
 
 def get_git_state(repo_root: str | Path) -> GitState:
@@ -30,9 +37,40 @@ def get_git_state(repo_root: str | Path) -> GitState:
 
     sha = _git(root, "rev-parse", "--short", "HEAD").strip()
     branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
-    dirty = _git(root, "status", "--porcelain").strip() != ""
+    porcelain = _git(root, "status", "--porcelain")
 
-    return GitState(sha=sha, branch=branch, dirty=dirty)
+    staged = 0
+    unstaged = 0
+    untracked = 0
+    for line in porcelain.splitlines():
+        if not line:
+            continue
+        xy = line[:2]
+        # Index status (staged): X column; working-tree status (unstaged): Y column
+        x = xy[0]
+        y = xy[1]
+
+        if x == "?":
+            untracked += 1
+        elif x != " " and y == " ":
+            staged += 1
+        elif x != " " or y != " ":
+            # Either both staged+unstaged, or unstaged only
+            if x != " ":
+                staged += 1
+            if y != " ":
+                unstaged += 1
+
+    dirty = (staged + unstaged + untracked) > 0
+
+    return GitState(
+        sha=sha,
+        branch=branch,
+        dirty=dirty,
+        staged=staged,
+        unstaged=unstaged,
+        untracked=untracked,
+    )
 
 
 def _git(repo_root: Path, *args: str) -> str:

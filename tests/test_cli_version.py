@@ -159,7 +159,7 @@ class TestCliVersionSmoke:
         assert expected_branch in result.output
 
     def test_cli_version_prints_dirty_when_dirty(self, tmp_path: Path) -> None:
-        """AC2.1: output contains '(dirty)' when the tree is dirty."""
+        """AC2.1: output contains '(dirty: ...)' when the tree is dirty."""
         repo = _init_temp_repo(tmp_path)
         runner, cli_mod = _setup_cli_runner(repo)
         # Dirty the repo after setup.
@@ -167,16 +167,41 @@ class TestCliVersionSmoke:
 
         result = runner.invoke(cli_mod.app, ["version"])
         assert result.exit_code == 0, result.output
-        assert "(dirty)" in result.output
+        assert "(dirty:" in result.output
+        assert "1 untracked" in result.output
 
     def test_cli_version_no_dirty_when_clean(self, tmp_path: Path) -> None:
-        """AC2.1: output does NOT contain '(dirty)' when tree is clean."""
+        """AC2.1: output does NOT contain '(dirty' when tree is clean."""
         repo = _init_temp_repo(tmp_path)
         runner, cli_mod = _setup_cli_runner(repo)
 
         result = runner.invoke(cli_mod.app, ["version"])
         assert result.exit_code == 0, result.output
-        assert "(dirty)" not in result.output
+        assert "(dirty" not in result.output
+
+    def test_cli_version_prints_staged_change(self, tmp_path: Path) -> None:
+        """AC2.1: staged changes appear in dirty breakdown."""
+        repo = _init_temp_repo(tmp_path)
+        runner, cli_mod = _setup_cli_runner(repo)
+        (repo / "staged.txt").write_text("staged\n", encoding="utf-8")
+        _git(repo, "add", "staged.txt")
+
+        result = runner.invoke(cli_mod.app, ["version"])
+        assert result.exit_code == 0, result.output
+        assert "(dirty:" in result.output
+        assert "1 staged" in result.output
+
+    def test_cli_version_prints_unstaged_change(self, tmp_path: Path) -> None:
+        """AC2.1: unstaged changes appear in dirty breakdown."""
+        repo = _init_temp_repo(tmp_path)
+        runner, cli_mod = _setup_cli_runner(repo)
+        # Modify a tracked file without staging.
+        (repo / "README.md").write_text("# Modified readme\n", encoding="utf-8")
+
+        result = runner.invoke(cli_mod.app, ["version"])
+        assert result.exit_code == 0, result.output
+        assert "(dirty:" in result.output
+        assert "1 unstaged" in result.output
 
 
 def _setup_cli_runner(factory_root: Path):

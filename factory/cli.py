@@ -3229,6 +3229,16 @@ def version_cmd() -> None:
     from factory.git_state import get_git_state
 
     state = get_git_state(_FACTORY_ROOT)
-    dirty_flag = " (dirty)" if state.dirty else ""
+    if state.dirty:
+        parts = []
+        if state.staged:
+            parts.append(f"{state.staged} staged")
+        if state.unstaged:
+            parts.append(f"{state.unstaged} unstaged")
+        if state.untracked:
+            parts.append(f"{state.untracked} untracked")
+        dirty_flag = " (dirty: " + ", ".join(parts) + ")"
+    else:
+        dirty_flag = ""
     typer.echo(f"{state.sha} {state.branch}{dirty_flag}")
     raise typer.Exit(code=0)
