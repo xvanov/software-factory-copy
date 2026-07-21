@@ -300,6 +300,7 @@ def _record_run(
 ) -> None:
     ended_at = datetime.now(UTC).isoformat()
     redacted_error = redact_secrets(error) if error is not None else None
+    bounded_error = truncate_error(redacted_error) if redacted_error is not None else None
     engine = _engine(db_path)
     with Session(engine) as session:
         row = Run(
@@ -313,7 +314,7 @@ def _record_run(
             success=success,
             story_path=story_path,
             repo_path=repo_path,
-            error=redacted_error,
+            error=bounded_error,
             duration_s=duration_s,
             story_id=story_id,
             model_tier=model_tier,
@@ -418,6 +419,31 @@ def redact_secrets(text: str) -> str:
 
     combined = "|".join(patterns)
     return re.sub(combined, _REDACTION_TOKEN, text)
+
+
+_DEFAULT_ERROR_MAX_LENGTH = 4000
+
+
+def truncate_error(text: str, max_length: int = _DEFAULT_ERROR_MAX_LENGTH) -> str:
+    """Return *text* truncated to fit within *max_length* with a ``...[truncated N chars]`` marker.
+
+    Text at or under *max_length* is returned unchanged.  The total output
+    (including marker) never exceeds *max_length*, making the helper naturally
+    idempotent.
+    """
+    if len(text) <= max_length:
+        return text
+
+    marker_placeholder = "...[truncated NNNNN chars]"
+    keep_len = max_length - len(marker_placeholder)
+    if keep_len < 0:
+        keep_len = 0
+
+    truncated = text[:keep_len]
+    removed = len(text) - len(truncated)
+    marker = f"...[truncated {removed} chars]"
+
+    return truncated + marker
 
 
 def _read_persona_prompt(persona: str) -> str:
@@ -1001,9 +1027,7 @@ def _build_initial_message(
                 # 6-cycle non-convergence pattern.
                 prior_cycles = reviewer_findings.get("prior_cycles") or []
                 if prior_cycles:
-                    parts.append(
-                        "\n## Already addressed in earlier review cycles — do NOT regress"
-                    )
+                    parts.append("\n## Already addressed in earlier review cycles — do NOT regress")
                     parts.append(
                         "Findings from previous cycles, presumed fixed. Keep "
                         "them fixed while addressing the items above; the "
@@ -1418,9 +1442,7 @@ async def sandbox_run(
             cost = float(getattr(stats, "accumulated_cost", 0.0) or 0.0)
             # Record usage the instant it is known so a later crash in this
             # function is still attributable to real model work.
-            _partial_usage.update(
-                tokens_in=t_in, tokens_out=t_out, cached=t_cached, cost=cost
-            )
+            _partial_usage.update(tokens_in=t_in, tokens_out=t_out, cached=t_cached, cost=cost)
             # Extract cross-retry memory signal from the conversation's
             # event stream BEFORE closing. ``conversation.state.events`` is
             # the canonical sequence of MessageEvent / ActionEvent /
@@ -1819,9 +1841,7 @@ def text_run(
         # then re-calling cannot help — the model isn't using the cap it has.
         # Treat that as futile and stop retrying instead of burning the full
         # doubling ladder (8192 -> 65536) on a model that won't comply.
-        fake_truncation = (
-            last_finish_reason == "length" and attempt_out < int(current_max * 0.8)
-        )
+        fake_truncation = last_finish_reason == "length" and attempt_out < int(current_max * 0.8)
 
         if schema is None:
             # Plain text mode — only retry on REAL truncation.
