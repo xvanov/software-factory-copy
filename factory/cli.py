@@ -3175,14 +3175,24 @@ def refresh_context_cmd(
 
 
 @app.command("apps")
-def apps_cmd() -> None:
+def apps_cmd(
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit a JSON array to stdout instead of the table."
+    ),
+) -> None:
     """List every configured app (apps/*/config.yaml) with key operator fields.
 
     Read-only: never mutates config, filesystem, or runtime state.
     """
+    import json
+
     from factory.app_config import list_apps
 
     rows = list_apps(_FACTORY_ROOT)
+
+    if json_output:
+        typer.echo(json.dumps(rows, default=str))
+        raise typer.Exit(code=0)
 
     if not rows:
         console.print("[dim]No configured apps found (no apps/*/config.yaml).[/dim]")
