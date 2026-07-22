@@ -738,6 +738,7 @@ def tick_cmd(
     if (
         not summary.handler_runs
         and not summary.errors
+        and not summary.skipped
         and not summary.rejected
         and not summary.merges
         and (summary.ci_health is None or summary.ci_health.state in ("unknown", "green"))
@@ -791,8 +792,15 @@ def tick_cmd(
         f"blocked_by_caps={summary.blocked_by_caps} "
         f"blocked={summary.stories_blocked} "
         f"merges={sum(1 for m in summary.merges if m.merged)}/{len(summary.merges)} "
+        f"skipped={len(summary.skipped)} "
         f"errors={len(summary.errors)}"
     )
+    # Quarantined rows are NON-FATAL: surface them (yellow) but never fail the
+    # tick exit code on them. Only real errors below drive exit(1). This is the
+    # crash-loop fix — a poisoned/invalid-state row must not abort the tick.
+    if summary.skipped:
+        for slug, msg in summary.skipped:
+            console.print(f"[yellow]  ~ {slug}: {msg}[/yellow]")
     if summary.errors:
         for slug, msg in summary.errors:
             console.print(f"[red]  - {slug}: {msg}[/red]")

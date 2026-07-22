@@ -121,3 +121,71 @@ def test_tick_cmd_proceeds_when_not_halted(
     assert "HALTED" not in result.stdout, (
         f"Unexpected halt message in output:\n{result.stdout}"
     )
+
+
+def _summary_with(root: Path, *, skipped=(), errors=()):  # type: ignore[no-untyped-def]
+    from factory.chain.orchestrator import TickSummary
+
+    return TickSummary(
+        app="sacrifice",
+        dry_run=False,
+        skipped=list(skipped),
+        errors=list(errors),
+    )
+
+
+def test_tick_cmd_exit_zero_when_only_skipped_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A quarantined (invalid-state) row is NON-FATAL: tick must exit 0.
+
+    Regression guard for the 2026-07-21 crash-loop: a poisoned row counted as
+    an error made ``factory tick`` exit 1 -> systemd FAILED every cycle.
+    """
+    root = _make_root(tmp_path)
+    monkeypatch.setattr(
+        "factory.chain.factory_improver.should_fire_improver",
+        lambda *a, **kw: (False, "test"),
+    )
+    monkeypatch.setattr(
+        "factory.chain.orchestrator.tick",
+        lambda *a, **kw: _summary_with(
+            root, skipped=[("poisoned", "invalid state 'abandoned'; story skipped (non-fatal)")]
+        ),
+    )
+
+    runner, cli_mod = _get_cli(root)
+    result = runner.invoke(cli_mod.app, ["tick", "--app", "sacrifice", "--dry-run"])
+
+    assert result.exit_code == 0, (
+        f"a skipped/quarantined row must NOT fail the tick exit code, "
+        f"got {result.exit_code}. Output:\n{result.stdout}"
+    )
+    # The skip must still be surfaced (not silently swallowed).
+    assert "invalid state" in result.stdout
+    assert "skipped=1" in result.stdout
+
+
+def test_tick_cmd_exit_one_when_real_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real error still fails the tick (exit 1) — the skip fix must not over-broaden."""
+    root = _make_root(tmp_path)
+    monkeypatch.setattr(
+        "factory.chain.factory_improver.should_fire_improver",
+        lambda *a, **kw: (False, "test"),
+    )
+    monkeypatch.setattr(
+        "factory.chain.orchestrator.tick",
+        lambda *a, **kw: _summary_with(
+            root, errors=[("some-story", "RuntimeError('handler blew up')")]
+        ),
+    )
+
+    runner, cli_mod = _get_cli(root)
+    result = runner.invoke(cli_mod.app, ["tick", "--app", "sacrifice", "--dry-run"])
+
+    assert result.exit_code == 1, (
+        f"a real error must still fail the tick, got {result.exit_code}. "
+        f"Output:\n{result.stdout}"
+    )

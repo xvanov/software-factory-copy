@@ -88,6 +88,18 @@ class TickSummary:
     rejected: list[tuple[str, str]] = field(default_factory=list)
     # ^ (story_slug, rejected_reason)
     errors: list[tuple[str, str]] = field(default_factory=list)
+    # Rows deliberately quarantined this tick (e.g. an invalid-enum state from
+    # a bad manual/manager write). NON-FATAL: they must NOT count toward the
+    # failing exit code. A single poisoned row counted as an error crash-looped
+    # the self-tick every cycle (2026-07-07, 2026-07-21); a stopped factory is
+    # far worse than a quarantined row. Each skip is surfaced to stdout
+    # (``skipped=N`` + a yellow line) and emitted once as an ``invalid_state_
+    # skipped`` story event. NOTE: there is currently NO automatic reconciler
+    # for invalid-enum rows and NO FMS escalation on the skip — a poisoned row
+    # persists until an operator repairs it. Closing that gap (a reconcile
+    # playbook + a watcher signal) is tracked as a follow-up; do not assume it
+    # is handled elsewhere.
+    skipped: list[tuple[str, str]] = field(default_factory=list)
     # End-of-tick auto-merge decisions (one entry per PR evaluated).
     # Empty when ``auto_merge.enabled=false`` or no PRs are eligible.
     merges: list[MergeAction] = field(default_factory=list)
@@ -1598,16 +1610,33 @@ def tick(
             try:
                 StoryState(story.state)
             except ValueError:
-                summary.errors.append(
+                summary.skipped.append(
                     (story.slug, f"invalid state {story.state!r}; story skipped (non-fatal)")
                 )
-                log_story_event(
-                    story.id,
-                    "invalid_state_skipped",
-                    {"state": story.state},
-                    software_factory_root=root,
-                    slug_hint=story.slug,
-                )
+                # Emit the anomaly ONCE per (story, bad-state), not every tick:
+                # a poisoned row persists until an operator repairs it, and the
+                # 5-min timer would otherwise append this event ~288x/day/row
+                # forever (unbounded per-story-log growth). Dedup mirrors
+                # _handle_ci_failure's already-escalated guard.
+                if story.id is not None:
+                    from factory.chain.event_log import read_story_events as _rse
+
+                    _prior = _rse(
+                        story.id, software_factory_root=root, slug_hint=story.slug
+                    )
+                    _already = any(
+                        e.get("event") == "invalid_state_skipped"
+                        and e.get("state") == story.state
+                        for e in _prior
+                    )
+                    if not _already:
+                        log_story_event(
+                            story.id,
+                            "invalid_state_skipped",
+                            {"state": story.state},
+                            software_factory_root=root,
+                            slug_hint=story.slug,
+                        )
                 continue
             # Advance up to ``max_advances_per_story`` steps for this story.
             for _ in range(max_advances_per_story):
@@ -1987,6 +2016,7 @@ def tick_summary_as_dict(summary: TickSummary) -> dict[str, Any]:
         "handler_runs": summary.handler_runs,
         "rejected": summary.rejected,
         "errors": summary.errors,
+        "skipped": summary.skipped,
         "merges": [
             {
                 "pr_number": m.pr_number,

@@ -3,8 +3,10 @@
 On 2026-07-07 a single row in state ``abandoned`` (not a StoryState value)
 made ``_dispatch_for_story``'s ``StoryState(story.state)`` raise ValueError
 and halt the entire factory for days. The tick must quarantine the poisoned
-row (record it in ``summary.errors``, emit an event) and keep driving the
-healthy stories.
+row (record it in ``summary.skipped`` — NON-FATAL, not ``summary.errors`` — and
+emit an event) and keep driving the healthy stories. Counting the skip as an
+error crash-looped the self-tick every cycle (2026-07-21): errors>0 -> exit 1
+-> systemd FAILED. Quarantine is data hygiene, not a tick failure.
 """
 
 from __future__ import annotations
@@ -82,8 +84,12 @@ def test_poisoned_state_row_is_skipped_not_fatal(
     # Must not raise despite the poisoned row.
     summary = O.tick(factory_root, "sacrifice", db_path=db, max_advances_per_story=1)
 
-    # Poisoned row surfaced as a non-fatal error, healthy story still driven.
-    assert any("invalid state" in msg for _, msg in summary.errors)
+    # Poisoned row surfaced as a NON-FATAL skip (not an error), healthy story
+    # still driven. The skip must NOT leak into summary.errors, because errors
+    # drive the tick's non-zero exit code and would crash-loop the self-tick.
+    assert any("invalid state" in msg for _, msg in summary.skipped)
+    assert not any("invalid state" in msg for _, msg in summary.errors)
+    assert summary.errors == []
     assert dispatched == [healthy_id]
 
     # Poisoned row untouched (quarantined, not mutated or deleted).
@@ -91,3 +97,18 @@ def test_poisoned_state_row_is_skipped_not_fatal(
         refreshed = session.get(StoryRecord, poisoned_id)
         assert refreshed is not None
         assert refreshed.state == "abandoned"
+
+    # A second tick must NOT re-emit the invalid_state_skipped event for the
+    # same (story, state): the poisoned row persists until an operator repairs
+    # it, and re-emitting every tick would grow the per-story log unbounded.
+    summary2 = O.tick(factory_root, "sacrifice", db_path=db, max_advances_per_story=1)
+    assert any("invalid state" in msg for _, msg in summary2.skipped)  # still surfaced each tick
+    assert summary2.errors == []  # still non-fatal
+
+    from factory.chain.event_log import read_story_events
+
+    events = read_story_events(
+        poisoned_id, software_factory_root=factory_root, slug_hint="poisoned"
+    )
+    emitted = [e for e in events if e.get("event") == "invalid_state_skipped"]
+    assert len(emitted) == 1, f"expected exactly one emit across two ticks, got {len(emitted)}"
