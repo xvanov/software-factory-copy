@@ -1060,6 +1060,170 @@ def _query_ci_state(*, app_config: AppConfig, pr_number: int) -> str | None:
     return "success"
 
 
+# GitHub check-run CONCLUSION values (from ``statusCheckRollup``) that mean a
+# genuine test/build DEFECT vs. an INFRA-transient red that clears on its own.
+# ``gh pr checks`` (the merge gate's ``_query_ci_state``) BUCKETS timed-out /
+# errored runs into the token ``"fail"`` — indistinguishable from a real failure
+# — so it CANNOT be used to gate the auto-close. The GraphQL ``statusCheckRollup``
+# exposes the real conclusion (``TIMED_OUT`` / ``CANCELLED`` / ``FAILURE`` / …),
+# which is what lets us avoid destroying a PR over a transient.
+_GENUINE_FAILURE_CONCLUSIONS = {"FAILURE"}  # CheckRun.conclusion / StatusContext.state
+_INFRA_FAILURE_CONCLUSIONS = {
+    "TIMED_OUT",
+    "CANCELLED",
+    "ACTION_REQUIRED",
+    "STALE",
+    "STARTUP_FAILURE",
+    "ERROR",  # StatusContext.state for setup/integration errors
+}
+
+
+def _ci_failure_is_genuine(*, app_config: AppConfig, pr_number: int) -> bool:
+    """True iff at least one REQUIRED check reports a genuine ``FAILURE``.
+
+    Two-source join, because neither ``gh`` command alone is sufficient:
+      * ``gh pr checks --required`` lists WHICH checks are required (the same
+        set the merge gate's ``_query_ci_state`` consults), but its short buckets
+        collapse ``TIMED_OUT``/``ERROR`` into ``"fail"`` — it cannot tell a real
+        failure from a transient.
+      * ``gh pr view --json statusCheckRollup`` exposes the REAL conclusion
+        (``FAILURE`` vs ``TIMED_OUT``/``CANCELLED``/…) but does NOT mark which
+        checks are required (``isRequired`` is a parameterized field gh only
+        populates for ``pr checks``).
+    Genuine ⇔ some check that is REQUIRED (from source 1) has a real ``FAILURE``
+    conclusion (from source 2). This is scoped to required checks so a
+    non-required optional check's ``FAILURE`` — which never blocks merge — can't
+    trigger an auto-close of a PR whose only required-check red was a transient
+    timeout. A red made only of infra-transient required conclusions returns
+    ``False`` → the caller does NOT close the PR.
+
+    FAIL-SAFE: gh missing/timeout, non-zero exit, placeholder PR, no required
+    checks, unparseable output, or a name mismatch between the two sources all
+    return ``False``. Read-only.
+
+    Residual (documented): a required job KILLED by OOM or a hang is reported by
+    GitHub as conclusion ``FAILURE`` (indistinguishable from a real test failure
+    at the API level) → treated as genuine. Rare, usually the PR's own fault, and
+    recoverable (the close comment tells a human to re-open if it was spurious).
+    """
+    import json as _json
+    import subprocess
+
+    if pr_number <= 0:
+        return False
+    # Source 1: names of the REQUIRED checks (pr checks --required lists only them).
+    try:
+        chk = subprocess.run(
+            ["gh", "pr", "checks", str(pr_number), "--repo", app_config.repo, "--required"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    combined = ((chk.stdout or "") + " " + (chk.stderr or "")).lower()
+    if "no required checks" in combined or "no checks reported" in combined:
+        return False
+    required_names = {
+        parts[0].strip()
+        for parts in (line.split("\t") for line in (chk.stdout or "").splitlines())
+        if parts and parts[0].strip()
+    }
+    if not required_names:
+        return False
+    # Source 2: real conclusions keyed by check name.
+    try:
+        view = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "--repo", app_config.repo,
+             "--json", "statusCheckRollup"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    if view.returncode != 0:
+        return False
+    try:
+        rollup = (_json.loads(view.stdout or "{}") or {}).get("statusCheckRollup") or []
+    except (ValueError, AttributeError):
+        return False
+    # Genuine ⇔ a REQUIRED check concluded a real FAILURE.
+    for check in rollup:
+        if not isinstance(check, dict):
+            continue
+        name = (check.get("name") or check.get("context") or "").strip()
+        if name not in required_names:
+            continue  # non-required check failing never blocks merge
+        # CheckRun uses ``conclusion``; legacy StatusContext uses ``state``.
+        verdict = (check.get("conclusion") or check.get("state") or "").upper()
+        if verdict in _GENUINE_FAILURE_CONCLUSIONS:
+            return True
+    return False
+
+
+def _pr_state(pr_number: int, repo: str) -> str | None:
+    """Return the PR's OPEN/CLOSED/MERGED state (upper-cased), or None on any
+    query problem. Read-only."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "state", "-q", ".state"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip().upper() or None
+
+
+def _close_pr_and_confirm(pr_number: int, repo: str, *, comment: str) -> bool:
+    """Close an OPEN PR and CONFIRM it closed. Returns True iff the PR is closed
+    (and it is safe to park the story terminally).
+
+    State-first, so it fixes three sharp edges:
+      * ``MERGED`` (out-of-band merge between fixture-build and now) → return
+        ``False`` so the caller does NOT park to a non-deploy terminal; the next
+        ``reconcile_from_github`` records the merge and enqueues the deploy.
+      * already ``CLOSED`` → return ``True`` without re-commenting/re-closing.
+      * ``OPEN`` → ``gh pr close``, re-verify, and post the explanatory comment
+        ONLY after the close is confirmed — so a persistent can-comment-but-
+        cannot-close PR never accrues one comment per tick.
+    ``check=True`` on the close makes a non-zero exit raise → treated as
+    not-closed. FAIL-SAFE: any query/close problem returns ``False``.
+    """
+    import subprocess
+
+    state = _pr_state(pr_number, repo)
+    if state == "MERGED":
+        return False  # let reconcile record merge -> deploy; never park a merge
+    if state == "CLOSED":
+        return True  # already closed; safe to park, no duplicate comment/close
+    if state != "OPEN":
+        return False  # unknown / unqueryable -> fail-safe
+    try:
+        subprocess.run(
+            ["gh", "pr", "close", str(pr_number), "--repo", repo],
+            capture_output=True, text=True, check=True, timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+    if _pr_state(pr_number, repo) != "CLOSED":
+        return False  # close didn't take -> retry next tick, NO comment (no spam)
+    try:
+        subprocess.run(
+            ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body", comment],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass  # comment is best-effort; the close (the important part) succeeded
+    return True
+
+
 def _ci_failure_signature(log_text: str) -> str:
     """Signature of a real-CI failure digest.
 
@@ -1185,7 +1349,8 @@ def _handle_ci_failure(
     pr_number: int,
     db: Path,
     root: Path,
-) -> bool:
+    close_pr_fn: Any = None,
+) -> str:
     """Feed a real CI failure back to dev instead of just skipping the merge.
 
     This closes the loop the operator asked for: "run the real CI, check the
@@ -1194,9 +1359,26 @@ def _handle_ci_failure(
     gate decline to merge — nothing told the dev WHAT failed.
 
     Called when a mergeable-state story's real ``ci_state`` is ``"failure"``.
-    Returns ``True`` if the story was re-dispatched back to dev (the caller
-    should skip merging it this tick); ``False`` if the story was left alone
-    (not mergeable) or escalated instead (cap reached / identical failure).
+    Returns one of:
+
+      * ``"redispatched"`` — the story was fed back to dev for a fix; the caller
+        should skip merging it this tick.
+      * ``"parked"`` — CI-recovery is EXHAUSTED (``_MAX_CI_FIX_CYCLES`` reached,
+        or the dev's last fix reproduced the identical failure signature). The
+        failure is app-blocked beyond what the isolated dev sandbox can fix, so
+        the PR is CLOSED (with an explanatory comment) and the story is parked in
+        the terminal ``BLOCKED_CI_UNRESOLVED`` sink — it stops being re-evaluated
+        every tick (killing the hamster-wheel) and reaches a clean closed state.
+        Because the PR is closed, nothing is left for ``reconcile_from_github`` to
+        record, which is why this is safe where the earlier open-PR park (#95) was
+        not. The caller should skip merging it this tick.
+      * ``"left"`` — the story was left untouched (defensive: not in a mergeable
+        state); the caller proceeds to the normal gate evaluation.
+
+    ``close_pr_fn`` is an injection seam for tests (defaults to
+    ``_close_pr_and_confirm``); it MUST return truthy iff the PR close is
+    confirmed. It is only invoked on the give-up path, only for a real (positive)
+    PR number, and only after the failure is confirmed genuine (not infra).
 
     Bounded two ways so this can never become a new infinite loop, mirroring
     ``orchestrator._recover_blocked_stories``:
@@ -1220,7 +1402,7 @@ def _handle_ci_failure(
     if story.state not in _MERGEABLE_STATES:
         # Defensive: callers already guard on this, but never re-dispatch a
         # story that isn't actually sitting in a mergeable state.
-        return False
+        return "left"
 
     events = read_story_events(story.id, software_factory_root=root, slug_hint=story.slug)
     prior_redispatches = [e for e in events if e.get("event") == "ci_fix_redispatch"]
@@ -1245,9 +1427,73 @@ def _handle_ci_failure(
         except Exception:  # noqa: BLE001
             pass
 
+    def _park(reason: str) -> str:
+        """CI-recovery gave up: try to close the PR + park the story terminally.
+
+        FAIL-SAFE — parks (returns ``"parked"``) ONLY when BOTH hold for a real
+        (positive) PR:
+          1. the red is a GENUINE test/build failure, not an infra-transient
+             (``cancelled``/``timed_out``/``error``) that clears on its own
+             (``_query_ci_state`` collapses both into ``"failure"``); AND
+          2. the PR close is CONFIRMED (a follow-up query reports it closed).
+        If EITHER is not established, we do NOT park — we return ``"left"`` so the
+        caller falls through to the normal gate (leaving the story mergeable) and
+        the next tick retries. Rationale: a persistent hamster-wheel is strictly
+        safer than (a) destroying a PR over a transient infra red, or (b) parking
+        a story to a non-reconcilable terminal while its PR is still open on
+        GitHub — the exact #95 strand (a later human-merge / flaky-green would
+        never be recorded). ``ci_fix_exhausted`` was already logged by the caller,
+        so a retry does not re-escalate.
+
+        ``close_pr_fn`` (test seam) MUST return truthy iff the close is confirmed;
+        the default verifies via ``_close_pr_and_confirm``.
+        """
+        from factory.chain.handlers import persist_story as _persist
+
+        if pr_number > 0:
+            if not _ci_failure_is_genuine(app_config=app_config, pr_number=pr_number):
+                # Infra/transient red only (timeout/cancel/error) — not a real
+                # defect. Do not close; let it clear / retry.
+                return "left"
+            comment = (
+                "Auto-closing: the factory's CI-recovery loop is exhausted for this "
+                f"PR (reason: {reason}). The failing checks could not be resolved by "
+                "re-dispatching to the dev agent — the failure is app-blocked beyond "
+                "what an isolated story sandbox can fix (e.g. a pre-existing error in "
+                "an unowned file, or a product-level conflict). The story is parked "
+                "terminally so it stops being re-evaluated every tick. The direction "
+                "remains on file: once the underlying blocker is fixed, re-file it "
+                "(or re-open this PR and move the story back to a live state) to retry."
+            )
+            confirm = close_pr_fn or _close_pr_and_confirm
+            try:
+                confirmed = bool(confirm(pr_number, app_config.repo, comment=comment))
+            except Exception:  # noqa: BLE001
+                confirmed = False
+            if not confirmed:
+                # Close could not be confirmed — do NOT strand an open PR behind a
+                # terminal story. Leave it mergeable; retry next tick.
+                return "left"
+        story.state = StoryState.BLOCKED_CI_UNRESOLVED.value
+        try:
+            _persist(story, db)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            log_story_event(
+                story.id,
+                "ci_unresolved_parked",
+                {"pr_number": pr_number, "reason": reason},
+                software_factory_root=root,
+                slug_hint=story.slug,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return "parked"
+
     if len(prior_redispatches) >= _MAX_CI_FIX_CYCLES:
         _escalate("cap_reached")
-        return False
+        return _park("cap_reached")
 
     try:
         logs = _fetch_ci_failure_logs(app_config=app_config, pr_number=pr_number)
@@ -1262,7 +1508,7 @@ def _handle_ci_failure(
             # didn't actually fix it. Recovering again would just grind
             # through another full dev cycle for no new signal.
             _escalate("identical_failure_signature")
-            return False
+            return _park("identical_failure_signature")
 
     digest = logs.strip() or (
         "(no CI log digest could be fetched; inspect the GitHub Actions run "
@@ -1326,7 +1572,7 @@ def _handle_ci_failure(
         )
     except Exception:  # noqa: BLE001
         pass
-    return True
+    return "redispatched"
 
 
 def _attempt_pr_reconcile(*, app_config: AppConfig, pr_number: int) -> bool:
@@ -1557,19 +1803,27 @@ def auto_merge_tick(
             and f.story is not None
             and f.story.state in _MERGEABLE_STATES
         ):
-            redispatched = _handle_ci_failure(
+            ci_outcome = _handle_ci_failure(
                 story=f.story,
                 app_config=cfg,
                 pr_number=f.pr_number,
                 db=db,
                 root=root,
             )
-            if redispatched:
+            if ci_outcome in ("redispatched", "parked"):
+                reason = (
+                    "real CI failed; story re-dispatched to dev for a fix"
+                    if ci_outcome == "redispatched"
+                    else (
+                        "CI-recovery exhausted; PR closed + story parked "
+                        "(blocked_ci_unresolved) so it stops re-evaluating every tick"
+                    )
+                )
                 action = MergeAction(
                     app=app,
                     pr_number=f.pr_number,
                     merged=False,
-                    reason="real CI failed; story re-dispatched to dev for a fix",
+                    reason=reason,
                     gates_passed=[],
                     blocking_labels=[],
                 )

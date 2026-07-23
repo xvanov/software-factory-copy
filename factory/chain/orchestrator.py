@@ -385,6 +385,10 @@ _NON_CAP_COUNTING_STATES = {
     # Dual-draft loser sink (terminal). A superseded sibling is abandoned; it
     # must not consume a concurrency slot.
     StoryState.SUPERSEDED_BY_SIBLING.value,
+    # CI-recovery-exhausted sink (terminal, PR closed). Like every sibling sink,
+    # it must not count against concurrency caps — otherwise parked stories
+    # accumulate and silently saturate the caps, stalling all new dispatch.
+    StoryState.BLOCKED_CI_UNRESOLVED.value,
     # Passive transition states — no agent is actively running; the story
     # is simply waiting for the orchestrator to dispatch the next handler
     # on the next tick. Counting these against the cap deadlocks any

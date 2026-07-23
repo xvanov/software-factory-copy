@@ -239,7 +239,14 @@ def close_story_issue(
 # direct assignment, not a ``_TRANSITIONS`` edge, so ``is_terminal(ci_pending)``
 # is wrongly True). Using an allowlist means a story mid-CI can never be
 # mistaken for resolved — the fail-safe direction.
-_RESOLVED_STORY_STATES = frozenset({"deployed", "superseded_by_sibling", "closed"})
+# ``blocked_ci_unresolved`` is the one BLOCKED_* state that IS resolved for
+# issue-closing: the auto-merge worker only parks a story there AFTER closing its
+# PR (CI-recovery exhausted, app-blocked). The work is terminally done for this
+# attempt — the tracker issue should close, not linger. Every OTHER BLOCKED_*
+# state stays absent (it may still be fixed and merged), preserving the fail-safe.
+_RESOLVED_STORY_STATES = frozenset(
+    {"deployed", "superseded_by_sibling", "closed", "blocked_ci_unresolved"}
+)
 
 
 def _direction_is_complete(rows: list[Any]) -> bool:

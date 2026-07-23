@@ -108,6 +108,27 @@ class StoryState(StrEnum):
     # state-machine ``advance()`` edge — deliberately NOT wired as an EVENT_*
     # transition from every source state.
     SUPERSEDED_BY_SIBLING = "superseded_by_sibling"
+    # CI-recovery exhausted sink. When ``auto_merge._handle_ci_failure`` gives up
+    # on a red PR (``_MAX_CI_FIX_CYCLES`` re-dispatches reached, or the dev's fix
+    # reproduced the IDENTICAL failure signature), the failure is app-blocked in a
+    # way the isolated dev sandbox cannot resolve (e.g. a pre-existing lint error
+    # in an unowned file, or a product-level smoke conflict). Before this sink such
+    # a story sat in ``PR_OPEN`` forever, re-evaluated + failing the merge gate on
+    # every tick (a hamster-wheel: ~30 min of git work per tick to reach the same
+    # "blocked" conclusion). On give-up the auto-merge worker now CLOSES the PR with
+    # an explanatory comment and parks the story here. TERMINAL (no outgoing
+    # transition → ``is_terminal`` True, ``_dispatch_for_story`` returns None) and
+    # absent from ``auto_merge._MERGEABLE_STATES`` so the chain stops re-driving it.
+    # Because the PR is CLOSED (not merely parked-while-open), there is nothing left
+    # for ``reconcile_from_github`` to record — this deliberately AVOIDS the
+    # reconciliation regression that sank the earlier open-PR park attempt (#95).
+    # RECOVERABLE: the direction remains on disk and can be re-filed once the
+    # app-side blocker is fixed; an operator may also re-open the PR and move the
+    # story back to a live dispatch state. Set via DIRECT state assignment (like
+    # ``SUPERSEDED_BY_SIBLING``), not an EVENT_* edge. Classified as resolved for
+    # tracker-issue closing (``tracker_issue._RESOLVED_STORY_STATES``) and surfaced
+    # to the FMS (``factory_improver._terminally_blocked_stories``).
+    BLOCKED_CI_UNRESOLVED = "blocked_ci_unresolved"
 
 
 class StoryRecord(SQLModel, table=True):
