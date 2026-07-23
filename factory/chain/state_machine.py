@@ -129,6 +129,24 @@ class StoryState(StrEnum):
     # tracker-issue closing (``tracker_issue._RESOLVED_STORY_STATES``) and surfaced
     # to the FMS (``factory_improver._terminally_blocked_stories``).
     BLOCKED_CI_UNRESOLVED = "blocked_ci_unresolved"
+    # Dependency-deadlock sink. The dependency-ordering gate defers a story until
+    # every lower-id sibling in its direction reaches ``deployed`` (id order == SM
+    # build order). If one of those required siblings is instead TERMINALLY parked
+    # in a never-to-deploy state (``blocked_*`` / ``superseded_by_sibling`` /
+    # ``blocked_ci_unresolved``), the dependent can NEVER build — its foundation
+    # will never land on main. Before this sink it sat in its pre-build state
+    # (e.g. ``story_created``) FOREVER: never dispatched (so not a spend/tick
+    # wheel) but never resolved either, so its direction never completes and its
+    # tracker issue never closes (observed 2026-07-23: 6 dual-draft ``alt-b``
+    # siblings stranded behind ``alt-b``'s abandoned ``alt-a`` pair). The
+    # orchestrator now parks such a story here instead of deferring indefinitely.
+    # TERMINAL (no outgoing transition), absent from ``_MERGEABLE_STATES`` and
+    # ``_AUTO_RECOVERABLE_STATES``, in ``_NON_CAP_COUNTING_STATES``, classified
+    # resolved for tracker-issue closing, and surfaced to the FMS. RECOVERY IS
+    # MANUAL (deliberately absent from ``_AUTO_RECOVERABLE_STATES``): reviving the
+    # blocking sibling does NOT by itself re-enter this story — an operator must
+    # ALSO move this story back to a live dispatch state (e.g. ``story_created``).
+    BLOCKED_DEPENDENCY_UNMET = "blocked_dependency_unmet"
 
 
 class StoryRecord(SQLModel, table=True):

@@ -245,7 +245,16 @@ def close_story_issue(
 # attempt — the tracker issue should close, not linger. Every OTHER BLOCKED_*
 # state stays absent (it may still be fixed and merged), preserving the fail-safe.
 _RESOLVED_STORY_STATES = frozenset(
-    {"deployed", "superseded_by_sibling", "closed", "blocked_ci_unresolved"}
+    {
+        "deployed",
+        "superseded_by_sibling",
+        "closed",
+        "blocked_ci_unresolved",
+        # A dependency-deadlocked story is terminally abandoned (its foundation
+        # will never deploy), so its tracker issue should close rather than
+        # linger — same resolved-terminal rationale as blocked_ci_unresolved.
+        "blocked_dependency_unmet",
+    }
 )
 
 

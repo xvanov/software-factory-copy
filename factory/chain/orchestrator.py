@@ -389,6 +389,9 @@ _NON_CAP_COUNTING_STATES = {
     # it must not count against concurrency caps — otherwise parked stories
     # accumulate and silently saturate the caps, stalling all new dispatch.
     StoryState.BLOCKED_CI_UNRESOLVED.value,
+    # Dependency-deadlock sink (terminal). Same rationale — a story that can never
+    # build must not consume a concurrency slot.
+    StoryState.BLOCKED_DEPENDENCY_UNMET.value,
     # Passive transition states — no agent is actively running; the story
     # is simply waiting for the orchestrator to dispatch the next handler
     # on the next tick. Counting these against the cap deadlocks any
@@ -522,6 +525,55 @@ def _direction_deps_pending(db: Path, story: StoryRecord) -> list[int]:
         and s.id < story.id
         and s.state != StoryState.DEPLOYED.value
     )
+
+
+# Definitively-abandoned terminal sinks: a story here will NEVER reach
+# ``deployed`` in the normal course (no factory-driven path back, no routine
+# revival). Used to detect dependency-deadlock. Deliberately an EXPLICIT
+# allowlist, NOT ``is_terminal`` — several ACTIVE states are "terminal-by-
+# omission" (``ci_pending`` has no ``_TRANSITIONS`` edge because the auto-merge
+# poller drives it by direct assignment, so ``is_terminal(ci_pending)`` is
+# wrongly True). Using ``is_terminal`` here would falsely treat a sibling that is
+# mid-CI/mid-merge as dead and destroy a live dependent — the same
+# ``is_terminal`` trap the tracker-issue resolved-states allowlist calls out.
+# The recoverable-pending-human sinks (``blocked_tests_need_clarification`` /
+# ``blocked_deploy_failed`` / ``blocked_review_nonconvergent`` /
+# ``blocked_budget_exceeded``) are EXCLUDED: a human may revive them, so a
+# dependent behind one keeps deferring (the safe direction) rather than being
+# abandoned.
+_DEAD_END_DEP_STATES = frozenset(
+    {
+        StoryState.SUPERSEDED_BY_SIBLING.value,
+        StoryState.BLOCKED_CI_UNRESOLVED.value,
+        StoryState.BLOCKED_DEPENDENCY_UNMET.value,
+    }
+)
+
+
+def _deps_permanently_dead(db: Path, dep_ids: list[int]) -> bool:
+    """True iff EVERY pending dependency is in a definitively-abandoned sink
+    (``_DEAD_END_DEP_STATES``) — none will ever deploy, so the dependent can never
+    build (a dependency-deadlock).
+
+    If ANY pending dep is in any other state — actively progressing
+    (``story_created`` / ``*_in_progress`` / ``pr_open`` / ``ci_pending`` /
+    ``ci_green`` / ``ready_for_merge`` / ``deploy_pending``) OR a
+    recoverable-pending-human block — this returns False and the dependent keeps
+    waiting (never terminalized on a still-live or possibly-revivable foundation).
+    Empty ``dep_ids`` → False. Fail-safe: a missing row or an invalid-enum dep
+    state is treated as NOT-dead (a dep not in the explicit allowlist is never
+    dead), so a dependent is never terminalized on ambiguous evidence.
+    """
+    if not dep_ids:
+        return False
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        rows = session.exec(
+            select(StoryRecord).where(StoryRecord.id.in_(dep_ids))  # type: ignore[attr-defined]
+        ).all()
+    if len(rows) != len(set(dep_ids)):
+        return False  # a dep row is missing → can't prove dead → treat as live
+    return all(row.state in _DEAD_END_DEP_STATES for row in rows)
 
 
 # Mapping from a stranded ``*_in_progress`` state back to its
@@ -1706,6 +1758,30 @@ def tick(
                 # waits in its current state until its foundations deploy.
                 _deps_pending = _direction_deps_pending(db, story)
                 if _deps_pending:
+                    # Dependency-deadlock guard: if EVERY pending dependency is
+                    # terminally parked (a never-to-deploy sink), this story can
+                    # never build — deferring it forever silently strands it (and
+                    # blocks its direction from ever completing / its tracker
+                    # issue from ever closing). Park it to the terminal
+                    # BLOCKED_DEPENDENCY_UNMET sink instead. Recoverable: reviving
+                    # the blocking sibling + this story re-enters the chain.
+                    if _deps_permanently_dead(db, _deps_pending):
+                        _dl_from = story.state
+                        story.state = StoryState.BLOCKED_DEPENDENCY_UNMET.value
+                        H.persist_story(story, db)
+                        log_story_event(
+                            story.id,
+                            "dependency_deadlocked",
+                            {
+                                "direction": story.direction_id,
+                                "dead_dependency_story_ids": _deps_pending[:10],
+                                "from_state": _dl_from,
+                            },
+                            software_factory_root=root,
+                            slug_hint=story.slug,
+                        )
+                        summary.handler_runs.append((story.slug, _dl_from, story.state))
+                        break
                     log_story_event(
                         story.id,
                         "dependency_deferred",
