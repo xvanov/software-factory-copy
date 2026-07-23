@@ -2511,6 +2511,50 @@ def _fetch_pr_diff_for_review(
     return diff_text
 
 
+def _changed_files_for_story(
+    story: StoryRecord,
+    app_config: AppConfig,
+    software_factory_root: Path,
+) -> list[str] | None:
+    """Return the branch's REAL changed-file list, or ``None`` if it cannot be
+    computed (worktree GC'd, git error, timeout).
+
+    Uses ``git diff --name-only origin/<base>...HEAD`` inside the per-story
+    worktree — the SAME merge-base semantics ``_fetch_pr_diff_for_review`` uses
+    on its pre-PR path (``git diff origin/<base>...HEAD`` when the story has no
+    PR yet) — so the docs-enforcer's vacuous-diff guard and the reviewer agree
+    on what the branch changed. The enforcer runs before PR creation in the
+    normal chain (pr_number is None), so they match in practice; once a PR
+    exists the reviewer switches to ``gh pr diff`` (the remote PR), which can
+    differ from the local worktree HEAD.
+
+    Returning ``None`` (never ``[]``) on failure lets the caller distinguish
+    "no diff available, fall back to declared paths" from "the branch genuinely
+    changed nothing" (``[]``, which the vacuous-diff guard blocks).
+    """
+    import subprocess
+
+    try:
+        worktree = _writing_worktree(app_config, software_factory_root, story)
+    except Exception:  # noqa: BLE001 - any worktree resolution failure → fall back
+        return None
+    base = app_config.default_branch or "main"
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--name-only", f"origin/{base}...HEAD"],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
 def _assert_no_broken_prompt_markers(full_prompt: str, *, where: str) -> None:
     """Sanity guard — raise if a literal placeholder leaked into the prompt.
 
@@ -3364,35 +3408,73 @@ def handle_docs_enforcer(
 
     files = pr_files
     if files is None:
-        # Derive from the tech_writer result, if present.
-        files = []
-        tw_raw = story.tech_writer_result_json or "{}"
-        try:
-            tw = json.loads(tw_raw)
-            for u in tw.get("context_updates") or []:
-                files.append(str(u.get("path")))
-        except json.JSONDecodeError:
-            pass
+        # Real runs: the authoritative file list is the branch's ACTUAL diff
+        # against base — the SAME source the reviewer approves on (see
+        # ``_fetch_pr_diff_for_review``) — NOT the tech_writer's self-declared
+        # ``context_updates``. A tech_writer that declares only a story-file
+        # "update" (story 130 / D109, 2026-07-23) otherwise makes the
+        # vacuous-diff guard below misfire on a branch that genuinely contains
+        # the code fix: the reviewer approves the real diff, the enforcer sees
+        # only ``stories/*.md`` in the declared list, bounces the story to
+        # reviewer_requested_changes, and the dev<->enforcer loop churns every
+        # cycle until the per-story budget dies. Dry-run has no worktree to
+        # diff, so it keeps deriving from the tech_writer result (the enforcer
+        # still sees the paths the writer claimed).
+        real_files = (
+            _changed_files_for_story(story, app_config, software_factory_root)
+            if not dry_run
+            else None
+        )
+        if real_files is not None:
+            files = real_files
+        else:
+            # Fallback (dry-run, or the git diff could not be computed — e.g.
+            # the worktree was GC'd): derive from the tech_writer result.
+            files = []
+            tw_raw = story.tech_writer_result_json or "{}"
+            try:
+                tw = json.loads(tw_raw)
+                for u in tw.get("context_updates") or []:
+                    files.append(str(u.get("path")))
+            except json.JSONDecodeError:
+                pass
 
     violations = scan_pr_diff(files)
     payload: dict[str, Any] = {"violations": [v._asdict() for v in violations], "files": files}
 
-    # Vacuous-diff guard. A deliverable whose entire diff is story files —
-    # nothing under context/, no prd.md, no code — delivered nothing: the
-    # story file is the WORK ORDER, not the work. scan_pr_diff can't catch
-    # this (stories/*.md is a canonical path, so a story-file-only diff scans
-    # clean — exactly how benchmark t7 "passed" 2026-07-17 with a diff that
-    # only added the seeded story file).
+    # Vacuous-diff guard. A deliverable with no substantive file — no code, no
+    # context/, no prd.md — delivered nothing. Two shapes, both blocked back to
+    # the dev loop rather than opened as a PR:
+    #
+    #  * only ``stories/*.md`` — the story file is the WORK ORDER, not the work.
+    #    scan_pr_diff can't catch it (stories/*.md is a canonical path, so a
+    #    story-file-only diff scans clean — exactly how benchmark t7 "passed"
+    #    2026-07-17 with a diff that only added the seeded story file).
+    #  * empty (``files == []``) — the branch changed nothing at all. Now
+    #    reachable since we key off the REAL diff: an in-handler base re-merge
+    #    (``_writing_worktree``) can absorb a sibling's identical fix, leaving
+    #    an empty ``origin/base...HEAD``. Opening a PR on an empty branch fails
+    #    ``gh pr create`` and would strand the story at PR_OPEN with
+    #    pr_number=None (auto-merge matches PRs by number → silent limbo), so
+    #    bounce instead. NOTE the condition is ``not substantive`` (not the old
+    #    ``files and not substantive``): with real-diff semantics the empty
+    #    case is a genuine no-op, not the old story-only misfire.
     substantive = [f for f in files if f and not str(f).startswith("stories/")]
-    if files and not substantive:
+    if not substantive:
         story.state = advance(story, EVENT_DOCS_ENFORCER_FAIL).value
-        story.error = "vacuous diff: only story files changed — no deliverable content"
+        empty = not files
+        story.error = (
+            "vacuous diff: branch changed nothing — no deliverable content"
+            if empty
+            else "vacuous diff: only story files changed — no deliverable content"
+        )
         payload["vacuous_diff"] = True
+        payload["empty_diff"] = empty
         persist_story(story, db)
         log_story_event(
             story.id,
             "vacuous_diff",
-            {"files": files[:20]},
+            {"files": files[:20], "empty_diff": empty},
             software_factory_root=software_factory_root,
             slug_hint=story.slug,
         )
