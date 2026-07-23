@@ -259,23 +259,32 @@ _RESOLVED_STORY_STATES = frozenset(
 
 
 def _direction_is_complete(rows: list[Any]) -> bool:
-    """True when a direction's winner shipped and no child work is unresolved.
+    """True when EVERY child story is in a resolved state — nothing is left to do
+    on this direction, whether it SHIPPED or was fully ABANDONED.
 
-    Fixes the historical bug where the check required *every* story to be
-    ``DEPLOYED``: a dual-draft direction can never satisfy that because its
-    losing sibling lands in ``SUPERSEDED_BY_SIBLING``, so the tracker issue
-    leaked open forever. We instead require (a) at least one DEPLOYED story
-    (a real deliverable shipped) and (b) every child story in an explicitly
-    *resolved* state (:data:`_RESOLVED_STORY_STATES`). Any other state —
-    in-flight (``pr_open``/``ci_pending``/…) or ``BLOCKED_*`` — keeps the
-    tracker open.
+    Closes on two shapes:
+      * **shipped** — a winner ``DEPLOYED`` (+ any dual-draft loser
+        ``SUPERSEDED_BY_SIBLING``); the historical case.
+      * **abandoned** — no child deployed, but every child reached a definitively
+        terminal sink (``blocked_ci_unresolved`` / ``blocked_dependency_unmet`` /
+        ``superseded_by_sibling`` / ``closed``). The direction produced nothing
+        and never will, so its tracker should close rather than leak open forever
+        (the stories are surfaced to the FMS via ``_terminally_blocked_stories``
+        for a bounded recency window and remain in the DB/event log after; closing
+        the tracker is reversible — reopen if a total failure warrants a look).
+
+    The predicate is ``all children ∈ _RESOLVED_STORY_STATES``. It deliberately
+    does NOT require a ``DEPLOYED`` child anymore — that requirement kept
+    all-abandoned directions' trackers open indefinitely (observed 2026-07-23:
+    the app-blocked D093/D096/D097/D099 cluster). Mid-flight protection is intact:
+    ``_RESOLVED_STORY_STATES`` excludes every in-flight state (``pr_open`` /
+    ``ci_pending`` / ``ready_for_merge`` / …) AND the recoverable-pending-human
+    blocks (``blocked_deploy_failed`` / ``blocked_tests_need_clarification`` /
+    ``blocked_budget_exceeded``), so any of those keeps the tracker open — a
+    direction still doing (or revivable) work is never closed.
     """
-    from factory.chain.state_machine import StoryState
-
     if not rows:
         return False
-    if not any(r.state == StoryState.DEPLOYED.value for r in rows):
-        return False  # nothing has shipped yet — keep the tracker open
     return all((r.state or "") in _RESOLVED_STORY_STATES for r in rows)
 
 

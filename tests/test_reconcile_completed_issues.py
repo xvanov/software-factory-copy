@@ -134,11 +134,34 @@ def test_incomplete_when_blocked_story_present() -> None:
     )
 
 
-def test_incomplete_when_nothing_shipped() -> None:
-    # Only superseded/closed and no deployed winner → not complete.
-    assert not _direction_is_complete(
+def test_complete_when_fully_abandoned_no_deploy() -> None:
+    # Abandoned-direction close (2026-07-23): every child reached a definitively
+    # terminal sink and nothing deployed → the direction produced nothing and
+    # never will, so it IS complete (tracker closes; stories stay FMS-surfaced).
+    assert _direction_is_complete(
         [_story(StoryState.SUPERSEDED_BY_SIBLING.value), _story("closed")]
     )
+    # The app-blocked cluster shape: alt-a CI-abandoned + alt-b dependency-dead.
+    assert _direction_is_complete(
+        [
+            _story(StoryState.BLOCKED_CI_UNRESOLVED.value),
+            _story(StoryState.BLOCKED_DEPENDENCY_UNMET.value),
+        ]
+    )
+
+
+def test_incomplete_when_recoverable_block_present_no_deploy() -> None:
+    # A recoverable-pending-human block (NOT in _RESOLVED_STORY_STATES) keeps the
+    # tracker open even with no deploy — the work may still be revived. This is
+    # the D092/D094/D098 case that must stay open.
+    for blocked in (
+        StoryState.BLOCKED_DEPLOY_FAILED.value,
+        StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
+        StoryState.BLOCKED_BUDGET_EXCEEDED.value,
+    ):
+        assert not _direction_is_complete(
+            [_story(blocked), _story(StoryState.STORY_CREATED.value)]
+        )
 
 
 def test_incomplete_when_sibling_ci_pending() -> None:
