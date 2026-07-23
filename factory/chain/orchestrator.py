@@ -106,6 +106,10 @@ class TickSummary:
     # Post-merge main-branch CI-health monitor result (D004). ``None`` when
     # ``ci_health.enabled=false`` or the factory mode suppresses it.
     ci_health: CiHealthResult | None = None
+    # Autonomous issue-hygiene reconcile result (counts of trackers/story issues
+    # auto-closed this tick). ``None`` when the ~hourly gate didn't fire, the
+    # mode suppressed it, or no GitHub client was available.
+    issue_hygiene: dict[str, int] | None = None
     # Phase 7: set to True when tick exits early due to factory halt.
     halted: bool = False
     halt_reason: str | None = None
@@ -1358,6 +1362,44 @@ def _build_current_state(
     }
 
 
+_ISSUE_HYGIENE_INTERVAL_S = 3600  # autonomous issue-reconcile: at most once/hour/app
+
+
+def _issue_hygiene_marker(root: Path, app: str) -> Path:
+    return root / "state" / "issue_hygiene" / f"{app}.last"
+
+
+def _should_run_issue_hygiene(root: Path, app: str, *, now: float | None = None) -> bool:
+    """Rate-gate the autonomous issue-reconcile to at most once/hour/app.
+
+    The reconcile scans stories + makes GH-API calls; running the idempotent
+    sweep every 5-minute tick is wasteful, but skipping it entirely (today's
+    state) leaks completed/abandoned trackers open until a human runs
+    ``factory reconcile-issues``. FAIL-SAFE: any stat problem → True (err toward
+    running the safe, idempotent sweep — a spurious extra run is harmless).
+    """
+    import time as _time
+
+    marker = _issue_hygiene_marker(root, app)
+    try:
+        if not marker.exists():
+            return True
+        age = (now if now is not None else _time.time()) - marker.stat().st_mtime
+        return age >= _ISSUE_HYGIENE_INTERVAL_S
+    except OSError:
+        return True
+
+
+def _mark_issue_hygiene_ran(root: Path, app: str) -> None:
+    """Stamp the hygiene marker (mtime = now). Best-effort."""
+    try:
+        marker = _issue_hygiene_marker(root, app)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def tick(
     software_factory_root: Path,
     app: str,
@@ -2052,6 +2094,36 @@ def tick(
                     # break the tick.
                     summary.errors.append(("ci-health", repr(exc)))
 
+        # Autonomous issue hygiene. Close GitHub trackers/story-issues for
+        # directions/stories that are COMPLETE or terminally ABANDONED, so the
+        # repo's issues stay clean WITHOUT a manual ``factory reconcile-issues``.
+        # The event-driven close fires only on DEPLOY; a direction abandoned
+        # without a deploy (all children in terminal sinks) would otherwise leak
+        # its tracker open forever. Rate-gated (~hourly/app), suppressed in
+        # paused/drain modes, and FULLY FAIL-SAFE: reconcile never raises and a
+        # hygiene hiccup must never fail the tick, so it is NOT recorded in
+        # ``summary.errors`` — only surfaced (counts) in ``summary.issue_hygiene``.
+        if not dry_run and _should_run_issue_hygiene(root, app):
+            _hyg_mode = get_mode(root, db_path=db)
+            if _hyg_mode not in {"paused", "drain-reviews"}:
+                try:
+                    from factory.directions.tracker_issue import reconcile_completed_issues
+                    from factory.providers.github import build_github_client
+
+                    _gh = build_github_client()
+                    if _gh is not None:
+                        _rep = reconcile_completed_issues(
+                            cfg, _gh, software_factory_root=root, db_path=db
+                        )
+                        _mark_issue_hygiene_ran(root, app)
+                        summary.issue_hygiene = {
+                            "trackers_closed": len(_rep.get("trackers_closed", [])),
+                            "stories_closed": len(_rep.get("stories_closed", [])),
+                            "errors": len(_rep.get("errors", [])),
+                        }
+                except Exception:  # noqa: BLE001 - hygiene must NEVER break the tick
+                    pass
+
         _tick_succeeded = True
     except Exception as _exc:  # noqa: BLE001
         _tick_exception = repr(_exc)
@@ -2119,4 +2191,5 @@ def tick_summary_as_dict(summary: TickSummary) -> dict[str, Any]:
                 "advisory_failing": list(summary.ci_health.advisory_failing),
             }
         ),
+        "issue_hygiene": summary.issue_hygiene,
     }

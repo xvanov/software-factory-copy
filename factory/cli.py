@@ -787,6 +787,13 @@ def tick_cmd(
             f"filed={summary.ci_health.filed} "
             f"reason={summary.ci_health.reason!r}"
         )
+    if summary.issue_hygiene and (
+        summary.issue_hygiene.get("trackers_closed") or summary.issue_hygiene.get("stories_closed")
+    ):
+        console.print(
+            f"issue-hygiene: closed {summary.issue_hygiene['trackers_closed']} tracker(s) + "
+            f"{summary.issue_hygiene['stories_closed']} story issue(s) (reconcile)"
+        )
     console.print(
         f"advanced={summary.stories_advanced} "
         f"blocked_by_caps={summary.blocked_by_caps} "

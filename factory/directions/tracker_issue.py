@@ -452,16 +452,32 @@ def reconcile_completed_issues(
         if _close_if_open("tracker", tracker, comment, direction_id) and not dry_run:
             report["trackers_closed"].append((direction_id, int(tracker)))
 
-    # Pass 2 — story issues for resolved-shipped stories.
-    shipped = {StoryState.DEPLOYED.value, StoryState.SUPERSEDED_BY_SIBLING.value}
+    # Pass 2 — story issues for RESOLVED stories: shipped (deployed / superseded)
+    # OR terminally abandoned (blocked_ci_unresolved / blocked_dependency_unmet).
+    # Uses the same _RESOLVED_STORY_STATES allowlist as _direction_is_complete, so
+    # an abandoned story's own tracker closes rather than lingering after its
+    # PR/direction is already gone (the 8 orphaned per-story sub-issues observed
+    # 2026-07-23). A story in ANY non-resolved state — in-flight or a
+    # recoverable-pending-human block — keeps its issue open.
+    _abandoned = {
+        StoryState.BLOCKED_CI_UNRESOLVED.value,
+        StoryState.BLOCKED_DEPENDENCY_UNMET.value,
+    }
     for r in story_rows:
         num = getattr(r, "github_issue_number", None)
-        if not num or r.state not in shipped:
+        if not num or (r.state or "") not in _RESOLVED_STORY_STATES:
             continue
         if r.state == StoryState.DEPLOYED.value:
             comment = "✅ Deployed — closing automatically (reconcile: story reached DEPLOYED)."
-        else:
+        elif r.state == StoryState.SUPERSEDED_BY_SIBLING.value:
             comment = "🔁 Superseded by a sibling draft — closing automatically (reconcile)."
+        elif r.state in _abandoned:
+            comment = (
+                "🛑 Terminally abandoned (CI-recovery exhausted / dependency-deadlocked) "
+                "— closing the story issue (reconcile). Re-file the direction to retry."
+            )
+        else:  # "closed" / invalidated
+            comment = "Closing resolved story issue (reconcile)."
         if _close_if_open("story", num, comment, r.slug or str(r.id)) and not dry_run:
             report["stories_closed"].append((r.id, int(num)))
 

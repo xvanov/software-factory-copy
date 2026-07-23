@@ -371,3 +371,72 @@ def test_reconcile_bad_db_returns_error_not_raise(tmp_path: Path) -> None:
     )
     assert report["errors"] and report["errors"][0][0] == "db"
     assert report["trackers_closed"] == [] and report["stories_closed"] == []
+
+
+# ─── reconcile: fully-abandoned direction (no deploy) closes tracker + stories ──
+
+
+def test_reconcile_closes_abandoned_direction_and_story_issues(tmp_path: Path) -> None:
+    """An abandoned direction — both dual-draft siblings in terminal sinks
+    (blocked_ci_unresolved + blocked_dependency_unmet), NOTHING deployed — must
+    close its direction tracker AND both per-story issues. This is the 8-orphaned-
+    sub-issue gap (2026-07-23): Pass 2 previously only closed DEPLOYED/SUPERSEDED
+    story issues, leaving abandoned stories' issues open."""
+    _make_direction(tmp_path, "093-email-verify", tracker_issue=268)
+    _persist(
+        tmp_path, direction_id="093", title="narrow", slug="ev-narrow-alt-a",
+        scope="backend", state=StoryState.BLOCKED_CI_UNRESOLVED.value, github_issue_number=269,
+    )
+    _persist(
+        tmp_path, direction_id="093", title="broad", slug="ev-broad-alt-b",
+        scope="backend", state=StoryState.BLOCKED_DEPENDENCY_UNMET.value, github_issue_number=270,
+    )
+    issues = {268: _Issue(268), 269: _Issue(269), 270: _Issue(270)}
+    client = _Client(_Repo(issues))
+    report = reconcile_completed_issues(_app_config(), client, software_factory_root=tmp_path)
+    assert (268, 268) not in report["trackers_closed"]  # tuple shape guard below
+    # direction tracker closed
+    assert 268 in {n for _, n in report["trackers_closed"]}
+    # both abandoned story issues closed
+    assert {n for _, n in report["stories_closed"]} == {269, 270}
+    assert all(issues[n].state == "closed" for n in (268, 269, 270))
+
+
+def test_reconcile_keeps_recoverable_block_story_issue_open(tmp_path: Path) -> None:
+    """A story in a recoverable-pending-human block (NOT in _RESOLVED_STORY_STATES)
+    keeps its issue open — the D094/D098 case (deploy_failed/budget/clarification)."""
+    _make_direction(tmp_path, "094-pwreset", tracker_issue=271)
+    _persist(
+        tmp_path, direction_id="094", title="narrow", slug="pw-narrow-alt-a",
+        scope="backend", state=StoryState.BLOCKED_TESTS_NEED_CLARIFICATION.value,
+        github_issue_number=272,
+    )
+    issues = {271: _Issue(271), 272: _Issue(272)}
+    client = _Client(_Repo(issues))
+    report = reconcile_completed_issues(_app_config(), client, software_factory_root=tmp_path)
+    assert report["trackers_closed"] == [] and report["stories_closed"] == []
+    assert issues[271].state == "open" and issues[272].state == "open"
+
+
+# ─── _should_run_issue_hygiene: hourly rate-gate ───────────────────────────────
+
+
+def test_issue_hygiene_gate(tmp_path: Path) -> None:
+    from factory.chain.orchestrator import (
+        _issue_hygiene_marker,
+        _mark_issue_hygiene_ran,
+        _should_run_issue_hygiene,
+    )
+
+    # No marker yet → run.
+    assert _should_run_issue_hygiene(tmp_path, "sacrifice") is True
+    _mark_issue_hygiene_ran(tmp_path, "sacrifice")
+    assert _issue_hygiene_marker(tmp_path, "sacrifice").exists()
+    # Just ran → gated off.
+    assert _should_run_issue_hygiene(tmp_path, "sacrifice") is False
+    # Simulate >1h elapsed (now far in the future) → run again.
+    import time as _t
+
+    assert _should_run_issue_hygiene(tmp_path, "sacrifice", now=_t.time() + 7200) is True
+    # Per-app: a different app with no marker still runs.
+    assert _should_run_issue_hygiene(tmp_path, "factory") is True
