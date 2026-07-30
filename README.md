@@ -63,7 +63,7 @@
 | factory/directions/parser.py                           |      242 |       21 |     91% |58, 148, 158-159, 173, 201-203, 258, 264-265, 269, 291, 297, 307, 333, 346, 358, 383, 396-398 |
 | factory/directions/schema.py                           |       49 |        0 |    100% |           |
 | factory/directions/tracker\_issue.py                   |      226 |       23 |     90% |70-72, 110, 116, 120, 195-199, 325, 329, 346, 353-354, 420-422, 446-447, 450, 487 |
-| factory/directions/watcher.py                          |       76 |       25 |     67% |77-81, 86, 110-114, 122-132, 137-142 |
+| factory/directions/watcher.py                          |       84 |       25 |     70% |101-105, 110, 134-138, 146-156, 161-166 |
 | factory/events/\_\_init\_\_.py                         |        1 |        0 |    100% |           |
 | factory/events/rotation.py                             |       78 |       16 |     79% |62-63, 67-69, 96-98, 113, 116-117, 123-124, 144, 163-164 |
 | factory/git\_state.py                                  |       41 |        2 |     95% |    47, 60 |
@@ -125,7 +125,7 @@
 | factory/webhook/\_\_init\_\_.py                        |        0 |        0 |    100% |           |
 | factory/webhook/github.py                              |      190 |       40 |     79% |56, 60, 63-64, 96, 126, 162-167, 191-207, 253, 308-312, 355-356, 379-391, 395 |
 | factory/webhook/openhands\_events.py                   |       36 |        7 |     81% |69, 84-123 |
-| **TOTAL**                                              | **16927** | **3494** | **79%** |           |
+| **TOTAL**                                              | **16935** | **3494** | **79%** |           |
 
 
 ## Setup coverage badge
