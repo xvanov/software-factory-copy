@@ -15,12 +15,16 @@ Phase-0 contract:
     caller's persona prompt should already know what to do in that mode.
   * If ``direction_chain`` is provided, append each ancestor direction's
     ``direction.md`` body and merged story file (oldest first).
+  * If ``db_path`` is provided and an ancestor direction has deployed stories,
+    append a "Merged Story / Dev Agent Record" section resolved via
+    ``stories.direction_id``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from factory.chain.state_machine import StoryRecord, StoryState
 from factory.context.navigator import parse_navigation
 from factory.directions.parser import Direction, MissingDirection
 
@@ -44,12 +48,72 @@ def _read_text(p: Path) -> str | None:
         return None
 
 
+def _append_merged_story_section(
+    parts: list[str],
+    ancestor: Direction,
+    db_path: Path | None,
+    software_factory_root: Path | None,
+) -> None:
+    """Append "Merged Story / Dev Agent Record" for deployed ancestor stories.
+
+    Only appends when ``db_path`` is provided and at least one deployed story
+    exists for the ancestor direction (resolved via ``stories.direction_id``).
+    """
+    if db_path is None or software_factory_root is None:
+        return
+
+    from sqlmodel import Session, create_engine, select
+
+    engine = create_engine(f"sqlite:///{db_path}", echo=False)
+    with Session(engine) as session:
+        deployed_stories = list(
+            session.exec(
+                select(StoryRecord).where(
+                    StoryRecord.direction_id == ancestor.id,
+                    StoryRecord.state == StoryState.DEPLOYED.value,
+                )
+            )
+        )
+
+    if not deployed_stories:
+        return
+
+    parts.append("\n### Merged Story / Dev Agent Record\n")
+    parts.append(
+        "_The following story (deployed from this ancestor direction) "
+        "represents prior art. Its acceptance criteria and Dev Agent Record "
+        "are relevant context._\n"
+    )
+
+    for story in deployed_stories:
+        story_content = _read_story_content(story, software_factory_root)
+        parts.append(f"\n#### {story.title} (`{story.slug}`)\n")
+        parts.append(story_content.rstrip() + "\n")
+
+
+def _read_story_content(story: StoryRecord, software_factory_root: Path) -> str:
+    """Return the story markdown file content, capped, with fallback."""
+    if not story.story_file_path:
+        return "(no story_file_path on record)"
+    story_path = software_factory_root / "apps" / story.app / story.story_file_path
+    try:
+        content = story_path.read_text(encoding="utf-8")
+    except (OSError, FileNotFoundError) as exc:
+        return f"(story file unreadable at {story_path}: {exc!r})"
+    # Cap at 32KB to avoid bloating the context prelude
+    _STORY_CONTENT_CAP = 32 * 1024
+    if len(content) > _STORY_CONTENT_CAP:
+        content = content[:_STORY_CONTENT_CAP] + "\n...[truncated at 32KB]"
+    return content
+
+
 def compose_context_prelude(
     persona: str,
     app_repo_path: Path,
     task_scope: str | None = None,
     direction_chain: list[Direction | MissingDirection] | None = None,
     software_factory_root: Path | None = None,
+    db_path: Path | None = None,
 ) -> str:
     """Compose the markdown context prelude for ``persona`` against ``app_repo_path``.
 
@@ -86,29 +150,11 @@ def compose_context_prelude(
             for ancestor in ancestors:
                 if isinstance(ancestor, MissingDirection):
                     parts.append(f"\n### Parent direction: {ancestor.id_slug}\n")
-                    parts.append(
-                        f"_(parent direction not found: {ancestor.id_slug})_\n"
-                    )
+                    parts.append(f"_(parent direction not found: {ancestor.id_slug})_\n")
                 else:
                     parts.append(f"\n### Parent direction: {ancestor.id_slug}\n")
                     parts.append(ancestor.raw_body.rstrip() + "\n")
-                    # NOTE (2026-07-29): a "Merged Story / Dev Agent Record"
-                    # section used to be appended here, read from
-                    # ``state/stories/<tracker>-<direction-slug>.md``. That file
-                    # has never existed — nothing writes ``state/stories/``, and
-                    # story files are written to ``apps/<app>/stories/`` named by
-                    # the STORY's issue number and slug, not the direction's. So
-                    # the read always returned None and ``_read_text`` swallowed
-                    # the FileNotFoundError: the section was silently omitted on
-                    # every call since it was written, and no persona has ever
-                    # received ancestor-story context.
-                    #
-                    # Removed rather than repointed, because it is not fixable
-                    # from filenames: nothing in a story's name identifies its
-                    # direction. The link lives only in ``stories.direction_id``,
-                    # so restoring the capability needs a DB lookup threaded in
-                    # here. Tracked as a deliverable of the direction-state
-                    # refactor; do not re-add a path-guessing version.
+                    _append_merged_story_section(parts, ancestor, db_path, software_factory_root)
 
     if task_scope:
         sections = parse_navigation(navigation_md)
