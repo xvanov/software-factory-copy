@@ -40,7 +40,7 @@
 | factory/chain/rollback.py                              |      106 |        3 |     97% |102-103, 105 |
 | factory/chain/scheduled\_tasks.py                      |      281 |       34 |     88% |231, 240-243, 344, 374-375, 407, 608-610, 625, 630, 639-641, 708-709, 732, 736, 739, 744-745, 797, 807, 810-811, 875-881 |
 | factory/chain/security.py                              |        7 |        7 |      0% |     11-46 |
-| factory/chain/slop\_detector.py                        |      301 |       39 |     87% |113, 137-140, 166, 168, 185, 189, 193, 208, 214, 224, 233, 269-270, 288-289, 319, 326, 330, 361-376, 391, 398, 400, 551, 609, 617-618, 621 |
+| factory/chain/slop\_detector.py                        |      301 |       33 |     89% |113, 137-140, 166, 168, 185, 193, 208, 214, 233, 288-289, 319, 330, 361-376, 391, 400, 551, 609, 617-618, 621 |
 | factory/chain/state\_machine.py                        |      117 |        0 |    100% |           |
 | factory/chain/step\_events.py                          |       59 |        9 |     85% |111-112, 127-128, 157, 160-161, 168-169 |
 | factory/chain/ux\_auditor.py                           |        7 |        7 |      0% |     14-49 |
@@ -49,7 +49,7 @@
 | factory/context/\_\_init\_\_.py                        |        0 |        0 |    100% |           |
 | factory/context/canonical\_paths.py                    |       36 |        2 |     94% |     90-91 |
 | factory/context/enforcer.py                            |       49 |        0 |    100% |           |
-| factory/context/loader.py                              |       58 |        1 |     98% |       133 |
+| factory/context/loader.py                              |       87 |        5 |     94% |97, 101-102, 106, 179 |
 | factory/context/navigator.py                           |       39 |        2 |     95% |     65-66 |
 | factory/context/updater.py                             |       29 |        1 |     97% |        77 |
 | factory/deploy/\_\_init\_\_.py                         |        4 |        0 |    100% |           |
@@ -126,7 +126,7 @@
 | factory/webhook/\_\_init\_\_.py                        |        0 |        0 |    100% |           |
 | factory/webhook/github.py                              |      190 |       40 |     79% |56, 60, 63-64, 96, 126, 162-167, 191-207, 253, 308-312, 355-356, 379-391, 395 |
 | factory/webhook/openhands\_events.py                   |       36 |        7 |     81% |69, 84-123 |
-| **TOTAL**                                              | **17107** | **3501** | **80%** |           |
+| **TOTAL**                                              | **17136** | **3499** | **80%** |           |
 
 
 ## Setup coverage badge
