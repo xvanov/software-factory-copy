@@ -746,6 +746,39 @@ def _collect_flow_artifacts(app: str, software_factory_root: Path) -> list[tuple
     return artifacts
 
 
+def _collect_tests_meaningful_findings(
+    app: str, software_factory_root: Path
+) -> list[dict[str, object]]:
+    """Collect reproducible ``tests-meaningful`` slop findings for ``app``.
+
+    Scans test files under ``apps/<app>/repo/`` using the slop detector.
+    Returns a list of ``SlopFinding.as_dict()`` payloads — deterministic
+    for a given set of test files on disk.
+    """
+    from factory.chain.slop_detector import scan_file
+
+    repo_dir = Path(software_factory_root) / "apps" / app / "repo"
+    if not repo_dir.is_dir():
+        return []
+
+    findings: list[dict[str, object]] = []
+    repo_root_resolved = repo_dir.resolve()
+    for py_file in sorted(repo_dir.rglob("test_*.py")):
+        try:
+            for fnd in scan_file(py_file):
+                payload = fnd.as_dict()
+                finding_path = Path(str(payload.get("path", ""))).resolve()
+                try:
+                    payload["path"] = finding_path.relative_to(repo_root_resolved).as_posix()
+                except ValueError:
+                    payload["path"] = str(payload.get("path", ""))
+                findings.append(payload)
+        except Exception:  # noqa: BLE001 - best-effort collection
+            continue
+    findings.sort(key=lambda item: (str(item.get("path", "")), int(item.get("line", 0))))
+    return findings
+
+
 def _extract_http_urls(text: str) -> list[str]:
     """Return distinct HTTP(S) URLs found in arbitrary shell text."""
     import re
@@ -782,6 +815,25 @@ def _build_ux_auditor_context(app: str, software_factory_root: Path) -> str:
     for label, content in flow_artifacts:
         parts.append(f"\n#### {label}\n")
         parts.append(content + "\n")
+
+    # -- Gate findings: tests-meaningful (D017) --
+    parts.append("\n### Gate Findings\n")
+    gate_findings = _collect_tests_meaningful_findings(app, software_factory_root)
+    if gate_findings:
+        parts.append(
+            f"_Collected {len(gate_findings)} `tests-meaningful` slop finding(s) "
+            "from the app's test files. Each finding names the file, line, "
+            "rule id (kind), and remediation suggestion._\n"
+        )
+        for fnd in gate_findings:
+            parts.append(
+                f"\n- **Rule**: `{fnd['kind']}`\n"
+                f"  - **File**: `{fnd['path']}`\n"
+                f"  - **Line**: {fnd['line']}\n"
+                f"  - **Remediation**: {fnd['why_slop']}\n"
+            )
+    else:
+        parts.append("_No `tests-meaningful` slop findings detected in the app's test files._\n")
 
     # -- App URL context (AC1.2) --
     parts.append("\n### App URL Context\n")
