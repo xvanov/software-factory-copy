@@ -300,6 +300,10 @@ def test_every_documented_bypass_in_the_real_code_is_accepted() -> None:
         ("tests_green", "superseded_by_sibling", "dual_draft.retire_superseded_siblings"),
         ("sm_in_progress", "story_created", "handlers.handle_sm"),
         ("blocked_ci_unresolved", "pr_open", "recovery.execute_retry_mergeable_blocked_story"),
+        # D013: reconcile_from_github revives blocked_ci_unresolved → deploy_pending
+        # and unparks dependent blocked_dependency_unmet → story_created.
+        ("blocked_ci_unresolved", "deploy_pending", "orchestrator.reconcile_from_github"),
+        ("blocked_dependency_unmet", "story_created", "orchestrator.reconcile_from_github"),
         ("pr_open", "story_created", "recovery.execute_redispatch_phantom_pr"),
         ("pr_open", "quarantined_invalid_state", "recovery.execute_quarantine_invalid_enum_story"),
     ]

@@ -598,6 +598,30 @@ def _deps_permanently_dead(db: Path, dep_ids: list[int]) -> bool:
     return all(row.state in _DEAD_END_DEP_STATES for row in rows)
 
 
+def _deps_none_permanently_dead(db: Path, dep_ids: list[int]) -> bool:
+    """True iff NONE of the pending dependency IDs are in a definitively-abandoned
+    sink (``_DEAD_END_DEP_STATES``).
+
+    Used by dependent-revival logic: a dependent parked in
+    ``blocked_dependency_unmet`` is only safe to revive when every former
+    dead-end blocker has been revived — if ANY pending dep is still in a
+    dead-end sink, the dependent stays parked.
+    Empty ``dep_ids`` → True (no blockers to worry about).  Fail-safe: a missing
+    row or invalid-enum dep state is treated as live (not dead), so revival is
+    deferred on ambiguous evidence.
+    """
+    if not dep_ids:
+        return True
+    eng = create_engine(f"sqlite:///{db}", echo=False)
+    with Session(eng) as session:
+        rows = session.exec(
+            select(StoryRecord).where(StoryRecord.id.in_(dep_ids))  # type: ignore[attr-defined]
+        ).all()
+    if len(rows) != len(set(dep_ids)):
+        return False  # a dep row is missing → can't prove safe → don't revive
+    return not any(row.state in _DEAD_END_DEP_STATES for row in rows)
+
+
 # Mapping from a stranded ``*_in_progress`` state back to its
 # dispatch-eligible predecessor. Used by ``_prune_stale_in_progress`` to
 # recover rows that didn't reach the handler's normal exit (process kill,
@@ -1102,9 +1126,7 @@ def reconcile_closed_trackers(
     candidates = [
         s
         for s in rows
-        if s.state in _PENDING_HUMAN_STATES
-        and s.github_issue_number
-        and s.github_issue_number > 0
+        if s.state in _PENDING_HUMAN_STATES and s.github_issue_number and s.github_issue_number > 0
     ]
 
     settled: list[tuple[str, str, str]] = []
@@ -1246,6 +1268,54 @@ def _write_drift_event(
             slug_hint=story.slug,
         )
     except Exception:  # noqa: BLE001
+        pass
+
+
+def _revive_dependents_of_revived_blocker(*, blocker: StoryRecord, db: Path, root: Path) -> None:
+    """Re-evaluate dependents parked in ``blocked_dependency_unmet`` whose blocker
+    has been revived out of a dead-end sink (e.g. ``blocked_ci_unresolved``).
+
+    When a ``blocked_ci_unresolved`` story is revived by reconcile (PR merged
+    out-of-band), dependents that were parked in ``blocked_dependency_unmet``
+    because this blocker was in a ``_DEAD_END_DEP_STATES`` sink must be
+    re-evaluated — the blocker is no longer dead, so the dependent may now be
+    buildable. Move each such dependent back to ``story_created`` so the
+    orchestrator re-dispatches it on the next tick (best-effort, idempotent).
+
+    Only acts on dependents whose blocker set is no longer permanently dead;
+    a dependent still blocked on another dead-end sibling stays parked.
+    """
+    if blocker.id is None or not blocker.direction_id:
+        return
+    try:
+        from factory.chain.handlers import persist_story
+
+        eng = create_engine(f"sqlite:///{db}", echo=False)
+        with Session(eng) as session:
+            dependents = session.exec(
+                select(StoryRecord).where(
+                    StoryRecord.app == blocker.app,
+                    StoryRecord.direction_id == blocker.direction_id,
+                    StoryRecord.state == StoryState.BLOCKED_DEPENDENCY_UNMET.value,
+                )
+            ).all()
+
+        for dep in dependents:
+            if dep.id is None or dep.id <= (blocker.id or 0):
+                continue
+            pending = _direction_deps_pending(db, dep)
+            if _deps_none_permanently_dead(db, pending):
+                dep.state = StoryState.STORY_CREATED.value
+                dep.error = None
+                persist_story(dep, db)
+                _write_drift_event(
+                    root=root,
+                    story=dep,
+                    from_state=StoryState.BLOCKED_DEPENDENCY_UNMET.value,
+                    pr_state="N/A",
+                    action=f"dependent_revived:blocker_{blocker.id}_no_longer_dead",
+                )
+    except Exception:  # noqa: BLE001 - best-effort, never break reconcile
         pass
 
 
@@ -1406,15 +1476,23 @@ def reconcile_from_github(
     for whether a PR merged, closed, or is still open. That projection drifts: a
     PR merged (or completed out-of-band) while the local story still says
     ``pr_open``; a PR closed while the story keeps looping on a dead branch. This
-    pass reconciles each non-terminal story that has a real PR against GitHub
+    pass reconciles each non-settled story that has a real PR against GitHub
     BEFORE any dispatch decision, using the SAME state-machine transitions
     auto-merge uses, and logs every reconciliation as a first-class
     ``state_drift_reconciled`` anomaly so drift is never silent.
 
-    Candidates are stories in ``auto_merge._MERGEABLE_STATES``
-    (``pr_open`` / ``ci_green`` / ``ready_for_merge``) with a positive
-    ``github_pr_number`` — exactly the states that hold an open PR and for which
-    the ``EVENT_MERGED`` / ``EVENT_PR_UNMERGEABLE`` transitions are defined.
+    Candidates are EVERY non-settled story with a positive ``github_pr_number``
+    — NOT just ``auto_merge._MERGEABLE_STATES`` (``pr_open`` / ``ci_green`` /
+    ``ready_for_merge``). This includes:
+
+    * States bounced back after CI-failure re-dispatch (e.g.
+      ``reviewer_requested_changes``, ``dev_in_progress``) whose PR merged
+      out-of-band (G2: stories 132/136).
+    * **``blocked_ci_unresolved``** (D013): the CI-exhaustion path closes the PR
+      and parks the story here. An operator may re-open and merge the PR without
+      touching the factory DB; reconcile must detect that merge and revive the
+      story through the same reconciled-merge path as the normal mergeable
+      states. A CLOSED-unmerged PR stays blocked (no time-based revival).
 
     Drift cases handled:
 
@@ -1426,15 +1504,20 @@ def reconcile_from_github(
       PRIMARY detector of the async merge and ALSO records a ``merged=True``
       merge-action row + enqueues the deploy (see
       ``_record_reconciled_merge_and_enqueue_deploy``) so the app actually ships.
+      When the revived story came from ``blocked_ci_unresolved``, reconcile also
+      re-evaluates its dependents (``_revive_dependents_of_revived_blocker``) so
+      stories parked in ``blocked_dependency_unmet`` become dispatchable again.
     * PR **CLOSED** (not merged) on GitHub, local state still in-flight →
       ``advance(story, EVENT_PR_UNMERGEABLE)`` → ``BLOCKED_DEPLOY_FAILED`` so the
-      story stops looping on a dead PR and surfaces for attention.
+      story stops looping on a dead PR and surfaces for attention. A story
+      already in ``blocked_ci_unresolved`` whose PR stays closed is left as-is
+      (no-op) — revival is driven by the real artifact, never by time.
     * PR **OPEN** → local projection already matches GitHub → no-op.
     * **Unknown** query result (``None``) → no-op. Fail-safe: never advance a
       story on an ambiguous or failed GitHub query.
 
-    Idempotent: once reconciled the story leaves ``_MERGEABLE_STATES`` and is no
-    longer a candidate, so a consistent DB produces zero mutations and zero
+    Idempotent: once reconciled the story leaves the candidate set and is no
+    longer considered, so a consistent DB produces zero mutations and zero
     events on re-run. Bounded: at most ``max_reconcile`` GitHub calls per tick.
     Pure DB rewrite + read-only gh queries — no LLM / git-write work, mirroring
     ``_recover_blocked_stories``. Returns ``(slug, from_state, to_state)`` tuples
@@ -1461,16 +1544,27 @@ def reconcile_from_github(
         # at the post-merge DEPLOY_PENDING target (its merge is recorded and its
         # deploy enqueued — re-forcing it every tick would spam drift events and
         # re-run the sibling cleanup; this preserves reconcile's idempotency).
+        # EXCEPTION: ``blocked_ci_unresolved`` is terminal (no outgoing
+        # transitions) but it carries a CLOSED PR whose merge state can change
+        # out-of-band — the operator who fixes the CI failure may re-open and
+        # merge the PR without touching the factory DB. Reconcile must detect that
+        # merge and revive the story, so do NOT treat blocked_ci_unresolved as
+        # settled.
+        if state_value == StoryState.BLOCKED_CI_UNRESOLVED.value:
+            return False
         return _terminal(state_value) or state_value == StoryState.DEPLOY_PENDING.value
 
-    # Candidates: EVERY non-terminal story that carries a real PR — NOT just the
+    # Candidates: EVERY non-settled story that carries a real PR — NOT just the
     # ``_MERGEABLE_STATES`` (pr_open / ci_green / ready_for_merge). A PR merged
     # out-of-band while the story had bounced back to REVIEWER_REQUESTED_CHANGES
     # or DEV_IN_PROGRESS (e.g. after a CI-failure re-dispatch) is invisible to a
     # mergeable-states-only query, so the merge is never detected, the story
     # loops forever on an already-merged branch, and its dual-draft sibling is
     # never superseded (G2: stories 132/136). Detecting ANY merged PR regardless
-    # of the story's current state is exactly what closes that gap.
+    # of the story's current state is exactly what closes that gap. This also
+    # includes ``blocked_ci_unresolved`` stories (D013): a PR that was closed by
+    # the CI-exhaustion path may be re-opened and merged by an operator; reconcile
+    # must detect that merge and revive the story.
     eng = create_engine(f"sqlite:///{db}", echo=False)
     with Session(eng) as session:
         all_rows = session.exec(select(StoryRecord).where(StoryRecord.app == app)).all()
@@ -1577,6 +1671,12 @@ def reconcile_from_github(
                 github_client_factory=github_client_factory,
                 runner=sibling_cleanup_runner,
             )
+            # D013: When a ``blocked_ci_unresolved`` story is revived by a merged
+            # PR, re-evaluate its dependents — stories parked in
+            # ``blocked_dependency_unmet`` because this blocker was dead may now
+            # be buildable. Best-effort; never raises out of reconcile.
+            if from_state == StoryState.BLOCKED_CI_UNRESOLVED.value:
+                _revive_dependents_of_revived_blocker(blocker=story, db=db, root=root)
         reconciled.append((story.slug, from_state, new_state.value))
         _write_drift_event(
             root=root,

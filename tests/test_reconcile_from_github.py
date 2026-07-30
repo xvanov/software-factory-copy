@@ -726,3 +726,324 @@ def test_terminal_story_with_pr_is_never_reconsidered(tmp_path: Path) -> None:
     assert calls == []  # neither terminal story was queried
     assert _reload(db, d.id).state == StoryState.DEPLOYED.value
     assert _reload(db, sup.id).state == StoryState.SUPERSEDED_BY_SIBLING.value
+
+
+# --------------------------------------------------------------------------- #
+# D013: blocked_ci_unresolved reconciliation
+# --------------------------------------------------------------------------- #
+
+
+def test_blocked_ci_unresolved_merged_pr_revives_to_deploy_pending(
+    tmp_path: Path,
+) -> None:
+    """D013 AC2.1-AC2.4: A ``blocked_ci_unresolved`` story whose PR was merged
+    out-of-band advances to ``deploy_pending`` via the same reconciled-merge path
+    as normal mergeable states. Includes merge-action persistence and deploy
+    enqueue side effects."""
+    from factory.chain.auto_merge import _MERGEABLE_STATES
+
+    db = _seed(tmp_path)
+    s = _story(db, state=StoryState.BLOCKED_CI_UNRESOLVED.value, slug="ci-revived", pr_number=99)
+
+    out = reconcile_from_github(
+        db,
+        "sacrifice",
+        cfg=_CFG,
+        root=tmp_path,
+        query_pr_state=_fixed_state("MERGED"),
+    )
+
+    assert out == [
+        ("ci-revived", StoryState.BLOCKED_CI_UNRESOLVED.value, StoryState.DEPLOY_PENDING.value)
+    ]
+    r = _reload(db, s.id)
+    assert r.state == StoryState.DEPLOY_PENDING.value
+
+    # Drift event logged (AC5.1).
+    drift = _drift_events(tmp_path)
+    assert len(drift) >= 1
+    ev = drift[0]
+    assert ev["local_state_before"] == StoryState.BLOCKED_CI_UNRESOLVED.value
+    assert ev["authoritative_pr_state"] == "MERGED"
+    assert ev["action"] == f"advanced_to:{StoryState.DEPLOY_PENDING.value}"
+
+    # Per-story event log (AC5.2).
+    story_events = read_story_events(s.id, software_factory_root=tmp_path, slug_hint=s.slug)
+    assert [e for e in story_events if e.get("event") == "state_drift_reconciled"]
+
+    # Merge-action row persisted (AC2.2).
+    from sqlmodel import Session, select
+
+    from factory.chain.auto_merge import MergeActionRecord
+
+    with Session(create_engine(f"sqlite:///{db}")) as ses:
+        rows = ses.exec(select(MergeActionRecord).where(MergeActionRecord.pr_number == 99)).all()
+    assert len(rows) >= 1
+    assert any(row.merged is True for row in rows)
+
+    # Deploy enqueued (AC2.3): a DeployQueueEntry row exists for this PR.
+    from sqlmodel import Session, select
+
+    from factory.deploy.orchestrator import DeployQueueEntry
+
+    with Session(create_engine(f"sqlite:///{db}")) as ses:
+        queue_rows = ses.exec(
+            select(DeployQueueEntry).where(DeployQueueEntry.merged_pr_number == 99)
+        ).all()
+    assert len(queue_rows) >= 1
+
+    # blocked_ci_unresolved is NOT in _MERGEABLE_STATES — the revival is driven
+    # by the candidate selection expansion, not by adding the state to mergeable.
+    assert StoryState.BLOCKED_CI_UNRESOLVED.value not in _MERGEABLE_STATES
+
+
+def test_blocked_ci_unresolved_closed_unmerged_stays_blocked(
+    tmp_path: Path,
+) -> None:
+    """D013 AC3.1: A ``blocked_ci_unresolved`` story whose PR is CLOSED (not
+    merged) stays blocked — no state change, no drift event, no time-based
+    revival."""
+    db = _seed(tmp_path)
+    s = _story(
+        db, state=StoryState.BLOCKED_CI_UNRESOLVED.value, slug="stays-blocked", pr_number=200
+    )
+
+    out = reconcile_from_github(
+        db,
+        "sacrifice",
+        cfg=_CFG,
+        root=tmp_path,
+        query_pr_state=_fixed_state("CLOSED"),
+    )
+
+    assert out == []  # no drift, no-op
+    r = _reload(db, s.id)
+    assert r.state == StoryState.BLOCKED_CI_UNRESOLVED.value
+    # No drift events logged for closed-unmerged blocked story.
+    assert _drift_events(tmp_path) == []
+
+
+def test_blocked_ci_unresolved_open_pr_is_noop(tmp_path: Path) -> None:
+    """A ``blocked_ci_unresolved`` story with an OPEN PR (operator re-opened it
+    but hasn't merged yet) is a no-op — reconcile should not advance."""
+    db = _seed(tmp_path)
+    s = _story(db, state=StoryState.BLOCKED_CI_UNRESOLVED.value, slug="reopened", pr_number=150)
+
+    out = reconcile_from_github(
+        db,
+        "sacrifice",
+        cfg=_CFG,
+        root=tmp_path,
+        query_pr_state=_fixed_state("OPEN"),
+    )
+
+    assert out == []
+    assert _reload(db, s.id).state == StoryState.BLOCKED_CI_UNRESOLVED.value
+    assert _drift_events(tmp_path) == []
+
+
+def test_blocked_ci_unresolved_revives_dependents(
+    tmp_path: Path,
+) -> None:
+    """D013 AC4.1: When a ``blocked_ci_unresolved`` story is revived by
+    reconcile, a dependent parked in ``blocked_dependency_unmet`` because this
+    blocker was dead must be re-evaluated and moved back to ``story_created``."""
+    db = _seed(tmp_path)
+
+    # Blocker (lower ID) in blocked_ci_unresolved with a PR.
+    blocker = persist_story(
+        StoryRecord(
+            direction_id="099",
+            app="sacrifice",
+            title="blocker",
+            slug="blocker",
+            scope="backend",
+            state=StoryState.BLOCKED_CI_UNRESOLVED.value,
+            github_pr_number=300,
+            github_branch="factory/blocker",
+        ),
+        db,
+    )
+
+    # Dependent (higher ID) in blocked_dependency_unmet — parked because blocker
+    # was dead.
+    dependent = persist_story(
+        StoryRecord(
+            direction_id="099",
+            app="sacrifice",
+            title="dependent",
+            slug="dependent",
+            scope="backend",
+            state=StoryState.BLOCKED_DEPENDENCY_UNMET.value,
+            github_pr_number=None,
+            github_branch="factory/dependent",
+        ),
+        db,
+    )
+
+    out = reconcile_from_github(
+        db,
+        "sacrifice",
+        cfg=_CFG,
+        root=tmp_path,
+        query_pr_state=_per_pr_state({300: "MERGED"}),
+    )
+
+    # Blocker revived.
+    assert (
+        blocker.slug,
+        StoryState.BLOCKED_CI_UNRESOLVED.value,
+        StoryState.DEPLOY_PENDING.value,
+    ) in out
+    assert _reload(db, blocker.id).state == StoryState.DEPLOY_PENDING.value
+
+    # Dependent revived — moved from blocked_dependency_unmet back to story_created.
+    dep_reloaded = _reload(db, dependent.id)
+    assert dep_reloaded.state == StoryState.STORY_CREATED.value
+    assert dep_reloaded.error is None
+
+    # Drift events for both.
+    drift = _drift_events(tmp_path)
+    actions = {e["action"] for e in drift}
+    assert "dependent_revived:blocker_1_no_longer_dead" in actions
+    assert f"advanced_to:{StoryState.DEPLOY_PENDING.value}" in actions
+
+
+def test_blocked_ci_unresolved_does_not_revive_when_other_blocker_still_dead(
+    tmp_path: Path,
+) -> None:
+    """D013 AC4.1 edge case: A dependent in ``blocked_dependency_unmet`` that
+    still has another dead-end blocker (not revived) stays parked. Only when ALL
+    blockers are non-dead does it become dispatchable."""
+    db = _seed(tmp_path)
+
+    # Two blockers in the same direction (IDs 1 and 2), both dead-end.
+    blocker1 = persist_story(
+        StoryRecord(
+            direction_id="099",
+            app="sacrifice",
+            title="blocker1",
+            slug="blocker1",
+            scope="backend",
+            state=StoryState.BLOCKED_CI_UNRESOLVED.value,
+            github_pr_number=400,
+            github_branch="factory/blocker1",
+        ),
+        db,
+    )
+    blocker2 = persist_story(
+        StoryRecord(
+            direction_id="099",
+            app="sacrifice",
+            title="blocker2",
+            slug="blocker2",
+            scope="backend",
+            state=StoryState.BLOCKED_CI_UNRESOLVED.value,
+            github_pr_number=401,
+            github_branch="factory/blocker2",
+        ),
+        db,
+    )
+
+    # Dependent (ID 3) in blocked_dependency_unmet. Both blockers (IDs 1 and 2)
+    # are dead-end states. Only blocker1's PR is merged — blocker2 stays blocked.
+    dependent = persist_story(
+        StoryRecord(
+            direction_id="099",
+            app="sacrifice",
+            title="dependent",
+            slug="dependent",
+            scope="backend",
+            state=StoryState.BLOCKED_DEPENDENCY_UNMET.value,
+            github_pr_number=None,
+            github_branch="factory/dependent",
+        ),
+        db,
+    )
+
+    reconcile_from_github(
+        db,
+        "sacrifice",
+        cfg=_CFG,
+        root=tmp_path,
+        query_pr_state=_per_pr_state({400: "MERGED", 401: "CLOSED"}),
+    )
+
+    # Blocker1 revived.
+    assert _reload(db, blocker1.id).state == StoryState.DEPLOY_PENDING.value
+    # Blocker2 stays blocked (CLOSED-unmerged).
+    assert _reload(db, blocker2.id).state == StoryState.BLOCKED_CI_UNRESOLVED.value
+    # Dependent stays parked — blocker2 is still a dead end.
+    assert _reload(db, dependent.id).state == StoryState.BLOCKED_DEPENDENCY_UNMET.value
+
+
+def test_full_path_block_ci_merge_revive_dependent(
+    tmp_path: Path,
+) -> None:
+    """D013 AC6.1-AC6.2: Full-path regression test. Block a story on CI, merge
+    its PR out of band, run reconcile, and observe ``deploy_pending`` plus an
+    unblocked dependent."""
+    db = _seed(tmp_path)
+
+    # Blocker — simulate CI-exhaustion resulting in blocked_ci_unresolved with a
+    # PR that the operator subsequently merges out of band.
+    blocker = persist_story(
+        StoryRecord(
+            direction_id="099",
+            app="sacrifice",
+            title="blocker",
+            slug="full-path-blocker",
+            scope="backend",
+            state=StoryState.BLOCKED_CI_UNRESOLVED.value,
+            github_pr_number=500,
+            github_branch="factory/full-path-blocker",
+            error="dev exhausted retries (6): identical CI failure",
+        ),
+        db,
+    )
+
+    # Dependent — parked because the blocker was in a dead-end sink.
+    dependent = persist_story(
+        StoryRecord(
+            direction_id="099",
+            app="sacrifice",
+            title="dependent",
+            slug="full-path-dependent",
+            scope="backend",
+            state=StoryState.BLOCKED_DEPENDENCY_UNMET.value,
+            github_pr_number=None,
+            github_branch="factory/full-path-dependent",
+        ),
+        db,
+    )
+
+    # The operator merges the blocker's PR out of band. reconcile detects it.
+    out = reconcile_from_github(
+        db,
+        "sacrifice",
+        cfg=_CFG,
+        root=tmp_path,
+        query_pr_state=_per_pr_state({500: "MERGED"}),
+    )
+
+    # AC6.1: Blocker in deploy_pending.
+    assert (
+        blocker.slug,
+        StoryState.BLOCKED_CI_UNRESOLVED.value,
+        StoryState.DEPLOY_PENDING.value,
+    ) in out
+    assert _reload(db, blocker.id).state == StoryState.DEPLOY_PENDING.value
+
+    # AC6.2: Dependent unblocked.
+    dep = _reload(db, dependent.id)
+    assert dep.state == StoryState.STORY_CREATED.value
+    assert dep.error is None
+
+    # Full set of side effects: deploy enqueued for blocker (DB row).
+    from factory.deploy.orchestrator import DeployQueueEntry
+
+    with Session(create_engine(f"sqlite:///{db}")) as ses:
+        queue_rows = ses.exec(
+            select(DeployQueueEntry).where(DeployQueueEntry.merged_pr_number == 500)
+        ).all()
+    assert len(queue_rows) >= 1
