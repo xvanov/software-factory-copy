@@ -9,6 +9,7 @@ Phase-1 additions:
   * ``factory new-direction --app <app>``
   * ``factory tell --app <app> "<text>"``
   * ``factory edit-direction --app <app> <id-or-slug>``
+  * ``factory directions-backfill --app <app> [--dry-run]``
   * ``factory pm-sync --app <app> [--dry-run]``
   * ``factory ingest-issue --app <app> <issue-number>``
 """
@@ -62,7 +63,8 @@ def hello() -> None:
         Panel.fit(
             f"[bold green]factory[/bold green] v{__version__} ({__phase__}) is alive.\n"
             f"Phase-1 commands: [bold]new-direction[/bold], [bold]tell[/bold], "
-            f"[bold]edit-direction[/bold], [bold]pm-sync[/bold], [bold]ingest-issue[/bold].",
+            f"[bold]edit-direction[/bold], [bold]directions-backfill[/bold], "
+            f"[bold]pm-sync[/bold], [bold]ingest-issue[/bold].",
             title="hello",
         )
     )
@@ -293,6 +295,38 @@ def edit_direction(
     console.print("\n[bold]Directory contents:[/bold]")
     for p in sorted(target.iterdir()):
         console.print(f"  - {p.name}")
+
+
+@app.command("directions-backfill")
+def directions_backfill_cmd(
+    app_name: str = typer.Option(..., "--app", help="App name"),
+    dry_run: bool = typer.Option(True, "--dry-run/--real-run", help="Dry-run (default)"),
+) -> None:
+    """Import on-disk directions into the ``directions`` table.
+
+    Dry-run is the default — reports what would be imported without writing.
+    Use ``--real-run`` to perform the actual import.
+    """
+    load_dotenv()
+    load_dotenv(_FACTORY_ROOT / ".env", override=False)
+
+    from factory.directions.backfill import directions_backfill
+
+    state_db = _FACTORY_ROOT / "state" / "factory.db"
+    result = directions_backfill(
+        app_name,
+        _FACTORY_ROOT,
+        state_db,
+        dry_run=dry_run,
+    )
+
+    mode_label = "[yellow]DRY-RUN[/yellow]" if dry_run else "[green]REAL RUN[/green]"
+    console.print(
+        Panel.fit(
+            f"imported={result.imported} skipped={result.skipped}\nmode={mode_label}",
+            title=f"directions-backfill — app={app_name}",
+        )
+    )
 
 
 @app.command("pm-sync")
@@ -3566,6 +3600,8 @@ def personas_validate_cmd(
 
     if errors or (strict and warnings):
         raise typer.Exit(code=1)
+
+
 @app.command("audit-chain")
 def audit_chain_cmd(
     stream: str | None = typer.Option(
@@ -3661,6 +3697,8 @@ def audit_chain_cmd(
         )
         if len(problems) > limit:
             console.print(f"[dim]... {len(problems) - limit} more (raise --limit)[/dim]")
+
+
 @app.command("conformance")
 def conformance_cmd(
     app_name: str | None = typer.Option(None, "--app", help="Only check this app's stories"),

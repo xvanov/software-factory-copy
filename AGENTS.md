@@ -28,3 +28,7 @@ Do not start editing before you have read it.
 Each app has its own agent docs — `../sacrifice/CLAUDE.md`,
 `../rental-management/AGENTS.md`, `../template/CLAUDE.md`. This file is only
 about the orchestrator.
+
+## Testing gotcha (story D012 follow-up)
+
+- Slop detector rule `direct_db_bootstrap` flags tests that call `create_engine(...)`/`SQLModel.metadata.create_all(...)` directly. For DB assertions in tests, bootstrap through `factory.observability.schema.migrate(db_path)` and query with `sqlite3` instead of creating engines inside the test body.
