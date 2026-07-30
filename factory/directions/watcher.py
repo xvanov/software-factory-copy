@@ -89,20 +89,38 @@ def mark_direction_status(
     by: str,
     details: dict[str, Any] | None = None,
 ) -> None:
-    """Update ``state.yaml`` in-place: set ``status``, append an audit entry.
+    """Authoritative database write + best-effort ``state.yaml`` projection.
 
-    Preserves any other keys in state.yaml (e.g. ``pm_result``, ``tracker_issue``).
+    The ``directions`` table row is the source of truth.  ``state.yaml`` is
+    still written for human inspection but its failure does NOT fail the
+    transition.
     """
+    # ---- authoritative database write -----------------------------------
+    root = _root_from_direction(direction)
+    db_path = root / "state" / "factory.db"
+    engine = _engine(db_path)
+
+    tracker_issue: int | None = None
+    raw = (direction.state or {}).get("tracker_issue")
+    if isinstance(raw, int) and raw > 0:
+        tracker_issue = raw
+
+    from factory.directions.schema import upsert_direction
+
+    with Session(engine) as session:
+        upsert_direction(
+            session,
+            app=direction.app,
+            direction_id=direction.id,
+            slug=direction.slug,
+            status=new_status,
+            tracker_issue=tracker_issue,
+            updated_by=by,
+        )
+
+    # ---- best-effort state.yaml projection ------------------------------
     state_path = Path(direction.dir_path) / "state.yaml"
-    if state_path.exists():
-        try:
-            state = yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}
-            if not isinstance(state, dict):
-                state = {}
-        except yaml.YAMLError:
-            state = {}
-    else:
-        state = {}
+    state = _read_state_yaml(state_path)
 
     state["status"] = new_status
     audit = state.get("audit") or []
@@ -117,11 +135,41 @@ def mark_direction_status(
         }
     )
     state["audit"] = audit
-    state_path.write_text(yaml.safe_dump(state, sort_keys=False), encoding="utf-8")
 
-    # Keep the in-memory record in sync.
+    try:
+        state_path.write_text(yaml.safe_dump(state, sort_keys=False), encoding="utf-8")
+    except OSError:
+        # File projection is best-effort; the DB row is already committed.
+        pass
+
+    # Keep the in-memory record in sync with the authoritative write.
     direction.status = new_status
     direction.state = state
+
+
+def _read_state_yaml(state_path: Path) -> dict[str, Any]:
+    """Read and return the existing ``state.yaml`` dict, or an empty dict.
+
+    Robust against missing file, permission errors, and corrupt YAML.
+    """
+    try:
+        if state_path.exists() and state_path.is_file():
+            state = yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(state, dict):
+                state = {}
+            return state
+    except (yaml.YAMLError, OSError):
+        pass
+    return {}
+
+
+def _root_from_direction(direction: Direction) -> Path:
+    """Derive the software-factory root from the direction's directory path.
+
+    Direction dir_path layout: ``<root>/apps/<app>/directions/<id>-<slug>/``
+    so the root is 3 levels up from *dir_path*.
+    """
+    return direction.dir_path.resolve().parents[3]
 
 
 def merge_state(direction: Direction, patch: dict[str, Any]) -> None:
