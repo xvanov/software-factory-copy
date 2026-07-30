@@ -1,10 +1,13 @@
 """Per-app direction queue management.
 
-The truth is the on-disk ``state.yaml`` ``status`` field; the
-``DirectionCursor`` SQLModel table is a *cursor optimization* — it remembers
-the highest direction id we've seen for an app so the watcher can skip
-already-processed entries without a full disk scan in steady state. Phase 1
-just uses the disk-truth path; the cursor is wired for Phase 2.
+Status resolution precedence:
+1. ``directions`` table row (when one exists for the app + direction_id).
+2. On-disk ``state.yaml`` ``status`` field.
+3. ``created`` (default for a hand-created direction with no DB row).
+
+The ``DirectionCursor`` SQLModel table is a *cursor optimization* — it
+remembers the highest direction id we've seen for an app so the watcher can
+skip already-processed entries without a full disk scan in steady state.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import yaml
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from factory.directions.parser import Direction, list_direction_dirs, parse_direction_dir
+from factory.directions.schema import get_direction
 
 
 class DirectionCursor(SQLModel, table=True):
@@ -37,22 +41,42 @@ def _engine(db_path: Path) -> Any:
     return engine
 
 
+def _resolve_status(
+    app: str,
+    direction_id: str,
+    state_yaml_status: str,
+    engine: Any,
+) -> str:
+    """Resolve direction status with DB-first precedence.
+
+    1. DB row → row.status
+    2. state.yaml → *state_yaml_status*
+    3. ``created``
+    """
+    with Session(engine) as session:
+        row = get_direction(session, app, direction_id)
+        if row is not None:
+            return row.status
+    # state_yaml_status is already the parsed state.yaml value, or "created"
+    # if state.yaml was missing/corrupt — see parse_direction_dir.
+    return state_yaml_status
+
+
 def pending_directions(
     app: str, software_factory_root: Path, state_db_path: Path
 ) -> list[Direction]:
-    """Return parsed ``Direction`` records whose ``state.yaml.status`` indicates
-    the chain has not yet validated them.
+    """Return parsed ``Direction`` records whose status indicates the chain has
+    not yet validated them.
 
-    Phase 1 pending statuses: ``created`` (just made), ``needs-direction``
-    (re-process whenever updated; the chain will mark it ``pm-validated`` when
-    backpressure is sufficient).
+    Status resolution: ``directions`` table row → ``state.yaml`` → ``created``.
+    Pending statuses: ``created``, ``needs-direction``.
     """
-    _ = _engine(state_db_path)  # ensure table exists for callers downstream
+    engine = _engine(state_db_path)  # ensure tables exist for callers downstream
     out: list[Direction] = []
     for dir_path in list_direction_dirs(app, software_factory_root):
-        d = parse_direction_dir(
-            app, dir_path, software_factory_root=software_factory_root
-        )
+        d = parse_direction_dir(app, dir_path, software_factory_root=software_factory_root)
+        # Resolve status from DB first, falling back to state.yaml / created.
+        d.status = _resolve_status(app, d.id, d.status, engine)
         if d.status in {"created", "needs-direction"}:
             out.append(d)
     return out
