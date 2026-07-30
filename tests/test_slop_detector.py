@@ -333,11 +333,7 @@ def test_detects_self_constructed_fstring_compare(tmp_path: Path) -> None:
 
 
 def test_detects_inline_fstring_tautology(tmp_path: Path) -> None:
-    src = (
-        "def test_x():\n"
-        "    gid = 'abc'\n"
-        "    assert f'media/{gid}' == f'media/{gid}'\n"
-    )
+    src = "def test_x():\n    gid = 'abc'\n    assert f'media/{gid}' == f'media/{gid}'\n"
     findings = scan_file(_write_py(tmp_path, src))
     assert "self_constructed_compare" in _kinds(findings)
 
@@ -377,3 +373,162 @@ def test_self_constructed_compare_not_flagged_for_settings_call(tmp_path: Path) 
     )
     findings = scan_file(_write_py(tmp_path, src))
     assert "self_constructed_compare" not in _kinds(findings)
+
+
+# --------------------------------------------------------------------------- #
+# Direct DB bootstrap (D014)
+# --------------------------------------------------------------------------- #
+
+_NOQA_SLOP = "  # noqa: slop"
+
+
+def test_detects_SQLModel_metadata_create_all(tmp_path: Path) -> None:
+    src = (
+        "from sqlmodel import SQLModel\ndef test_foo():\n    SQLModel.metadata.create_all(engine)\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    kinds = _kinds(findings)
+    assert "direct_db_bootstrap" in kinds, kinds
+    fnd = next(f for f in findings if f.kind == "direct_db_bootstrap")
+    assert fnd.line == 3
+    assert "SQLModel.metadata.create_all" in fnd.code_excerpt
+
+
+def test_detects_sqlmodel_create_engine_bare(tmp_path: Path) -> None:
+    src = (
+        "from sqlmodel import create_engine\n"
+        "def test_bar():\n"
+        "    e = create_engine('sqlite:///x')\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    kinds = _kinds(findings)
+    assert "direct_db_bootstrap" in kinds, kinds
+    fnd = next(f for f in findings if f.kind == "direct_db_bootstrap")
+    assert fnd.line == 3
+    assert "create_engine" in fnd.code_excerpt
+
+
+def test_detects_sqlalchemy_create_engine_bare(tmp_path: Path) -> None:
+    src = (
+        "from sqlalchemy import create_engine\n"
+        "def test_baz():\n"
+        "    e = create_engine('sqlite:///x')\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    kinds = _kinds(findings)
+    assert "direct_db_bootstrap" in kinds, kinds
+    fnd = next(f for f in findings if f.kind == "direct_db_bootstrap")
+    assert fnd.line == 3
+    assert "create_engine" in fnd.code_excerpt
+
+
+def test_detects_sqlmodel_create_engine_qualified(tmp_path: Path) -> None:
+    src = "import sqlmodel\ndef test_qux():\n    sqlmodel.create_engine('sqlite:///x')\n"
+    findings = scan_file(_write_py(tmp_path, src))
+    kinds = _kinds(findings)
+    assert "direct_db_bootstrap" in kinds, kinds
+    fnd = next(f for f in findings if f.kind == "direct_db_bootstrap")
+    assert fnd.line == 3
+    assert "sqlmodel.create_engine" in fnd.code_excerpt
+
+
+def test_detects_sqlalchemy_create_engine_qualified(tmp_path: Path) -> None:
+    src = "import sqlalchemy\ndef test_quux():\n    sqlalchemy.create_engine('sqlite:///x')\n"
+    findings = scan_file(_write_py(tmp_path, src))
+    kinds = _kinds(findings)
+    assert "direct_db_bootstrap" in kinds, kinds
+    fnd = next(f for f in findings if f.kind == "direct_db_bootstrap")
+    assert fnd.line == 3
+    assert "sqlalchemy.create_engine" in fnd.code_excerpt
+
+
+def test_direct_db_bootstrap_why_slop_names_migrate(tmp_path: Path) -> None:
+    """AC2.1: the why_slop text must name factory.observability.schema.migrate."""
+    src = "from sqlmodel import create_engine\ndef test_x():\n    create_engine('sqlite:///x')\n"
+    findings = scan_file(_write_py(tmp_path, src))
+    assert len(findings) >= 1
+    for f in findings:
+        if f.kind == "direct_db_bootstrap":
+            assert "factory.observability.schema.migrate" in f.why_slop, f.why_slop
+
+
+def test_migrate_call_produces_no_finding(tmp_path: Path) -> None:
+    """AC3.1: app-initializer path (migrate) produces no finding."""
+    src = (
+        "from factory.observability.schema import migrate\n"
+        "def test_good():\n"
+        "    db = tmp_path / 'db'\n"
+        "    migrate(db)\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    assert all(f.kind != "direct_db_bootstrap" for f in findings), findings
+
+
+def test_noqa_slop_suppresses_direct_db_bootstrap_finding(tmp_path: Path) -> None:
+    """AC4.1: # noqa: slop on a test suppresses the finding."""
+    src = (
+        "from sqlmodel import create_engine\n"
+        f"def test_legit_raw_engine():{_NOQA_SLOP}\n"
+        "    e = create_engine('sqlite:///x')\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    assert all(f.kind != "direct_db_bootstrap" for f in findings), findings
+
+
+def test_noqa_slop_suppresses_create_all_finding(tmp_path: Path) -> None:
+    """# noqa: slop in the body also suppresses."""
+    src = (
+        "from sqlmodel import SQLModel\n"
+        "def test_legit_migration():\n"
+        f"    SQLModel.metadata.create_all(engine)  {_NOQA_SLOP}\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    assert all(f.kind != "direct_db_bootstrap" for f in findings), findings
+
+
+def test_story148_bad_form_is_flagged(tmp_path: Path) -> None:
+    """AC7.1: exact story-148 test body — create_engine + create_all — is flagged."""
+    src = (
+        "from sqlmodel import SQLModel, create_engine\n"
+        "def test_tables_exist():\n"
+        "    engine = create_engine('sqlite:///test.db')\n"
+        "    SQLModel.metadata.create_all(engine)\n"
+        "    assert True  # trivial\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    kinds = _kinds(findings)
+    assert "direct_db_bootstrap" in kinds
+    # The file has two calls: one create_engine and one create_all
+    db_findings = [f for f in findings if f.kind == "direct_db_bootstrap"]
+    assert len(db_findings) >= 2, (
+        f"Expected >=2 bootstrap findings, got {len(db_findings)}: {db_findings}"
+    )
+
+
+def test_story148_fixed_form_is_not_flagged(tmp_path: Path) -> None:
+    """AC7.2: the fixed form — driving migrate() — produces no finding."""
+    src = (
+        "from factory.observability.schema import migrate\n"
+        "def test_tables_exist(tmp_path):\n"
+        "    db = tmp_path / 'factory.db'\n"
+        "    migrate(db)\n"
+        "    # now assert on the migrated schema...\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    assert all(f.kind != "direct_db_bootstrap" for f in findings), findings
+
+
+def test_noqa_slop_does_not_block_other_ast_detectors(tmp_path: Path) -> None:
+    """# noqa: slop suppresses ONLY direct_db_bootstrap; unrelated AST rules
+    still fire for the same test body."""
+    src = (
+        "from sqlmodel import create_engine\n"
+        f"def test_mixed():{_NOQA_SLOP}\n"
+        "    e = create_engine('sqlite:///x')\n"
+        "    expected = 'x'\n"
+        "    assert expected == 'x'\n"
+    )
+    findings = scan_file(_write_py(tmp_path, src))
+    kinds = _kinds(findings)
+    assert "direct_db_bootstrap" not in kinds, "direct_db_bootstrap should be suppressed"
+    assert "assert_on_just_set" in kinds, "other AST detectors should still fire"
